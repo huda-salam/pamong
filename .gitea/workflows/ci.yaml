@@ -1,0 +1,69 @@
+# CI Pamong — Gitea Actions
+# Pipeline: lint -> test -> build (CLAUDE.md §20).
+# Gate yang belum bisa ditegakkan sekarang ditandai TODO dengan referensi PR ROADMAP.
+name: CI
+
+on:
+  push:
+    branches: [staging, main]
+  pull_request:
+    branches: [staging, main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "File belum diformat gofmt:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go mod tidy bersih
+        run: go mod tidy && git diff --exit-code go.mod go.sum
+
+      - name: pamongctl lint (custom analyzer)
+        run: go run ./tools/pamongctl lint ./...
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Unit test (race)
+        run: go test -race -count=1 ./...
+
+      # TODO: PR-1.2.1 tambah job integration test (go test -tags=integration) dengan
+      #       service container Postgres — runner sudah punya akses docker.sock.
+      # TODO: PR-0.3.3 tegakkan gate coverage per-layer (domain >=90%, usecase >=85%, adapter >=60%)
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      # TODO: PR-1.1.1 jalankan 'pamongctl validate modules' setelah module registry ada

@@ -1,0 +1,548 @@
+# ROADMAP.md — Pamong
+
+Rencana pembangunan framework dari nol sampai fungsional, dipecah menjadi
+**Phase → Sub-phase → Jobs/PR**.
+
+Konvensi, aturan arsitektur, dan standar coding ada di `CLAUDE.md`.
+File ini hanya mengatur *urutan* dan *batas* tiap pekerjaan agar bisa dikerjakan
+inkremental, satu PR satu unit yang reviewable.
+
+---
+
+## Prinsip penyusunan roadmap
+
+- **Satu job = satu PR.** Tiap job dirancang agar bisa di-review dalam satu sesi,
+  idealnya < 600 baris perubahan inti (tidak termasuk generated code & test).
+- **Dependency eksplisit.** Job tidak boleh dimulai sebelum dependensinya merged.
+- **Setiap job menghasilkan sesuatu yang bisa di-test.** Tidak ada job yang hanya
+  "menyiapkan" tanpa output yang bisa diverifikasi.
+- **Hexagonal dari awal.** Bahkan job paling awal mengikuti pemisahan port/adapter.
+- **Definition of Done (DoD) seragam** untuk semua job — lihat bagian akhir.
+
+Penanda dependency: `←` berarti "bergantung pada".
+
+---
+
+## Ringkasan phase
+
+| Phase | Nama | Tujuan | Estimasi |
+|---|---|---|---|
+| 0 | Bootstrap & fondasi | Repo, config, logging, error, tooling dasar | 2–3 minggu |
+| 1 | Domain engine & persistence | Inti framework: registry, entity, DB, audit | 3–4 minggu |
+| 2 | Identity, tenancy & auth | Person, employment, persona, role, login | 4–5 minggu |
+| 3 | Core services & fleksibilitas | Event bus, workflow (DB), strategy, kustomisasi, scheduler, notif | 5–7 minggu |
+| 4 | Rule engine & governance | Tiered constraint, versioning regulasi | 2–3 minggu |
+| 5 | Gateway, API & DX | Router, middleware, pamongctl, linter lengkap | 3–4 minggu |
+| 6 | Admin UI web | Scaffolding tenant, meta-def, observability | 4–5 minggu |
+| 7 | Modul referensi & validasi | surat_masuk + modul publik + E2E | 3–4 minggu |
+
+Total: ~25–34 minggu (6–8 bulan) untuk framework fungsional penuh.
+Minimum viable framework (Phase 0–3 + sebagian 5) bisa dicapai di ~14–18 minggu.
+
+---
+
+## Phase 0 — Bootstrap & fondasi
+
+Tujuan: kerangka repo yang bisa di-build, di-test, dan di-lint sejak commit pertama.
+
+### Sub-phase 0.1 — Repo & build system
+
+- **PR-0.1.1** Inisialisasi monorepo
+  - Struktur direktori sesuai CLAUDE.md (core, port, infra, gateway, dst)
+  - `go.mod`, `go.work` jika perlu workspace, `.gitignore`, `.editorconfig`
+  - `Makefile`: target `build`, `test`, `lint`, `run`, `migrate`
+  - DoD: `make build` dan `make test` jalan (meski kosong)
+
+- **PR-0.1.2** CI skeleton ← 0.1.1
+  - Pipeline: lint → test → build (lihat CLAUDE.md CI/CD gates)
+  - Branch protection di `main` dan `staging`
+  - DoD: PR dummy memicu pipeline dan lulus
+
+### Sub-phase 0.2 — Fondasi runtime
+
+- **PR-0.2.1** Config loader ← 0.1.1
+  - Baca env `GOV_*`, file YAML berlapis, precedence sesuai CLAUDE.md
+  - `config.AppConfig` struct + validasi
+  - DoD: unit test precedence env > local > env-file > default
+
+- **PR-0.2.2** Structured logging ← 0.2.1
+  - Logger JSON dengan correlation ID, level dari config
+  - Interface `Logger` (port) + adapter slog/zap
+  - DoD: log keluar dengan correlation ID, format JSON
+
+- **PR-0.2.3** Error types & HTTP mapping ← 0.1.1
+  - `core.ErrNotFound`, `ErrPermissionDenied`, `ErrValidation`, `ErrConflict`
+  - Mapping ke HTTP status code
+  - DoD: unit test setiap error type ke status code yang benar
+
+### Sub-phase 0.3 — Tooling dasar
+
+- **PR-0.3.1** pamongctl skeleton ← 0.1.1
+  - CLI dengan cobra, perintah kosong: `new`, `validate`, `generate`, `lint`, `migrate`
+  - DoD: `pamongctl --help` menampilkan semua perintah
+
+- **PR-0.3.2** Custom linter skeleton ← 0.3.1
+  - Kerangka Go `analysis.Analyzer`, satu rule contoh berjalan
+  - DoD: `pamongctl lint` mendeteksi pelanggaran rule contoh di file uji
+
+- **PR-0.3.3** testkit base ← 0.2.1, 0.2.2
+  - `testkit.Ctx()`, helper assert, mock logger
+  - DoD: dipakai di minimal satu test yang sudah ada
+
+---
+
+## Phase 1 — Domain engine & persistence
+
+Tujuan: developer bisa mendefinisikan entity dan framework mengelola persistensi + audit.
+
+### Sub-phase 1.1 — Domain engine
+
+- **PR-1.1.1** Manifest contract & module registry ← 0.2.1
+  - Interface `Module`, struct `Manifest`, `Register()`, auto-discovery
+  - DoD: dua modul dummy ter-register, registry bisa list keduanya
+
+- **PR-1.1.2** Entity definition & field types ← 1.1.1
+  - `EntityDef`, `FieldDef`, tipe field (Text, Date, Enum, Link, File, dll)
+  - Validasi struktural via struct tag
+  - DoD: entity dummy tervalidasi, field invalid ditolak
+
+- **PR-1.1.3** Lifecycle hooks ← 1.1.2
+  - `before_save`, `after_save`, `before_submit`, `after_submit`
+  - DoD: hook terpanggil sesuai urutan dalam test
+
+### Sub-phase 1.2 — Persistence & migration
+
+- **PR-1.2.1** DB adapter (Postgres/pgx) ← 0.2.1
+  - Connection pool dari config, health check
+  - Implementasi `port.Repository` generics
+  - DoD: integration test CRUD ke Postgres via testcontainers
+
+- **PR-1.2.2** Table naming enforcement ← 1.1.2, 1.2.1
+  - Generate nama tabel `{module}__{entity_plural}` dari entity def
+  - DoD: entity def menghasilkan nama tabel yang benar; nama manual yang salah ditolak
+
+- **PR-1.2.3** Migration runner ← 1.2.1
+  - Versioned up/down, multi-tenant aware, rollback
+  - `pamongctl migrate up|down|status`
+  - DoD: migration jalan & rollback bersih di test DB
+
+- **PR-1.2.4** Auto-generate migration dari entity def ← 1.2.2, 1.2.3
+  - `pamongctl generate migration {modul}`
+  - DoD: entity baru menghasilkan file migration up+down yang valid
+
+### Sub-phase 1.3 — Audit engine
+
+- **PR-1.3.1** Audit writer & field diff ← 1.2.1
+  - Catat before/after, actor, timestamp untuk entity `Auditable`
+  - DoD: mutasi entity auditable menghasilkan audit log dengan diff benar
+
+- **PR-1.3.2** Hash chain tamper detection ← 1.3.1
+  - Tiap entry menyimpan hash entry sebelumnya
+  - `pamongctl audit verify` mendeteksi manipulasi
+  - DoD: test memodifikasi log → verifikasi gagal terdeteksi
+
+- **PR-1.3.3** Auto-attach audit ke domain engine ← 1.3.1, 1.1.3
+  - Hook audit otomatis untuk semua entity auditable, tanpa kode modul
+  - DoD: entity auditable ter-audit tanpa kode tambahan di modul
+
+---
+
+## Phase 2 — Identity, tenancy & auth
+
+Tujuan: model person/employment/persona, multi-tenant, role berlapis, tiga alur login.
+
+### Sub-phase 2.1 — Identity core (central DB)
+
+- **PR-2.1.1** Skema & repo person + employment + credential ← 1.2.3
+  - Tabel `id.persons`, `id.employments`, `id.credentials`
+  - Repository + port di `identity/domain`
+  - DoD: integration test buat person, tambah employment ASN, tambah credential
+
+- **PR-2.1.2** Person resolver & use case dasar ← 2.1.1
+  - Create person, attach employment, resolve by NIK/NIP
+  - DoD: unit test resolve by NIK & NIP, validasi NIP wajib untuk ASN
+
+### Sub-phase 2.2 — Tenancy
+
+- **PR-2.2.1** Tenant registry ← 1.2.3
+  - Tabel `gov.tenants`, CRUD tenant, status aktif
+  - DoD: buat tenant, list tenant, nonaktifkan tenant
+
+- **PR-2.2.2** Tenant resolver middleware ← 2.2.1, 0.2.x
+  - Resolusi tenant dari token/subdomain/header, inject ke context
+  - DoD: request dengan tenant berbeda terisolasi dalam test
+
+- **PR-2.2.3** Schema-per-tenant provisioning ← 2.2.1, 1.2.3
+  - Buat schema + jalankan migration saat tenant baru dibuat
+  - DoD: tenant baru otomatis punya schema lengkap
+
+- **PR-2.2.4** Identity sync engine (clone ke tenant) ← 2.1.2, 2.2.3, 3.1.1
+  - Subscribe event identity, clone person ke `gov.user_profiles`
+  - DoD: event `identity.employment.ditugaskan` menghasilkan clone di tenant tujuan
+  - Catatan: bergantung event bus (3.1.1) — bisa pakai memory driver dulu
+
+### Sub-phase 2.3 — Role & permission
+
+- **PR-2.3.1** Permission engine RBAC ← 2.1.1
+  - Definisi permission, role, assignment, evaluasi dasar
+  - DoD: cek permission untuk role tertentu lulus/tolak sesuai harapan
+
+- **PR-2.3.2** Central roles global & scoped ← 2.3.1
+  - Tabel `id.central_roles`, `id.central_role_assignments` + `tenant_scope[]`
+  - DoD: global role berlaku semua tenant; scoped hanya di scope-nya
+
+- **PR-2.3.3** Tenant roles ← 2.3.1, 2.2.3
+  - Tabel `gov.tenant_roles`, `gov.user_role_assignments`, scope unit kerja
+  - DoD: role tenant hanya berlaku di tenant-nya
+
+- **PR-2.3.4** Permission export/import antar modul ← 2.3.1, 1.1.1
+  - Bagian `Exports`/`Imports` di manifest, registrasi saat bootstrap
+  - DoD: modul A pakai permission export modul B; tanpa import → linter tolak
+
+- **PR-2.3.5** ABAC + hierarki OPD + delegasi/PLT ← 2.3.1, 2.3.3
+  - Atribut unit kerja, tree OPD, delegasi berwaktu
+  - DoD: data-level permission per unit kerja; delegasi kedaluwarsa otomatis
+
+### Sub-phase 2.4 — Auth flow
+
+- **PR-2.4.1** JWT issue & verify ← 2.1.2
+  - Issue token dengan claim sesuai CLAUDE.md, verifikasi, revocation via jti
+  - DoD: token valid diverifikasi; token revoked ditolak
+
+- **PR-2.4.2** gateway.Context / AuthContext ← 2.4.1, 2.3.x
+  - Carrier auth+tenant+trace, implementasi `AuthContext`
+  - DoD: `RequirePermission`, `IsCitizen`, `HasCentralRole` berfungsi di test
+
+- **PR-2.4.3** Alur login employee (sentral & daerah) ← 2.4.2, 2.2.2
+  - Resolusi tenant, pemilihan tenant, scoped token
+  - DoD: user 1-tenant langsung masuk; cross-tenant memilih tenant
+
+- **PR-2.4.4** Alur login citizen (portal publik) ← 2.4.1
+  - Login NIK/email/HP, OTP, persona citizen tanpa cek employment
+  - DoD: ASN bisa login publik → token persona=citizen tanpa role internal
+
+- **PR-2.4.5** Cross-tenant assignment ← 2.4.3, 2.3.2
+  - Penugasan lintas tenant dengan otorisasi admin sentral
+  - DoD: assignment cross-tenant butuh permission khusus; PLT bisa pilih 2 tenant
+
+---
+
+## Phase 3 — Core services & fleksibilitas
+
+Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage, metrics.
+
+### Sub-phase 3.1 — Event bus
+
+- **PR-3.1.1** Port event bus + memory driver ← 0.2.1
+  - Interface publish/subscribe, schema registry, driver memory untuk test
+  - DoD: publish/subscribe lokal lulus; event tanpa schema ditolak
+
+- **PR-3.1.2** Outbox pattern ← 3.1.1, 1.2.1
+  - Event tersimpan transaksional, dikirim setelah commit
+  - DoD: rollback transaksi → event tidak terkirim
+
+- **PR-3.1.3** Driver NATS/Redis Streams ← 3.1.1
+  - Driver produksi, dipilih via config
+  - DoD: integration test publish/subscribe lintas proses
+
+- **PR-3.1.4** DLQ & retry ← 3.1.3
+  - Retry backoff, dead letter queue, alert
+  - DoD: handler gagal → masuk DLQ setelah N retry
+
+### Sub-phase 3.2 — Workflow engine
+
+- **PR-3.2.1** State machine core ← 1.1.1
+  - State, transition, action hook. Action HANYA boleh memanggil use case.
+  - DoD: transisi valid jalan; transisi ilegal ditolak; action tanpa use case ditolak
+
+- **PR-3.2.2** YAML seed loader + schema validation ← 3.2.1
+  - Muat definisi workflow dari YAML (baseline) → validasi struktur
+  - DoD: YAML valid termuat; YAML invalid ditolak dengan pesan jelas
+
+- **PR-3.2.3** Workflow definition store (DB) ← 3.2.2, 1.2.3
+  - Simpan definisi ke DB, seed di-load saat bootstrap, override per-tenant
+  - Versioned + effective date + audit siapa-mengubah-apa
+  - DoD: definisi dari DB dieksekusi; perubahan ber-versi & ter-audit
+
+- **PR-3.2.4** Template selection per-tenant ← 3.2.3
+  - Tenant memilih template ber-key + parameter binding peran→jabatan
+  - DoD: tenant A & B jalan dengan template berbeda, use case identik
+
+- **PR-3.2.5** Guard expression DSL ← 3.2.3, 2.4.2
+  - Evaluator ekspresi boolean, di-compile saat load, tanpa side-effect
+  - DoD: guard mengevaluasi konteks actor & entity; syntax error ketahuan saat load
+
+- **PR-3.2.6** SLA, deadline & eskalasi ← 3.2.1, 3.6.1
+  - Batas waktu per state, eskalasi otomatis saat lewat
+  - DoD: state lewat SLA memicu eskalasi & notifikasi
+
+- **PR-3.2.7** Workflow history & instance versioning ← 3.2.3, 1.3.1
+  - Riwayat transisi immutable; instance berjalan pakai versi definisi saat mulai
+  - DoD: perubahan definisi tidak mengubah instance yang sedang berjalan
+
+### Sub-phase 3.3 — Strategy registry & tenant config
+
+- **PR-3.3.1** Strategy registry + key resolution ← 1.1.1
+  - Interface + registry ber-key + `Register()`; tolak key tak terdaftar
+  - DoD: dua strategy dummy ter-register; use case memilih via key dari config
+
+- **PR-3.3.2** Tenant config ber-scope + resolver ← 3.3.1, 2.2.1
+  - Skema config `tenant[/unit/resource]`, resolusi paling-spesifik-menang
+  - DoD: config tenant terbaca; scope unit kerja meng-override tenant
+
+- **PR-3.3.3** Strategy choice versioning + non-retroaktif ← 3.3.2, 1.3.1
+  - Pilihan ber-versi + effective date; periode terkunci tak berubah
+  - DoD: ganti metode → periode lama tetap, periode baru pakai metode baru
+
+- **PR-3.3.4** Opsi = irisan developer ∩ rule tier ← 3.3.1, 4.1.3
+  - Opsi tersedia ke tenant difilter rule tiered constraint
+  - DoD: strategy yang dilarang rule nasional tak muncul sebagai opsi
+  - Catatan: butuh rule engine (4.1.3) — bisa stub dulu, lengkapi setelah Phase 4
+
+- **PR-3.3.5** Hook validator koherensi kombinasi ← 3.3.1
+  - Titik daftar validator lintas-pilihan (belum tentu dipakai, titiknya disiapkan)
+  - DoD: kombinasi tak koheren yang didaftarkan terdeteksi & ditolak
+
+### Sub-phase 3.4 — Tenant customization layer
+
+- **PR-3.4.1** Custom field & label override ← 1.1.2, 2.2.1
+  - Layer terpisah dari definisi modul; upgrade-safe
+  - DoD: tenant menambah field tanpa mengubah modul; upgrade tak menimpa
+
+- **PR-3.4.2** Capability flags per-tenant ← 2.2.1
+  - Gate fitur dormant tanpa percabangan kode menyebar
+  - DoD: fitur ber-flag aktif/nonaktif per-tenant tanpa rilis terpisah
+
+### Sub-phase 3.5 — Scheduler
+
+- **PR-3.5.1** Cron & job queue ← 0.2.1
+  - Penjadwalan, eksekusi, riwayat job
+  - DoD: job terjadwal jalan tepat waktu di test
+
+- **PR-3.5.2** Distributed lock ← 3.5.1, 3.1.x
+  - Job tidak double-run di multi-instance
+  - DoD: dua instance, job jalan sekali
+
+### Sub-phase 3.6 — Notification & messaging
+
+- **PR-3.6.1** Channel abstraction + template engine ← 3.1.1
+  - Port channel, template per tenant, i18n
+  - DoD: kirim notif in-app & email (mock) dengan template benar
+
+- **PR-3.6.2** Routing by role/jabatan ← 3.6.1, 2.3.x
+  - Notif ke role/jabatan, fallback ke PLT
+  - DoD: notif ke "Kadis" jatuh ke PLT bila jabatan kosong
+
+### Sub-phase 3.7 — Storage & metrics ports
+
+- **PR-3.7.1** Storage port + MinIO/S3 adapter ← 0.2.1
+  - Upload/download/delete, metadata
+  - DoD: integration test simpan & ambil file dari MinIO
+
+- **PR-3.7.2** Metrics port + Prometheus/OTEL adapter ← 0.2.2
+  - Counter, gauge, histogram; tracing OTEL
+  - DoD: metric tereskpos di endpoint; trace muncul di collector
+
+---
+
+## Phase 4 — Rule engine & governance
+
+Tujuan: regulasi sebagai data, constraint bertingkat, bisa diubah tanpa redeploy.
+
+### Sub-phase 4.1 — Rule engine
+
+- **PR-4.1.1** Rule store (DB-backed) ← 1.2.1
+  - Tabel `gov.rule_versions`, CRUD rule
+  - DoD: rule tersimpan & terambil dengan effective date
+
+- **PR-4.1.2** Expression evaluator ← 4.1.1
+  - Evaluasi ekspresi rule terhadap konteks data
+  - DoD: rule `belanja/total <= 0.30` dievaluasi benar
+
+- **PR-4.1.3** Tiered constraint ← 4.1.2
+  - Hierarki nasional > provinsi > kab/kota; tier bawah tak bisa langgar atas
+  - DoD: kab/kota tak bisa set lebih longgar dari provinsi
+
+- **PR-4.1.4** Versioning & effective date ← 4.1.1
+  - Rule berlaku per tanggal, backtest, riwayat
+  - DoD: rule lama & baru aktif sesuai tanggal transaksi
+
+- **PR-4.1.5** Conflict detector ← 4.1.3
+  - Deteksi dua rule bertentangan sebelum aktivasi
+  - DoD: rule konflik ditolak saat aktivasi dengan pesan jelas
+
+### Sub-phase 4.2 — Custom evaluator
+
+- **PR-4.2.1** Registrasi Go custom evaluator ← 4.1.2
+  - `rules.Register()` untuk logika yang tak bisa diekspresikan DSL
+  - DoD: custom evaluator terpanggil engine dalam test
+
+---
+
+## Phase 5 — Gateway, API & DX
+
+Tujuan: API gateway lengkap, pamongctl lengkap, linter lengkap, dokumentasi kontrak.
+
+### Sub-phase 5.1 — API gateway
+
+- **PR-5.1.1** Router aggregator ← 1.1.1, 2.4.2
+  - Kumpulkan rute dari semua modul saat bootstrap
+  - DoD: rute modul ter-register & dapat diakses
+
+- **PR-5.1.2** Middleware stack ← 5.1.1, 2.2.2, 1.3.1
+  - Auth, rate limit, tenant resolver, CORS, audit trail
+  - DoD: request tanpa auth ditolak; rate limit aktif; audit tercatat
+
+- **PR-5.1.3** Auto-generate CRUD endpoint ← 5.1.1, 1.1.2
+  - Endpoint CRUD dasar dari entity def
+  - DoD: entity baru otomatis punya endpoint GET/POST/PATCH/DELETE
+
+### Sub-phase 5.2 — pamongctl lengkap
+
+- **PR-5.2.1** Scaffold module ← 1.1.1, 0.3.1
+  - `pamongctl new module` generate struktur hexagonal lengkap
+  - DoD: modul hasil scaffold langsung lulus `validate` & `build`
+
+- **PR-5.2.2** Validate & rule management ← 5.2.1, 4.1.x
+  - `pamongctl validate module`, `pamongctl rule create|preview|activate`
+  - DoD: manifest invalid terdeteksi; rule bisa dikelola via CLI
+
+### Sub-phase 5.3 — Linter lengkap
+
+- **PR-5.3.1** Semua analyzer rules ← 0.3.2, semua phase sebelumnya
+  - 10+ rule sesuai CLAUDE.md (no-infra-import, must-check-permission, dll)
+  - DoD: tiap rule punya test positif & negatif; terpasang di CI
+
+### Sub-phase 5.4 — Dokumentasi kontrak
+
+- **PR-5.4.1** OpenAPI generation ← 5.1.3
+  - Generate spec OpenAPI dari rute & entity
+  - DoD: spec tergenerate & valid
+
+- **PR-5.4.2** Event topology & permission docs ← 3.1.1, 2.3.4
+  - Generate diagram produce/consume & daftar permission ke `docs/contracts/`
+  - DoD: dokumentasi tergenerate dari manifest
+
+---
+
+## Phase 6 — Admin UI web
+
+Tujuan: scaffolding tenant & meta-definition lewat web, observability dashboard.
+
+### Sub-phase 6.1 — Shell & auth
+
+- **PR-6.1.1** Admin UI shell (Frappe UI + Go adapter) ← 5.1.2
+  - Layout, integrasi auth, tenant switcher
+  - DoD: login admin, pindah tenant, layout tampil
+
+### Sub-phase 6.2 — Meta-definition UI
+
+- **PR-6.2.1** Module & entity browser ← 6.1.1, 1.1.2
+  - Lihat modul ter-register, entity, field, relasi
+  - DoD: semua modul tampil dengan detail dari registry
+
+- **PR-6.2.2** Entity definition editor ← 6.2.1, 1.2.4
+  - Definisi/edit entity via form → generate migration
+  - DoD: buat entity via UI menghasilkan migration valid
+
+### Sub-phase 6.3 — Tenant scaffolding UI
+
+- **PR-6.3.1** Tenant management ← 6.1.1, 2.2.x
+  - Buat tenant, provisioning schema, status
+  - DoD: tenant baru via UI otomatis ter-provision
+
+- **PR-6.3.2** User & role management ← 6.3.1, 2.3.x
+  - Assign person ke tenant, kelola role tenant, cross-tenant assignment
+  - DoD: assign role & cross-tenant lewat UI, audit tercatat
+
+### Sub-phase 6.4 — Observability dashboard
+
+- **PR-6.4.1** Audit trail viewer ← 6.1.1, 1.3.x
+  - Telusur audit log, filter, verifikasi hash chain
+  - DoD: audit log tampil & dapat diverifikasi via UI
+
+- **PR-6.4.2** Workflow & event monitor ← 6.1.1, 3.1.x, 3.2.x
+  - Status workflow instance, topology event, DLQ
+  - DoD: instance & event bus termonitor via UI
+
+---
+
+## Phase 7 — Modul referensi & validasi
+
+Tujuan: buktikan framework usable end-to-end lewat modul nyata + interaksi internal-publik.
+
+### Sub-phase 7.1 — Modul internal referensi
+
+- **PR-7.1.1** surat_masuk — domain & use case ← Phase 1–5
+  - Entity, port, use case create/disposisi, unit test
+  - DoD: use case lulus unit test, coverage sesuai target
+
+- **PR-7.1.2** surat_masuk — adapter & workflow ← 7.1.1, 3.2.x
+  - Repository, handler, workflow disposisi YAML
+  - DoD: alur disposisi jalan end-to-end di integration test
+
+### Sub-phase 7.2 — Modul publik referensi
+
+- **PR-7.2.1** Modul layanan publik (citizen-facing) ← 7.1.x, 2.4.4
+  - Contoh: cek status surat oleh masyarakat via persona citizen
+  - Interaksi ke surat_masuk lewat service port, bukan akses langsung
+  - DoD: citizen bisa cek status; tidak ada akses langsung ke DB internal
+
+### Sub-phase 7.3 — Validasi menyeluruh
+
+- **PR-7.3.1** End-to-end test suite ← 7.1.x, 7.2.x
+  - Skenario lengkap: buat surat → disposisi → notifikasi → cek publik
+  - DoD: skenario E2E lulus di CI
+
+- **PR-7.3.2** Contract test antar modul ← 7.3.1
+  - Verifikasi schema event & port stabil
+  - DoD: perubahan breaking terdeteksi test
+
+### Sub-phase 7.4 — Onboarding
+
+- **PR-7.4.1** Dokumentasi developer & walkthrough ← semua
+  - Panduan "buat modul pertama", referensi ke surat_masuk
+  - DoD: developer baru bisa ikuti panduan sampai modul jalan
+
+---
+
+## Definition of Done (berlaku semua job)
+
+Sebuah PR dianggap selesai jika:
+
+1. `go build ./...` dan `go test ./... -race` lulus
+2. `pamongctl lint ./...` bersih (tanpa pengecualian baru)
+3. Coverage layer sesuai target di CLAUDE.md
+4. Unit test untuk happy path + minimal satu jalur gagal
+5. Integration test bila menyentuh adapter (DB/event/storage)
+6. Migration punya pasangan down (bila ada migration)
+7. Event/permission baru terdaftar di manifest & terdokumentasi
+8. ADR dibuat bila menyentuh interface publik core
+9. PR description mengikuti template di CLAUDE.md
+10. Tidak ada `TODO`/`FIXME` tanpa issue terkait
+
+---
+
+## Jalur kritis & paralelisasi
+
+**Jalur kritis (tidak bisa diparalelkan):**
+```
+0.1 → 0.2 → 1.1 → 1.2 → 2.1 → 2.3 → 2.4 → 5.1 → 7.1 → 7.3
+```
+
+**Yang bisa dikerjakan paralel setelah Phase 1 selesai:**
+- Phase 3 (event bus, workflow, scheduler, notif, storage) — tim A
+- Phase 2 (identity, tenancy, auth) — tim B
+- Phase 4 (rule engine) bisa mulai setelah 1.2 — tim C
+
+**Catatan dependency lintas-phase:**
+- 2.2.4 (identity sync) butuh 3.1.1 (event bus memory driver) — kerjakan 3.1.1 lebih awal
+- 3.2.6 (SLA eskalasi) butuh 3.6.1 (notifikasi)
+- 6.x (UI) butuh 5.1 (gateway) stabil
+- 7.x (modul referensi) adalah validasi akhir — butuh hampir semua phase
+
+**Minimum viable framework** (cukup untuk mulai bangun modul bisnis pertama):
+Phase 0 + 1 + 2 + 3.1 + 3.2 + 3.3 + 5.1 + 5.2. Strategy registry (3.3) masuk MVP
+karena modul keuangan butuh selectable policy (FIFO/average, aset/beban) sejak awal.
+Customization layer (3.4), scheduler lanjutan, UI, dan notifikasi lengkap bisa
+menyusul sambil modul bisnis pertama dikembangkan.

@@ -1,0 +1,13 @@
+bin/
+*.env
+config/local.yaml
+config/local.*.yaml
+
+# Coverage & profiling
+coverage.out
+coverage.html
+*.prof
+
+# Editor / OS
+.DS_Store
+*.swp

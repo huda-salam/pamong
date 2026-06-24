@@ -1,0 +1,48 @@
+# Definisi workflow disposisi surat (SEED/baseline; di-load ke DB saat bootstrap).
+# DB adalah yang aktif & bisa di-override per-tenant. File ini ter-version-control.
+#
+# Prinsip kunci:
+# - "action" merujuk NAMA USE CASE Go. Engine memanggilnya; tidak ada business logic di sini.
+# - "guards" hanya ekspresi boolean (read-only), di-compile saat load.
+# - State berbicara PERAN; pemetaan peran->orang di layer permission (termasuk PLT).
+id: surat_masuk.disposisi.standar
+entity: surat_masuk.SuratMasuk
+version: 1
+initial_state: diterima
+
+states:
+  diterima:
+    label: Diterima agendaris
+    actions: [disposisi]
+  didisposisi:
+    label: Menunggu tindak lanjut
+    sla_hours: 72
+    escalate_to_role: sekretaris_daerah
+    actions: [disposisi_lanjut, selesai]
+  selesai:
+    label: Selesai
+    is_terminal: true
+
+transitions:
+  - from: diterima
+    to: didisposisi
+    on: disposisi
+    guards:
+      - "actor.has_permission('surat_masuk:surat:disposisi')"
+    action: DisposisiSurat        # -> usecase.DisposisiSurat.Execute
+
+  - from: didisposisi
+    to: didisposisi               # disposisi berjenjang (loop terkontrol)
+    on: disposisi_lanjut
+    guards:
+      - "actor.has_permission('surat_masuk:surat:disposisi')"
+    action: DisposisiSurat
+
+  - from: didisposisi
+    to: selesai
+    on: selesai
+    guards:
+      - "actor.has_permission('surat_masuk:surat:disposisi')"
+    notify:
+      to_role: agendaris
+      template: surat_selesai

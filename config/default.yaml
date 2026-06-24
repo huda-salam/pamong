@@ -1,0 +1,53 @@
+# config/default.yaml — nilai default aman, di-commit ke repo.
+# Lapis paling rendah; ditimpa oleh config/{env}.yaml, config/local.yaml, lalu env GOV_*.
+# JANGAN taruh kredensial nyata di sini — gunakan config/local.yaml (tidak di-commit)
+# atau environment variable.
+
+env: development
+
+db:
+  host: localhost
+  port: 5432
+  name: pamong
+  user: pamong
+  password: ""
+  pool_max: 25
+  pool_idle: 5
+
+identity_db:
+  host: localhost
+  name: gov_identity
+
+eventbus:
+  driver: memory
+  url: ""
+  stream: pamong
+
+storage:
+  driver: local
+  endpoint: ""
+  bucket: pamong
+  access_key: ""
+  secret_key: ""
+
+cache:
+  driver: memory
+  url: ""
+  ttl_default: 300
+
+observability:
+  otel_endpoint: ""
+  metrics_enabled: false
+  tracing_enabled: false
+  log_level: info
+  log_format: text
+
+auth:
+  jwks_url: ""
+  issuer: ""
+  audience: pamong
+
+ratelimit:
+  enabled: false
+  rps: 100
+  burst: 20

@@ -1,0 +1,28 @@
+# EditorConfig — https://editorconfig.org
+# Konsistensi format lintas editor; gofmt tetap otoritas untuk file Go.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# Go: gofmt memakai tab. Jangan paksa ukuran agar tidak bentrok dengan gofmt.
+[*.go]
+indent_style = tab
+
+[Makefile]
+indent_style = tab
+
+[*.{yaml,yml,json}]
+indent_style = space
+indent_size = 2
+
+[*.md]
+# Jangan trim trailing space di Markdown (dua spasi = line break).
+trim_trailing_whitespace = false
+
+[*.sql]
+indent_style = space
+indent_size = 4
