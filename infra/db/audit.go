@@ -3,25 +3,44 @@ package db
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/huda-salam/pamong/core/audit"
 )
 
-// AuditRepo mengimplementasi audit.Store di atas Postgres. Audit log append-only di
-// gov.audit_logs (DB tenant), dirantai hash per tenant untuk deteksi tamper (PR-1.3.2).
+// AuditRepo mengimplementasi audit.Store di atas Postgres. Audit log append-only,
+// dirantai hash per partisi (kolom tenant_id) untuk deteksi tamper (PR-1.3.2).
+// Schema bisa berbeda: "gov" untuk audit tenant (chain per tenant), atau schema sentral
+// seperti "id" untuk audit identity (chain tunggal lewat partisi konstan) — lihat ADR-003.
 type AuditRepo struct {
-	pool *Pool
+	pool   *Pool
+	schema string
 }
 
-func NewAuditRepo(pool *Pool) *AuditRepo { return &AuditRepo{pool: pool} }
+// NewAuditRepo membuat audit repo tenant di schema gov (chain per tenant_id).
+func NewAuditRepo(pool *Pool) *AuditRepo { return &AuditRepo{pool: pool, schema: "gov"} }
+
+// NewSchemaAuditRepo membuat audit repo pada schema tertentu (mis. "id" untuk identity
+// sentral). Logika chain/verifikasi identik; hanya lokasi tabel yang berbeda.
+func NewSchemaAuditRepo(pool *Pool, schema string) *AuditRepo {
+	return &AuditRepo{pool: pool, schema: schema}
+}
 
 var _ audit.Store = (*AuditRepo)(nil)
 
-const auditDDL = `
-CREATE SCHEMA IF NOT EXISTS gov;
-CREATE TABLE IF NOT EXISTS gov.audit_logs (
+var schemaIdentRe = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
+
+func (r *AuditRepo) table() string { return r.schema + ".audit_logs" }
+
+// auditDDL menghasilkan DDL tabel audit untuk schema tertentu. schema berasal dari kode
+// (konstanta), bukan input pengguna; tetap divalidasi sebagai identifier untuk aman.
+func auditDDL(schema string) string {
+	return fmt.Sprintf(`
+CREATE SCHEMA IF NOT EXISTS %[1]s;
+CREATE TABLE IF NOT EXISTS %[1]s.audit_logs (
     seq           BIGSERIAL,
     id            UUID PRIMARY KEY,
     tenant_id     TEXT NOT NULL,
@@ -37,19 +56,23 @@ CREATE TABLE IF NOT EXISTS gov.audit_logs (
     prev_hash     TEXT NOT NULL,
     hash          TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_audit_entity ON gov.audit_logs (entity, entity_id);
-CREATE INDEX IF NOT EXISTS idx_audit_actor ON gov.audit_logs (actor_id);
-CREATE INDEX IF NOT EXISTS idx_audit_tenant_seq ON gov.audit_logs (tenant_id, seq);`
+CREATE INDEX IF NOT EXISTS idx_audit_entity ON %[1]s.audit_logs (entity, entity_id);
+CREATE INDEX IF NOT EXISTS idx_audit_actor ON %[1]s.audit_logs (actor_id);
+CREATE INDEX IF NOT EXISTS idx_audit_tenant_seq ON %[1]s.audit_logs (tenant_id, seq);`, schema)
+}
 
-// EnsureSchema membuat schema gov & tabel audit bila belum ada. Dipanggil saat boot.
+// EnsureSchema membuat schema & tabel audit bila belum ada. Dipanggil saat boot.
 func (r *AuditRepo) EnsureSchema(ctx context.Context) error {
-	_, err := r.pool.Exec(ctx, auditDDL)
+	if !schemaIdentRe.MatchString(r.schema) {
+		return fmt.Errorf("schema audit tidak valid: %q", r.schema)
+	}
+	_, err := r.pool.Exec(ctx, auditDDL(r.schema))
 	return err
 }
 
-// Append menyisipkan satu entry, merantainya ke entry terakhir milik tenant yang sama.
-// Penulisan diserialisasi per tenant lewat advisory lock transaksi agar chain tidak
-// putus oleh penulisan paralel (PRD F3). Append-only: hanya INSERT.
+// Append menyisipkan satu entry, merantainya ke entry terakhir dalam partisi yang sama
+// (tenant_id). Penulisan diserialisasi per partisi lewat advisory lock transaksi agar
+// chain tidak putus oleh penulisan paralel (PRD F3). Append-only: hanya INSERT.
 func (r *AuditRepo) Append(ctx context.Context, e audit.AuditEntry) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -57,16 +80,16 @@ func (r *AuditRepo) Append(ctx context.Context, e audit.AuditEntry) error {
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op bila sudah commit
 
-	// Serialisasi per tenant: pemegang lock berikutnya menunggu sampai commit.
+	// Serialisasi per partisi: pemegang lock berikutnya menunggu sampai commit.
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, e.TenantID); err != nil {
 		return err
 	}
 
-	// Hash entry terakhir tenant ini = prev_hash entry baru; seed bila belum ada.
+	// Hash entry terakhir partisi ini = prev_hash entry baru; seed bila belum ada.
 	prev := audit.SeedHash
 	var last string
 	err = tx.QueryRow(ctx,
-		`SELECT hash FROM gov.audit_logs WHERE tenant_id = $1 ORDER BY seq DESC LIMIT 1`,
+		`SELECT hash FROM `+r.table()+` WHERE tenant_id = $1 ORDER BY seq DESC LIMIT 1`,
 		e.TenantID).Scan(&last)
 	switch {
 	case err == nil:
@@ -88,7 +111,7 @@ func (r *AuditRepo) Append(ctx context.Context, e audit.AuditEntry) error {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO gov.audit_logs
+		INSERT INTO `+r.table()+`
 			(id, tenant_id, entity, entity_id, action, actor_id, actor_ip,
 			 diff, workflow_from, workflow_to, created_at, prev_hash, hash)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
@@ -106,7 +129,7 @@ func (r *AuditRepo) ByEntity(ctx context.Context, entity string, entityID uuid.U
 		`WHERE entity = $1 AND entity_id = $2 ORDER BY seq ASC`, entity, entityID)
 }
 
-// ByTenant mengembalikan seluruh entry tenant terurut chain (untuk verifikasi).
+// ByTenant mengembalikan seluruh entry satu partisi (tenant_id) terurut chain (verifikasi).
 func (r *AuditRepo) ByTenant(ctx context.Context, tenantID string) ([]audit.AuditEntry, error) {
 	return r.queryEntries(ctx, `WHERE tenant_id = $1 ORDER BY seq ASC`, tenantID)
 }
@@ -115,7 +138,7 @@ func (r *AuditRepo) queryEntries(ctx context.Context, where string, args ...any)
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, tenant_id, entity, entity_id, action, actor_id, actor_ip,
 		       diff, workflow_from, workflow_to, created_at, prev_hash, hash
-		FROM gov.audit_logs `+where, args...)
+		FROM `+r.table()+` `+where, args...)
 	if err != nil {
 		return nil, err
 	}
