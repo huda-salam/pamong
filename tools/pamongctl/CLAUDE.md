@@ -6,7 +6,7 @@ Perintah utama:
 - pamongctl eject hooks|usecase — progressive eject
 - pamongctl validate modules — validasi manifest, DAG, permission
 - pamongctl generate migration — DDL dari entity def
-- pamongctl migrate run|status|rollback — migrasi per-tenant
+- pamongctl migrate up|down|status — migrasi per-tenant
 - pamongctl lint — jalankan custom analyzer
 - pamongctl fiscal close — tutup buku + carry-forward
 - pamongctl tenant list|upgrade|verify — manajemen tenant tier

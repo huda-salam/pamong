@@ -118,7 +118,7 @@ Tujuan: developer bisa mendefinisikan entity dan framework mengelola persistensi
   - DoD: integration test CRUD ke Postgres via testcontainers
 
 - **PR-1.2.2** Table naming enforcement ← 1.1.2, 1.2.1
-  - Generate nama tabel `{module}__{entity_plural}` dari entity def
+  - Generate nama tabel `{schema}.{entity_plural}` (schema = nama modul) dari entity def
   - DoD: entity def menghasilkan nama tabel yang benar; nama manual yang salah ditolak
 
 - **PR-1.2.3** Migration runner ← 1.2.1
