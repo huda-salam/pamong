@@ -96,11 +96,12 @@ func (r *Registry) Validate() error {
 				errs = append(errs, fmt.Sprintf("modul %q: %s", name, err.Error()))
 			}
 			ref := name + "." + ent.Name
-			if prev, dup := tableOwner[ent.Tablename]; dup {
+			table := ent.TableName()
+			if prev, dup := tableOwner[table]; dup {
 				errs = append(errs, fmt.Sprintf("tabel %q diklaim dua entity: %s dan %s",
-					ent.Tablename, prev, ref))
+					table, prev, ref))
 			} else {
-				tableOwner[ent.Tablename] = ref
+				tableOwner[table] = ref
 			}
 		}
 	}

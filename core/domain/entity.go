@@ -66,6 +66,19 @@ type EntityDef struct {
 	Hooks          HookSet
 }
 
+// TableName mengembalikan nama tabel efektif entity: Tablename eksplisit bila diisi,
+// atau nama kanonik {schema}.{plural} yang diturunkan dari Schema + Name bila kosong.
+// Validate menjamin keduanya identik bila Tablename diisi, jadi keduanya konsisten.
+func (e EntityDef) TableName() string {
+	if e.Tablename != "" {
+		return e.Tablename
+	}
+	if e.Schema == "" || e.Name == "" {
+		return ""
+	}
+	return DeriveTableName(e.Schema, e.Name)
+}
+
 // Validate memeriksa invariant struktural EntityDef (PRD F2). Dipanggil registry saat boot.
 func (e EntityDef) Validate() error {
 	var errs []string
@@ -76,12 +89,13 @@ func (e EntityDef) Validate() error {
 	if e.Schema == "" {
 		errs = append(errs, "Schema kosong")
 	}
-	// Tablename harus {schema}.{plural}: tepat satu titik, prefix = schema.
-	if e.Schema != "" {
-		want := e.Schema + "."
-		if !strings.HasPrefix(e.Tablename, want) || strings.Count(e.Tablename, ".") != 1 ||
-			len(e.Tablename) <= len(want) {
-			errs = append(errs, fmt.Sprintf("Tablename %q harus berformat %s{plural}", e.Tablename, want))
+	// Tablename harus persis sama dengan hasil derivasi kanonik {schema}.{plural}.
+	// Tablename boleh dikosongkan (akan diisi otomatis oleh ResolveTableName); jika
+	// diisi manual, wajib cocok agar tidak ada nama tabel "kreatif" yang lolos.
+	if e.Schema != "" && e.Name != "" {
+		want := DeriveTableName(e.Schema, e.Name)
+		if e.Tablename != "" && e.Tablename != want {
+			errs = append(errs, fmt.Sprintf("Tablename %q tidak sesuai konvensi; harus %q", e.Tablename, want))
 		}
 	}
 	if e.Tier < Tier1 || e.Tier > Tier3 {
