@@ -47,15 +47,21 @@ func main() {
 	logger.Info(ctx, "memulai pamong", port.F("env", cfg.Env), port.F("tenant", cfg.TenantID))
 	_ = app // App container siap; driven adapter di-wire pada Phase 1–3.
 
-	modules := []domain.Module{
+	// Registry adalah sumber kebenaran modul. Daftarkan, lalu validasi (DAG, entity,
+	// tabel unik) — gagal = panic saat boot (philosophy #4), bukan saat melayani request.
+	registry := domain.NewRegistry()
+	registry.Register(
 		&surat_masuk.Module{},
 		// Daftarkan modul lain di sini saat dibuat.
+	)
+	if err := registry.Validate(); err != nil {
+		fmt.Fprintln(os.Stderr, "registry modul tidak valid:", err)
+		os.Exit(1)
 	}
 
-	// Tahap ini hanya membaca & mencatat manifest (registrasi). Bootstrap() penuh
-	// memerlukan adapter Router (Phase 5.1.1) dan Workflow (Phase 3.2) yang belum ada,
-	// jadi sengaja ditunda — bukan dipanggil dengan adapter nil.
-	for _, m := range modules {
+	// Tahap ini hanya registrasi + validasi manifest. Bootstrap() penuh memerlukan
+	// adapter Router (Phase 5.1.1) dan Workflow (Phase 3.2) yang belum ada, jadi ditunda.
+	for _, m := range registry.Modules() {
 		manifest := m.Manifest()
 		logger.Info(ctx, "modul terdaftar",
 			port.F("module", manifest.Name),

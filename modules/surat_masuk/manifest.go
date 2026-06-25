@@ -21,9 +21,12 @@ func (m *Module) Manifest() domain.Manifest {
 		Version: "1.0.0",
 		Domain:  "persuratan",
 
-		// Persuratan butuh data pegawai (penerima disposisi) dari kepegawaian,
-		// diakses lewat UserResolver port — BUKAN import package kepegawaian.
-		DependsOn: []string{"kepegawaian"},
+		// Tidak ada dependency MODUL keras. Data pegawai diakses lewat UserResolver
+		// (port framework), dan event kepegawaian dikonsumsi secara loose (lihat
+		// Events.Consumes) — keduanya tidak mensyaratkan modul kepegawaian ikut
+		// di-load. DependsOn hanya untuk dependency keras (divalidasi DAG saat boot):
+		// dep ke modul tak terdaftar = panic. Karena itu dibiarkan kosong.
+		DependsOn: nil,
 
 		// Persuratan ditutup per tahun: surat tahun lalu tidak dimutasi, tidak
 		// dibutuhkan saat proses harian, tidak berdampak operasional → cutoff.
