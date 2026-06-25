@@ -30,20 +30,4 @@ func validateCmd() *cobra.Command {
 	return c
 }
 
-// generateCmd: generate migrasi dari EntityDef. PR-1.2.4.
-func generateCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:   "generate",
-		Short: "Generate artefak dari definisi (mis. migrasi dari EntityDef)",
-	}
-	c.AddCommand(&cobra.Command{
-		Use:   "migration [modul]",
-		Short: "Generate file migrasi up/down dari EntityDef modul",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return notImplemented(cmd, "PR-1.2.4")
-		},
-	})
-	return c
-}
-
 // migrateCmd: jalankan migrasi per-tenant. PR-1.2.3.

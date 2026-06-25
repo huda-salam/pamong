@@ -10,7 +10,7 @@ import (
 	"github.com/huda-salam/pamong/core/config"
 	"github.com/huda-salam/pamong/core/domain"
 	"github.com/huda-salam/pamong/infra/observability"
-	surat_masuk "github.com/huda-salam/pamong/modules/surat_masuk"
+	"github.com/huda-salam/pamong/modules"
 	"github.com/huda-salam/pamong/port"
 )
 
@@ -50,10 +50,7 @@ func main() {
 	// Registry adalah sumber kebenaran modul. Daftarkan, lalu validasi (DAG, entity,
 	// tabel unik) — gagal = panic saat boot (philosophy #4), bukan saat melayani request.
 	registry := domain.NewRegistry()
-	registry.Register(
-		&surat_masuk.Module{},
-		// Daftarkan modul lain di sini saat dibuat.
-	)
+	registry.Register(modules.All()...)
 	if err := registry.Validate(); err != nil {
 		fmt.Fprintln(os.Stderr, "registry modul tidak valid:", err)
 		os.Exit(1)
