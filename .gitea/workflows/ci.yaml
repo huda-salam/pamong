@@ -49,9 +49,35 @@ jobs:
       - name: Unit test (race)
         run: go test -race -count=1 ./...
 
-      # TODO: PR-1.2.1 tambah job integration test (go test -tags=integration) dengan
-      #       service container Postgres — runner sudah punya akses docker.sock.
       # TODO: PR-0.3.3 tegakkan gate coverage per-layer (domain >=90%, usecase >=85%, adapter >=60%)
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: pamong_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Integration test (Postgres service container)
+        env:
+          PAMONG_TEST_DB_DSN: postgres://postgres:test@postgres:5432/pamong_test?sslmode=disable
+        run: go test -tags=integration -race -count=1 ./infra/...
 
   build:
     runs-on: ubuntu-latest
