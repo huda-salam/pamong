@@ -47,20 +47,3 @@ func generateCmd() *cobra.Command {
 }
 
 // migrateCmd: jalankan migrasi per-tenant. PR-1.2.3.
-func migrateCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:   "migrate",
-		Short: "Jalankan migrasi database (up/down/status), multi-tenant aware",
-	}
-	for _, sub := range []string{"up", "down", "status"} {
-		name := sub
-		c.AddCommand(&cobra.Command{
-			Use:   name,
-			Short: "Migrasi " + name,
-			RunE: func(cmd *cobra.Command, args []string) error {
-				return notImplemented(cmd, "PR-1.2.3")
-			},
-		})
-	}
-	return c
-}
