@@ -267,20 +267,28 @@ Semua env var framework diawali prefix `GOV_`. Format: `GOV_{SECTION}_{KEY}`.
 
 ```bash
 GOV_ENV=production
-GOV_TENANT_ID=pemkot-surabaya         # diisi oleh operator per deployment
+GOV_TENANT_ID=pemkot-surabaya         # hanya single-tenant / CLI; di server multi-tenant
+                                      # tenant berasal dari request, bukan config (ADR-004)
 
-# Database
-GOV_DB_HOST=localhost
+# Default/SHARED koneksi tenant DB (ADR-004). BUKAN "satu tenant DB": host & nama DB
+# per-tenant berasal dari id.tenant_registry saat runtime. Di sini hanya kredensial +
+# pool bersama + host default Tier 1. GOV_DB_NAME cuma fallback single-tenant/dev.
+GOV_DB_HOST=localhost                 # host default Tier 1 (shared); per-tenant dari registry
 GOV_DB_PORT=5432
-GOV_DB_NAME=pamong
+GOV_DB_NAME=pamong                    # fallback single-tenant/dev; per-tenant dari registry
 GOV_DB_USER=govapp
 GOV_DB_PASSWORD=...
 GOV_DB_POOL_MAX=25
 GOV_DB_POOL_IDLE=5
 
-# Identity DB (sentral — terpisah dari tenant DB)
+# Identity DB (sentral — koneksi PENUH; registry tenant hidup di sini, dibaca saat bootstrap)
 GOV_IDENTITY_DB_HOST=...
+GOV_IDENTITY_DB_PORT=5432
 GOV_IDENTITY_DB_NAME=gov_identity
+GOV_IDENTITY_DB_USER=...
+GOV_IDENTITY_DB_PASSWORD=...
+GOV_IDENTITY_DB_POOL_MAX=10
+GOV_IDENTITY_DB_POOL_IDLE=2
 
 # Event bus
 GOV_EVENTBUS_DRIVER=nats             # nats | redis | memory (testing only)

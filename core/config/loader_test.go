@@ -116,13 +116,14 @@ func TestLoad_ValidasiGagal(t *testing.T) {
 	}
 }
 
-// TestLoad_ProductionWajibKredensial memastikan production menolak config tanpa db.host/tenant.
+// TestLoad_ProductionWajibKredensial memastikan production menolak config tanpa
+// kredensial koneksi sentral (identity DB + default tenant DB) — ADR-004.
 func TestLoad_ProductionWajibKredensial(t *testing.T) {
 	dir := t.TempDir()
 	writeYAML(t, dir, "production.yaml", "env: production\n")
 
 	_, err := config.Load(config.WithDir(dir), config.WithEnv("production"))
 	if err == nil {
-		t.Fatal("production tanpa db.host & tenant_id harus ditolak")
+		t.Fatal("production tanpa kredensial identity_db & db harus ditolak")
 	}
 }

@@ -15,7 +15,10 @@ import (
 // Tag `yaml` dipakai untuk file berlapis; tag `env` dipakai untuk override env var
 // (format GOV_{SECTION}_{KEY}). Field tanpa tag env tidak bisa di-override dari env.
 type AppConfig struct {
-	Env      string `yaml:"env" env:"GOV_ENV"`
+	Env string `yaml:"env" env:"GOV_ENV"`
+	// TenantID hanya relevan untuk deployment single-tenant atau konteks CLI
+	// (mis. `pamongctl migrate --tenant`). Di server multi-tenant, tenant berasal dari
+	// request (tenant resolver), bukan dari config (ADR-004).
 	TenantID string `yaml:"tenant_id" env:"GOV_TENANT_ID"`
 
 	DB         DBConfig            `yaml:"db"`
@@ -28,21 +31,33 @@ type AppConfig struct {
 	RateLimit  RateLimitConfig     `yaml:"ratelimit"`
 }
 
-// DBConfig — koneksi DB tenant aktif.
+// DBConfig — DEFAULT/SHARED koneksi tenant DB (ADR-004). BUKAN "satu tenant DB":
+// dengan DB-per-tenant, host & nama DB tiap tenant berasal dari id.tenant_registry
+// (runtime), bukan dari sini. Yang di sini adalah parameter BERSAMA untuk menjangkau
+// tenant DB: kredensial, port, pool, dan host default untuk Tier 1 (shared server).
+// Name hanya fallback single-tenant/dev; TenantConnManager meng-override host+name
+// per-tenant dari registry.
 type DBConfig struct {
-	Host     string `yaml:"host" env:"GOV_DB_HOST"`
+	Host     string `yaml:"host" env:"GOV_DB_HOST"` // host default Tier 1 (shared); per-tenant dari registry
 	Port     int    `yaml:"port" env:"GOV_DB_PORT"`
-	Name     string `yaml:"name" env:"GOV_DB_NAME"`
+	Name     string `yaml:"name" env:"GOV_DB_NAME"` // fallback single-tenant/dev; per-tenant dari registry
 	User     string `yaml:"user" env:"GOV_DB_USER"`
 	Password string `yaml:"password" env:"GOV_DB_PASSWORD"`
 	PoolMax  int    `yaml:"pool_max" env:"GOV_DB_POOL_MAX"`
 	PoolIdle int    `yaml:"pool_idle" env:"GOV_DB_POOL_IDLE"`
 }
 
-// IdentityDBConfig — koneksi identity DB sentral (terpisah dari tenant DB).
+// IdentityDBConfig — koneksi PENUH ke identity DB sentral (terpisah dari tenant DB).
+// Inilah satu-satunya koneksi yang wajib dari config: registry tenant hidup di sini,
+// jadi bootstrap selalu connect ke sini dulu (ADR-004).
 type IdentityDBConfig struct {
-	Host string `yaml:"host" env:"GOV_IDENTITY_DB_HOST"`
-	Name string `yaml:"name" env:"GOV_IDENTITY_DB_NAME"`
+	Host     string `yaml:"host" env:"GOV_IDENTITY_DB_HOST"`
+	Port     int    `yaml:"port" env:"GOV_IDENTITY_DB_PORT"`
+	Name     string `yaml:"name" env:"GOV_IDENTITY_DB_NAME"`
+	User     string `yaml:"user" env:"GOV_IDENTITY_DB_USER"`
+	Password string `yaml:"password" env:"GOV_IDENTITY_DB_PASSWORD"`
+	PoolMax  int    `yaml:"pool_max" env:"GOV_IDENTITY_DB_POOL_MAX"`
+	PoolIdle int    `yaml:"pool_idle" env:"GOV_IDENTITY_DB_POOL_IDLE"`
 }
 
 // EventBusConfig — driver event bus.
@@ -113,13 +128,22 @@ func (c *AppConfig) Validate() error {
 		errs = append(errs, fmt.Sprintf("observability.log_format %q tidak valid (harus: json|text)", c.Observ.LogFormat))
 	}
 
-	// Di production, kredensial DB dan tenant wajib terisi — tidak boleh jalan dengan default kosong.
+	// Di production, koneksi sentral wajib terisi — tidak boleh jalan dengan default kosong.
+	// Identity DB adalah koneksi bootstrap (registry hidup di sini); DB default tenant
+	// menyediakan kredensial bersama untuk menjangkau tenant DB (ADR-004). tenant_id TIDAK
+	// wajib: server multi-tenant menentukan tenant dari request, bukan config.
 	if c.Env == "production" {
-		if c.DB.Host == "" {
-			errs = append(errs, "db.host wajib di production")
+		if c.IdentityDB.Host == "" {
+			errs = append(errs, "identity_db.host wajib di production (koneksi sentral)")
 		}
-		if c.TenantID == "" {
-			errs = append(errs, "tenant_id wajib di production")
+		if c.IdentityDB.User == "" {
+			errs = append(errs, "identity_db.user wajib di production")
+		}
+		if c.DB.Host == "" {
+			errs = append(errs, "db.host wajib di production (host default/shared tenant DB)")
+		}
+		if c.DB.User == "" {
+			errs = append(errs, "db.user wajib di production (kredensial bersama tenant DB)")
 		}
 		if c.Observ.LogFormat == "text" {
 			errs = append(errs, "observability.log_format=text dilarang di production (gunakan json)")

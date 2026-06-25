@@ -5,6 +5,9 @@
 
 env: development
 
+# db: DEFAULT/SHARED koneksi tenant DB (ADR-004). Host & nama DB per-tenant berasal
+# dari id.tenant_registry saat runtime; di sini hanya kredensial+pool bersama + host
+# default Tier 1. `name` cuma fallback single-tenant/dev.
 db:
   host: localhost
   port: 5432
@@ -14,9 +17,15 @@ db:
   pool_max: 25
   pool_idle: 5
 
+# identity_db: koneksi PENUH ke identity DB sentral (registry tenant hidup di sini).
 identity_db:
   host: localhost
+  port: 5432
   name: gov_identity
+  user: pamong
+  password: ""
+  pool_max: 10
+  pool_idle: 2
 
 eventbus:
   driver: memory
