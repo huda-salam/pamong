@@ -80,3 +80,47 @@ func TestAuditRepo_AppendAndQuery(t *testing.T) {
 		t.Fatalf("diff tidak ter-roundtrip: %+v", got[1].Diff)
 	}
 }
+
+func TestAuditRepo_HashChain_VerifyAndTamper(t *testing.T) {
+	repo, pool, ctx := newAuditRepo(t)
+
+	tenant := "pemkot-malang"
+	actor := uuid.New()
+	for i := 0; i < 3; i++ {
+		err := repo.Append(ctx, audit.AuditEntry{
+			ID: uuid.New(), TenantID: tenant, Entity: "keuangan.SPM",
+			EntityID: uuid.New(), Action: audit.ActionCreate, ActorID: actor,
+			Diff:      []audit.FieldDiff{{Field: "nilai", Before: nil, After: i}},
+			Timestamp: time.Now(),
+		})
+		if err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+
+	// Chain utuh setelah penulisan normal.
+	entries, err := repo.ByTenant(ctx, tenant)
+	if err != nil {
+		t.Fatalf("byTenant: %v", err)
+	}
+	if res := audit.VerifyChain(entries); !res.OK {
+		t.Fatalf("chain seharusnya utuh, dapat %+v", res)
+	}
+
+	// Manipulasi langsung di DB (mengubah konten tanpa memperbarui hash).
+	if _, err := pool.Exec(ctx,
+		`UPDATE gov.audit_logs SET diff = '[{"field":"nilai","before":null,"after":999}]'::jsonb
+		 WHERE tenant_id = $1 AND seq = (SELECT min(seq)+1 FROM gov.audit_logs WHERE tenant_id=$1)`,
+		tenant); err != nil {
+		t.Fatalf("tamper: %v", err)
+	}
+
+	entries, _ = repo.ByTenant(ctx, tenant)
+	res := audit.VerifyChain(entries)
+	if res.OK {
+		t.Fatal("manipulasi langsung di DB harus terdeteksi VerifyChain")
+	}
+	if res.BrokenAt != 1 {
+		t.Fatalf("chain harus putus di entry #1, dapat #%d (%s)", res.BrokenAt, res.Reason)
+	}
+}

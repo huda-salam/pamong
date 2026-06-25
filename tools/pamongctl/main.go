@@ -35,6 +35,7 @@ func rootCmd() *cobra.Command {
 		generateCmd(),
 		lintCmd(),
 		migrateCmd(),
+		auditCmd(),
 	)
 	return root
 }
