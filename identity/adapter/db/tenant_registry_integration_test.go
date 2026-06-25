@@ -116,3 +116,32 @@ func TestTenantRegistry_Mutasi_TerAudit(t *testing.T) {
 		t.Fatalf("chain harus utuh: %+v", res)
 	}
 }
+
+func TestTenantResolverAdapter_Resolve(t *testing.T) {
+	pool, ctx := setupIdentityDB(t)
+	applyTenantMigration(t, pool)
+
+	registry := db.NewTenantRepo(pool)
+	actx := testkit.Ctx(t, testkit.WithPersonID(uuid.New()), testkit.WithPermission(domain.PermTenantDaftar))
+	if _, err := usecase.NewRegisterTenant(registry).Execute(actx, usecase.RegisterTenantInput{
+		TenantID: "pemkot-surabaya", Nama: "Pemkot Surabaya", Tier: domain.TierDedicatedDB,
+		DBHost: "db2", DBName: "gov_pemkot_surabaya",
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	resolver := db.NewTenantResolver(registry)
+
+	info, err := resolver.Resolve(ctx, "pemkot-surabaya")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if info.TenantID != "pemkot-surabaya" || info.Tier != domain.TierDedicatedDB ||
+		info.DBHost != "db2" || !info.IsActive {
+		t.Fatalf("info routing salah: %+v", info)
+	}
+
+	if _, err := resolver.Resolve(ctx, "tidak-ada"); err == nil {
+		t.Fatal("resolve tenant tak dikenal harus error")
+	}
+}

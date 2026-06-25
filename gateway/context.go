@@ -51,7 +51,11 @@ func (c *Context) Persona() string          { return c.persona }
 func (c *Context) EmploymentStatus() string { return c.employmentStatus }
 func (c *Context) TenantID() string         { return c.tenantID }
 func (c *Context) IsCitizen() bool          { return c.persona == "citizen" }
-func (c *Context) IsCrossTenant() bool      { return c.isCrossTenant }
+
+// SetTenantID dipakai middleware tenant resolver setelah memvalidasi tenant terhadap
+// registry. Tenant tidak pernah diset dari input mentah tanpa resolusi.
+func (c *Context) SetTenantID(id string) { c.tenantID = id }
+func (c *Context) IsCrossTenant() bool   { return c.isCrossTenant }
 
 func (c *Context) HasRole(role string) bool {
 	return c.roles[role] || c.centralRoles[role]
