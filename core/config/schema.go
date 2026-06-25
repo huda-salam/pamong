@@ -23,6 +23,7 @@ type AppConfig struct {
 
 	DB         DBConfig            `yaml:"db"`
 	IdentityDB IdentityDBConfig    `yaml:"identity_db"`
+	CentralDB  CentralDBConfig     `yaml:"central_db"`
 	EventBus   EventBusConfig      `yaml:"eventbus"`
 	Storage    StorageConfig       `yaml:"storage"`
 	Cache      CacheConfig         `yaml:"cache"`
@@ -58,6 +59,39 @@ type IdentityDBConfig struct {
 	Password string `yaml:"password" env:"GOV_IDENTITY_DB_PASSWORD"`
 	PoolMax  int    `yaml:"pool_max" env:"GOV_IDENTITY_DB_POOL_MAX"`
 	PoolIdle int    `yaml:"pool_idle" env:"GOV_IDENTITY_DB_POOL_IDLE"`
+}
+
+// CentralDBConfig — koneksi ke DB sentral untuk data master/referensi shared semua
+// tenant (entity ResidencyCentral, ADR-005). Bila Host kosong, central pool jatuh ke
+// identity DB (gov_identity = "satu-satunya yang shared"); abstraksi ini memungkinkan
+// pemisahan ke gov_central khusus nanti tanpa mengubah kode domain. Lihat
+// AppConfig.CentralDBResolved().
+type CentralDBConfig struct {
+	Host     string `yaml:"host" env:"GOV_CENTRAL_DB_HOST"`
+	Port     int    `yaml:"port" env:"GOV_CENTRAL_DB_PORT"`
+	Name     string `yaml:"name" env:"GOV_CENTRAL_DB_NAME"`
+	User     string `yaml:"user" env:"GOV_CENTRAL_DB_USER"`
+	Password string `yaml:"password" env:"GOV_CENTRAL_DB_PASSWORD"`
+	PoolMax  int    `yaml:"pool_max" env:"GOV_CENTRAL_DB_POOL_MAX"`
+	PoolIdle int    `yaml:"pool_idle" env:"GOV_CENTRAL_DB_POOL_IDLE"`
+}
+
+// CentralDBResolved mengembalikan koneksi central yang efektif: CentralDB bila
+// dikonfigurasi (Host terisi), atau koneksi identity DB sebagai fallback (ADR-005).
+// Dengan begitu ops tidak wajib mengisi dua blok identik sampai central dipisah.
+func (c *AppConfig) CentralDBResolved() CentralDBConfig {
+	if c.CentralDB.Host != "" {
+		return c.CentralDB
+	}
+	return CentralDBConfig{
+		Host:     c.IdentityDB.Host,
+		Port:     c.IdentityDB.Port,
+		Name:     c.IdentityDB.Name,
+		User:     c.IdentityDB.User,
+		Password: c.IdentityDB.Password,
+		PoolMax:  c.IdentityDB.PoolMax,
+		PoolIdle: c.IdentityDB.PoolIdle,
+	}
 }
 
 // EventBusConfig — driver event bus.

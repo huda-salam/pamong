@@ -27,6 +27,18 @@ identity_db:
   pool_max: 10
   pool_idle: 2
 
+# central_db: DB sentral data master/referensi shared (entity ResidencyCentral, ADR-005).
+# Biarkan host kosong = jatuh ke identity DB (default; tanpa infra baru). Isi hanya bila
+# data referensi dipisah ke instance gov_central tersendiri.
+central_db:
+  host: ""
+  port: 5432
+  name: gov_central
+  user: ""
+  password: ""
+  pool_max: 10
+  pool_idle: 2
+
 eventbus:
   driver: memory
   url: ""

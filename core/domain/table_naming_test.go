@@ -46,6 +46,38 @@ func TestEntityDef_Validate_RejectsWrongTableName(t *testing.T) {
 	}
 }
 
+func TestEntityDef_Residency_DefaultTenant(t *testing.T) {
+	e := domain.EntityDef{Name: "X", Schema: "m"} // Residency tidak diisi
+	if e.IsCentral() {
+		t.Fatal("default residency harus tenant, bukan central")
+	}
+}
+
+func TestEntityDef_Residency_Central(t *testing.T) {
+	e := domain.EntityDef{
+		Name: "Wilayah", Schema: "referensi", Tier: domain.Tier1,
+		Residency: domain.ResidencyCentral,
+		Audit:     domain.NotAudited{Reason: "data referensi statis"}, Lockable: domain.NotLockable{},
+	}
+	if !e.IsCentral() {
+		t.Fatal("ResidencyCentral harus IsCentral() true")
+	}
+	if err := e.Validate(); err != nil {
+		t.Fatalf("entity central valid harus lolos: %v", err)
+	}
+}
+
+func TestEntityDef_Validate_RejectsUnknownResidency(t *testing.T) {
+	e := domain.EntityDef{
+		Name: "X", Schema: "m", Tier: domain.Tier1,
+		Residency: domain.DataResidency(99),
+		Audit:     domain.NotAudited{Reason: "t"}, Lockable: domain.NotLockable{},
+	}
+	if err := e.Validate(); err == nil {
+		t.Fatal("residency tak dikenal harus ditolak")
+	}
+}
+
 func TestEntityDef_Validate_AcceptsCanonicalTableName(t *testing.T) {
 	e := domain.EntityDef{
 		Name:      "SPM",

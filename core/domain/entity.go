@@ -48,6 +48,17 @@ type NotLockable struct{}
 
 func (NotLockable) isLockPolicy() {}
 
+// DataResidency menentukan di DATABASE mana data entity tinggal (ADR-005). Ortogonal
+// terhadap penamaan tabel — hanya memilih pool koneksi, bukan schema/nama tabel.
+type DataResidency int
+
+const (
+	// ResidencyTenant (default): data per-tenant di tenant DB (schema-per-module).
+	ResidencyTenant DataResidency = iota
+	// ResidencyCentral: data master/referensi sentral, shared semua tenant (DB sentral).
+	ResidencyCentral
+)
+
 // EntityDef adalah definisi lengkap sebuah entity. Diisi di manifest modul; dibaca
 // registry untuk generate tabel, endpoint, permission, audit, dan fiscal check.
 type EntityDef struct {
@@ -55,6 +66,10 @@ type EntityDef struct {
 	Schema    string // schema Postgres = nama modul
 	Tablename string // {schema}.{entity_plural}
 	Tier      EntityTier
+
+	// Residency menentukan tenant DB (default) vs DB sentral (master/referensi). Zero
+	// value = ResidencyTenant (kasus mayoritas) — lihat ADR-005.
+	Residency DataResidency
 
 	// Audit & Lockable WAJIB dideklarasikan eksplisit (tidak ada zero value valid).
 	Audit    AuditPolicy
@@ -65,6 +80,10 @@ type EntityDef struct {
 	Fields         []FieldDef
 	Hooks          HookSet
 }
+
+// IsCentral mengembalikan true bila data entity tinggal di DB sentral (shared), bukan
+// per-tenant. Dipakai framework untuk merutekan koneksi & migrasi (ADR-005).
+func (e EntityDef) IsCentral() bool { return e.Residency == ResidencyCentral }
 
 // IsAudited mengembalikan true bila entity dideklarasikan Audited (bukan NotAudited).
 // Dipakai framework untuk auto-attach audit tanpa kode modul (PR-1.3.3).
@@ -107,6 +126,9 @@ func (e EntityDef) Validate() error {
 	}
 	if e.Tier < Tier1 || e.Tier > Tier3 {
 		errs = append(errs, fmt.Sprintf("Tier %d tidak valid (1..3)", e.Tier))
+	}
+	if e.Residency != ResidencyTenant && e.Residency != ResidencyCentral {
+		errs = append(errs, fmt.Sprintf("Residency %d tidak valid (tenant|central)", e.Residency))
 	}
 
 	// Audit & Lockable wajib eksplisit.
