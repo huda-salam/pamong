@@ -36,6 +36,13 @@ main          ← production-ready; hanya menerima merge dari staging via releas
 - **`staging`** di-protect: tidak ada push langsung; butuh ≥ 1 approval.
 - Semua branch kerja dibuat dari `staging`, bukan dari `main`.
 
+> **Catatan solo dev.** `staging` (integrasi sebelum rilis) berguna saat ada
+> beberapa fitur paralel yang perlu diuji bersama, atau environment integrasi yang
+> auto-deploy. Untuk solo dev tanpa kebutuhan itu, alur boleh disederhanakan menjadi
+> `main` + `feat/...` langsung — `staging` opsional. Yang tetap dianjurkan: jangan
+> push rusak ke `main` (jaga via CI/branch protection). Lihat setup proteksi di
+> `~/gitea/README.md` §5b.
+
 ### Penamaan branch
 
 Format: `{type}/{deskripsi-singkat-kebab-case}`
@@ -310,7 +317,7 @@ tool-nya belum ada — CI harus selalu hijau untuk kode yang benar.
 | gofmt, go vet, go mod tidy | PR-0.1.2 | ✅ aktif |
 | `go test -race` | PR-0.1.2 | ✅ aktif |
 | `go build` | PR-0.1.2 | ✅ aktif |
-| `pamongctl lint` | PR-0.3.2 | TODO di workflow |
+| `pamongctl lint` | PR-0.3.2 | ✅ aktif |
 | Coverage per-layer | PR-0.3.3 | TODO di workflow |
 | Integration test + Postgres | PR-1.2.1 | TODO di workflow |
 | `pamongctl validate modules` | PR-1.1.1 | TODO di workflow |
@@ -341,8 +348,12 @@ Konfigurasi di Gitea (**Settings → Branches → Branch protection**), bukan di
 Runner adalah container `gitea/act_runner` pada `docker-compose` yang sama dengan
 Gitea, satu network, dengan `/var/run/docker.sock` ter-mount (agar bisa menjalankan
 service container & testcontainers untuk integration test). Registrasi sekali via
-token dari **Site Administration → Runners**. Detail langkah ada di catatan
-operasional infrastruktur, di luar repo aplikasi.
+token dari **Site Administration → Runners**.
+
+**Runbook lengkap** (setup, fix network wajib, push, baca log gagal, troubleshooting)
+ada di luar repo aplikasi: `~/gitea/README.md` pada mesin CI. Catatan kritis: container
+job harus join network Gitea (`container.network: gitea_gitea` di config act_runner),
+jika tidak `actions/checkout` gagal dengan "Could not resolve host: server".
 
 ---
 
