@@ -66,6 +66,13 @@ type EntityDef struct {
 	Hooks          HookSet
 }
 
+// IsAudited mengembalikan true bila entity dideklarasikan Audited (bukan NotAudited).
+// Dipakai framework untuk auto-attach audit tanpa kode modul (PR-1.3.3).
+func (e EntityDef) IsAudited() bool {
+	_, ok := e.Audit.(Audited)
+	return ok
+}
+
 // TableName mengembalikan nama tabel efektif entity: Tablename eksplisit bila diisi,
 // atau nama kanonik {schema}.{plural} yang diturunkan dari Schema + Name bila kosong.
 // Validate menjamin keduanya identik bila Tablename diisi, jadi keduanya konsisten.
