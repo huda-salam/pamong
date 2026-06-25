@@ -94,6 +94,60 @@ func employmentFields(e *domain.Employment) map[string]any {
 	}
 }
 
+// --- Tenant registry ---
+
+type auditedTenantRepo struct {
+	inner  domain.TenantRegistry
+	engine *audit.Engine
+}
+
+// NewAuditedTenantRepo membungkus TenantRegistry dengan pencatatan audit. Entity audit
+// memakai EntityID nil (tenant ber-natural-key string); identitas tenant ada di diff.
+func NewAuditedTenantRepo(inner domain.TenantRegistry, engine *audit.Engine) domain.TenantRegistry {
+	return &auditedTenantRepo{inner: inner, engine: engine}
+}
+
+func (r *auditedTenantRepo) Save(ctx context.Context, t *domain.Tenant) error {
+	if err := r.inner.Save(ctx, t); err != nil {
+		return err
+	}
+	return recordAudit(ctx, r.engine, "identity.Tenant", tenantAuditID(t.TenantID),
+		audit.ActionCreate, nil, tenantFields(t))
+}
+
+func (r *auditedTenantRepo) SetActive(ctx context.Context, tenantID string, active bool) error {
+	before, err := r.inner.FindByID(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if err := r.inner.SetActive(ctx, tenantID, active); err != nil {
+		return err
+	}
+	return recordAudit(ctx, r.engine, "identity.Tenant", tenantAuditID(tenantID), audit.ActionUpdate,
+		map[string]any{"is_active": before.IsActive}, map[string]any{"is_active": active})
+}
+
+func (r *auditedTenantRepo) FindByID(ctx context.Context, tenantID string) (*domain.Tenant, error) {
+	return r.inner.FindByID(ctx, tenantID)
+}
+
+func (r *auditedTenantRepo) List(ctx context.Context) ([]*domain.Tenant, error) {
+	return r.inner.List(ctx)
+}
+
+func tenantFields(t *domain.Tenant) map[string]any {
+	return map[string]any{
+		"tenant_id": t.TenantID, "nama": t.Nama, "tier": t.Tier,
+		"db_host": t.DBHost, "db_name": t.DBName, "is_active": t.IsActive,
+	}
+}
+
+// tenantAuditID menurunkan UUID deterministik dari tenant_id (natural key string) agar
+// muat di kolom entity_id audit dan riwayat per-tenant bisa di-query konsisten.
+func tenantAuditID(tenantID string) uuid.UUID {
+	return uuid.NewSHA1(uuid.NameSpaceURL, []byte("pamong:tenant:"+tenantID))
+}
+
 // recordAudit menyusun konteks audit. Mutasi identity wajib punya AuthContext (actor) —
 // use case selalu meneruskannya.
 func recordAudit(ctx context.Context, engine *audit.Engine, entity string, id uuid.UUID, action audit.Action, before, after map[string]any) error {

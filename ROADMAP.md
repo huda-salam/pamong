@@ -165,7 +165,8 @@ Tujuan: model person/employment/persona, multi-tenant, role berlapis, tiga alur 
 ### Sub-phase 2.2 — Tenancy
 
 - **PR-2.2.1** Tenant registry ← 1.2.3
-  - Tabel `gov.tenants`, CRUD tenant, status aktif
+  - Tabel `id.tenant_registry` (identity DB sentral — resolver butuh lokasi DB tenant
+    sebelum connect), CRUD tenant, status aktif
   - DoD: buat tenant, list tenant, nonaktifkan tenant
 
 - **PR-2.2.2** Tenant resolver middleware ← 2.2.1, 0.2.x

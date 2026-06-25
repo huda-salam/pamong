@@ -5,4 +5,8 @@ package domain
 const (
 	PermPersonBuat       = "identity:person:buat"
 	PermEmploymentLampir = "identity:employment:lampir"
+
+	PermTenantDaftar   = "identity:tenant:daftar"
+	PermTenantBaca     = "identity:tenant:baca"
+	PermTenantNonaktif = "identity:tenant:nonaktif"
 )

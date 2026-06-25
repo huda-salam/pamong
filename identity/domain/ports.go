@@ -30,3 +30,11 @@ type CredentialRepository interface {
 	FindByTypeValue(ctx context.Context, t CredType, value string) (*Credential, error)
 	ListByPerson(ctx context.Context, personID uuid.UUID) ([]*Credential, error)
 }
+
+// TenantRegistry menyimpan & me-resolve registry tenant (id.tenant_registry, sentral).
+type TenantRegistry interface {
+	Save(ctx context.Context, t *Tenant) error
+	FindByID(ctx context.Context, tenantID string) (*Tenant, error)
+	List(ctx context.Context) ([]*Tenant, error)
+	SetActive(ctx context.Context, tenantID string, active bool) error
+}
