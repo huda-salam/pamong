@@ -1,9 +1,10 @@
-// Package permission menyediakan engine RBAC: definisi permission, role, dan evaluasi
+// Package permission menyediakan engine RBAC + ABAC: definisi permission, role, dan evaluasi
 // keputusan akses. PR-2.3.1 mengirim evaluasi dasar in-memory; PR-2.3.3 menegakkan resolusi
 // konflik penuh (global-precedence + strict-intersection) saat lapis central (id.central_roles,
 // 2.3.2) dan tenant (gov.tenant_roles, di paket tenantrole) hidup berdampingan lewat
-// CompositeCatalog. Export/import manifest (2.3.4), ABAC, hierarki OPD, dan delegasi/PLT (2.3.5)
-// menyusul tanpa mengubah kontrak Engine (lihat PRD & ROADMAP).
+// CompositeCatalog. PR-2.3.5 menambah evaluasi DATA-LEVEL (ScopedEngine: scope unit kerja +
+// hierarki OPD + delegasi/PLT) di ATAS Engine RBAC tanpa mengubah kontrak Engine — Engine.Allows
+// tetap scope-agnostik (titik ekstensi #1). Export/import manifest = 2.3.4 (lihat PRD & ROADMAP).
 package permission
 
 // Permission adalah string izin berformat {modul}:{entity}:{aksi},

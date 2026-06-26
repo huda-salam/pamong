@@ -55,11 +55,27 @@ Sudah ada (PR-2.3.2 — central roles persist di identity DB):
   Engine TETAP tenant-agnostic: scope di-resolve di luar Engine. Resolusi konflik penuh
   (global-precedence + strict-intersection) tetap menyusul 2.3.3 (saat lapis tenant juga di-DB-kan).
 
+Sudah ada (PR-2.3.5 — ABAC data-level + hierarki OPD + delegasi/PLT):
+- scope.go — ResourceScope (unit kerja; tahun/periode = DEFERRED Phase-3.x), Grant (perm +
+  jangkauan: TenantWide / unit / subtree), Authority (RoleNames untuk Tahap 1 RBAC +
+  RoleGrants + DelegatedGrants untuk Tahap 2 scope), port Hierarchy (IsWithin subtree OPD).
+- scoped_engine.go — ScopedEngine.AllowsInUnit = (Engine.Allows RBAC, UTUH, AND jangkauan
+  RoleGrants menutupi unit) OR (jangkauan DelegatedGrants menutupi unit). Delegasi = jalur
+  MANDIRI (tak tunduk strict-intersection: delegatee terima wewenang di luar role-nya).
+  Bind(Authority) → port.ScopedEvaluator (actor-bound, disuntik gateway.Context di 2.4).
+- Adapter tenant DB di `tenantrole/adapter/db`: TenantScopedGrantResolver (assignment+perm →
+  Grant, hormati AppliesTo), OrgUnitHierarchy (gov.org_units adjacency + recursive CTE).
+- Delegasi/PLT hidup di paket top-level `delegation/` (domain+usecase+adapter, mirror tenantrole):
+  orang→orang subset permission, gov.delegations, expiry LAZY saat evaluasi (DoD), NonDelegable
+  dicek saat buat. DelegationScopedGrantResolver → Authority.DelegatedGrants.
+- Seam: port.ScopedEvaluator + AuthContext.RequirePermissionInUnit (default permisif sampai
+  Authority di-wire live di 2.4).
+
 Menyusul (belum ada — rencana per ROADMAP):
-- registrasi permission dari manifest + export/import antar modul (2.3.4)
-- abac (atribut unit/anggaran/periode), hierarchy (tree OPD + pewarisan),
-  delegation (PLT/pelaksana, validasi waktu) — semuanya 2.3.5
-- enforcer/helper middleware bila diperlukan saat wiring auth nyata
+- registrasi permission dari manifest + export/import antar modul — SUDAH di 2.3.4 (lihat
+  core/domain/registry.go + linter permission-must-be-registered)
+- wiring Authority live + emitter central-role→Grant (TenantWide) di middleware auth (2.4)
+- ABAC atribut tahun anggaran/periode (Phase-3.x)
 
 Catatan resolusi: prioritas "global menang" & strict-intersection (F7 PRD) AKTIF sejak
 PR-2.3.3 (lihat engine.go). Sebelumnya (2.3.1/2.3.2) evaluasi murni union karena lapis

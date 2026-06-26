@@ -9,8 +9,9 @@ import (
 )
 
 // AssignTenantRole menugaskan role tenant ke seorang user (gov.user_profiles.id). UnitKerjaID
-// opsional menyempitkan scope ke satu unit kerja (penegakan ditunda 2.3.5). Mutasi ter-audit
-// lewat dekorator repo (ADR-003).
+// opsional menyempitkan scope ke satu unit kerja; IncludeSubtree memperluas jangkauan ke
+// keturunan unit pada hierarki OPD (ditegakkan data-level di core/permission.ScopedEngine,
+// PR-2.3.5). Mutasi ter-audit lewat dekorator repo (ADR-003).
 //
 // DEFERRED(Phase-2.4): publish event penugasan role tenant untuk refresh/revoke token.
 type AssignTenantRole struct {
@@ -21,13 +22,15 @@ func NewAssignTenantRole(assignments domain.TenantRoleAssignmentRepository) *Ass
 	return &AssignTenantRole{assignments: assignments}
 }
 
-// AssignTenantRoleInput DTO masuk. UnitKerjaID nil = berlaku seluruh tenant.
+// AssignTenantRoleInput DTO masuk. UnitKerjaID nil = berlaku seluruh tenant; IncludeSubtree
+// (saat UnitKerjaID diisi) memperluas jangkauan ke keturunan unit pada hierarki OPD.
 type AssignTenantRoleInput struct {
-	UserID      uuid.UUID
-	RoleID      uuid.UUID
-	UnitKerjaID *uuid.UUID
-	ValidFrom   time.Time
-	ValidUntil  *time.Time
+	UserID         uuid.UUID
+	RoleID         uuid.UUID
+	UnitKerjaID    *uuid.UUID
+	IncludeSubtree bool
+	ValidFrom      time.Time
+	ValidUntil     *time.Time
 }
 
 // Execute: permission → bentuk assignment → validasi → persist.
@@ -41,13 +44,14 @@ func (uc *AssignTenantRole) Execute(ctx port.AuthContext, in AssignTenantRoleInp
 		validFrom = time.Now()
 	}
 	a := &domain.TenantRoleAssignment{
-		ID:          uuid.New(),
-		UserID:      in.UserID,
-		RoleID:      in.RoleID,
-		UnitKerjaID: in.UnitKerjaID,
-		AssignedBy:  ctx.PersonID(),
-		ValidFrom:   validFrom,
-		ValidUntil:  in.ValidUntil,
+		ID:             uuid.New(),
+		UserID:         in.UserID,
+		RoleID:         in.RoleID,
+		UnitKerjaID:    in.UnitKerjaID,
+		IncludeSubtree: in.IncludeSubtree,
+		AssignedBy:     ctx.PersonID(),
+		ValidFrom:      validFrom,
+		ValidUntil:     in.ValidUntil,
 	}
 	if err := a.Validate(); err != nil {
 		return nil, err

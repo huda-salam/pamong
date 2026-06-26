@@ -13,17 +13,25 @@ per-tenant, tanpa scope_type (role tenant selalu satu tenant).
 - core/permission (RoleCatalog, Layer), infra/db (Pool/Conn, audit), core/audit, port, core
 
 ## Struktur
-- domain/ — TenantRole, TenantRoleAssignment (+ Validate, AppliesTo), ports, permissions, errors
+- domain/ — TenantRole, TenantRoleAssignment (+ Validate, AppliesTo; UnitKerjaID + IncludeSubtree),
+  ports, permissions, errors
 - adapter/db/ — repo (Save role+grant atomik), TenantRoleCatalog (snapshot), TenantRoleResolver
-  (EffectiveRoles per-user), audited_repos (ADR-003 → gov.audit_logs), schema.go (EnsureSchema)
+  (EffectiveRoles per-user → nama role untuk RBAC Tahap 1), TenantScopedGrantResolver
+  (assignment+perm → permission.Grant untuk ABAC Tahap 2, PR-2.3.5), OrgUnitHierarchy
+  (gov.org_units adjacency + recursive CTE, implement permission.Hierarchy), audited_repos
+  (ADR-003 → gov.audit_logs), schema.go (EnsureSchema; kolom include_subtree)
 - usecase/ — CreateTenantRole, AssignTenantRole (permission iam:tenant_role:buat/assign)
 
 ## Konvensi khusus
 - Isolasi "hanya berlaku di tenant-nya" bersifat STRUKTURAL: resolver hanya melihat gov.*
   milik tenant DB yang dikoneksikan — tak ada parameter tenantID.
 - Tabel gov.* via EnsureSchema-on-write (precedent gov.user_profiles); runner migrasi
-  framework-gov formal + FK ke gov.user_profiles = DEFERRED (lihat ROADMAP backlog).
-- scope unit_kerja: kolom disimpan & di-round-trip, BELUM ditegakkan (DEFERRED Phase-2.3.5).
+  framework-gov formal + FK ke gov.user_profiles/org_units = DEFERRED (lihat ROADMAP backlog).
+- scope unit_kerja: DITEGAKKAN data-level (PR-2.3.5) di core/permission.ScopedEngine —
+  TenantScopedGrantResolver memetakan assignment ke permission.Grant (unit nil→TenantWide,
+  include_subtree→keturunan via OrgUnitHierarchy). Engine RBAC (Engine.Allows) tetap scope-agnostik.
+- gov.org_units = placeholder hierarki OPD minimal (adjacency); modul OPD penuh kelak jadi
+  pemiliknya lewat port permission.Hierarchy yang sama (non-breaking).
 - Resolusi konflik (global menang, strict=intersection) ada di Engine, bukan di sini.
 
 ## Test

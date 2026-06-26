@@ -43,18 +43,20 @@ func (r *TenantRole) Validate() error {
 // TenantRoleAssignment menugaskan role tenant ke seorang user (gov.user_profiles.id =
 // person_id). UnitKerjaID menyempitkan scope ke satu unit kerja; nil = seluruh tenant.
 //
-// DEFERRED(Phase-2.3.5): scope unit kerja BELUM ditegakkan pada evaluasi RBAC di 2.3.3 —
-// kolomnya disimpan & di-round-trip, tetapi data-level permission (membatasi data mana yang
-// boleh diakses per unit kerja) baru dibangun bersama ABAC + hierarki OPD di PR-2.3.5.
+// Penegakan scope unit kerja (ABAC data-level) AKTIF sejak PR-2.3.5 di core/permission.ScopedEngine:
+// resolver (adapter/db.TenantScopedGrantResolver) memetakan tiap assignment+permission ke
+// permission.Grant — UnitKerjaID nil → TenantWide, IncludeSubtree → menjangkau keturunan unit
+// pada hierarki OPD. Engine RBAC (Engine.Allows) tetap scope-agnostik; scope dievaluasi terpisah.
 type TenantRoleAssignment struct {
-	ID          uuid.UUID
-	UserID      uuid.UUID  // -> gov.user_profiles(id)
-	RoleID      uuid.UUID  // -> gov.tenant_roles(id)
-	UnitKerjaID *uuid.UUID // nil = seluruh tenant; penegakan ditunda 2.3.5
-	AssignedBy  uuid.UUID
-	ValidFrom   time.Time
-	ValidUntil  *time.Time // nil = berlaku tak terbatas
-	CreatedAt   time.Time
+	ID             uuid.UUID
+	UserID         uuid.UUID  // -> gov.user_profiles(id)
+	RoleID         uuid.UUID  // -> gov.tenant_roles(id)
+	UnitKerjaID    *uuid.UUID // nil = seluruh tenant (TenantWide)
+	IncludeSubtree bool       // saat UnitKerjaID diisi: jangkau keturunan unit (hierarki OPD)
+	AssignedBy     uuid.UUID
+	ValidFrom      time.Time
+	ValidUntil     *time.Time // nil = berlaku tak terbatas
+	CreatedAt      time.Time
 }
 
 // Validate memeriksa invariant assignment tanpa I/O.
@@ -74,7 +76,8 @@ func (a *TenantRoleAssignment) Validate() error {
 // AppliesTo melaporkan apakah assignment aktif pada saat now (dalam masa berlaku).
 // Berbeda dari role sentral, tidak ada pencocokan scope tenant: assignment ini hidup di
 // tenant DB-nya sendiri, sehingga "berlaku hanya di tenant-nya" terpenuhi secara struktural.
-// Scope unit kerja tidak ikut dievaluasi di sini (DEFERRED 2.3.5).
+// Scope unit kerja bukan urusan masa berlaku — ia dievaluasi di core/permission.ScopedEngine
+// (data-level), bukan di sini.
 func (a *TenantRoleAssignment) AppliesTo(now time.Time) bool {
 	if now.Before(a.ValidFrom) {
 		return false

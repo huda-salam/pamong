@@ -84,6 +84,13 @@ func (c *TestContext) RequirePermission(perm string) error {
 	return nil
 }
 
+// RequirePermissionInUnit di testkit mengabaikan unit (scope ABAC tidak diuji di unit test
+// modul) — cukup memeriksa kepemilikan permission seperti RequirePermission. Test yang menguji
+// scope data-level memakai core/permission.ScopedEngine langsung (lihat scoped_engine_test).
+func (c *TestContext) RequirePermissionInUnit(perm string, _ uuid.UUID) error {
+	return c.RequirePermission(perm)
+}
+
 // context.Context forwarding
 func (c *TestContext) Deadline() (time.Time, bool) { return c.Context.Deadline() }
 func (c *TestContext) Done() <-chan struct{}       { return c.Context.Done() }

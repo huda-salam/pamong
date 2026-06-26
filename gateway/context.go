@@ -25,6 +25,7 @@ type Context struct {
 	centralRoles     map[string]bool
 	isCrossTenant    bool
 	eval             port.PermissionEvaluator
+	scopedEval       port.ScopedEvaluator
 }
 
 var _ port.AuthContext = (*Context)(nil)
@@ -80,6 +81,29 @@ func (c *Context) RequirePermission(perm string) error {
 		return nil
 	}
 	if c.eval.Allows(c.roleList(), perm) {
+		return nil
+	}
+	return core.ErrPermissionDenied(perm)
+}
+
+// SetScopedEvaluator menyuntik evaluator permission data-level (core/permission.ScopedEngine
+// terikat Authority actor lewat port.ScopedEvaluator). Dipanggil middleware auth (2.4) setelah
+// membangun Authority dari resolver role+delegasi. Bila tidak diset, RequirePermissionInUnit
+// default permisif (selaras RequirePermission).
+func (c *Context) SetScopedEvaluator(e port.ScopedEvaluator) { c.scopedEval = e }
+
+func (c *Context) RequirePermissionInUnit(perm string, unitID uuid.UUID) error {
+	if c.scopedEval == nil {
+		// Evaluator scoped belum di-wire (request tanpa auth, atau sebelum populasi
+		// Authority di 2.4). Default permisif — selaras RequirePermission, seam tak
+		// merusak alur lama.
+		return nil
+	}
+	ok, err := c.scopedEval.AllowsInUnit(c.Context, perm, unitID)
+	if err != nil {
+		return err
+	}
+	if ok {
 		return nil
 	}
 	return core.ErrPermissionDenied(perm)

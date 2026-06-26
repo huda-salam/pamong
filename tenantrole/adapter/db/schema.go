@@ -31,14 +31,15 @@ CREATE TABLE IF NOT EXISTS gov.tenant_role_permissions (
     PRIMARY KEY (role_id, permission)
 );
 CREATE TABLE IF NOT EXISTS gov.user_role_assignments (
-    id            UUID PRIMARY KEY,
-    user_id       UUID NOT NULL,
-    role_id       UUID NOT NULL REFERENCES gov.tenant_roles(id),
-    unit_kerja_id UUID,
-    assigned_by   UUID NOT NULL,
-    valid_from    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    valid_until   TIMESTAMPTZ,
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    id              UUID PRIMARY KEY,
+    user_id         UUID NOT NULL,
+    role_id         UUID NOT NULL REFERENCES gov.tenant_roles(id),
+    unit_kerja_id   UUID,
+    include_subtree BOOLEAN NOT NULL DEFAULT false,
+    assigned_by     UUID NOT NULL,
+    valid_from      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    valid_until     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_user_role_assignments_user ON gov.user_role_assignments (user_id);
 CREATE INDEX IF NOT EXISTS idx_user_role_assignments_role ON gov.user_role_assignments (role_id);`

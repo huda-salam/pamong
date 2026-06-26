@@ -179,16 +179,17 @@ func NewTenantRoleAssignmentRepo(conn db.Conn) *TenantRoleAssignmentRepo {
 	return &TenantRoleAssignmentRepo{conn: conn}
 }
 
-const tenantAssignmentCols = `id, user_id, role_id, unit_kerja_id, assigned_by, valid_from, valid_until, created_at`
+const tenantAssignmentCols = `id, user_id, role_id, unit_kerja_id, include_subtree, assigned_by, valid_from, valid_until, created_at`
 
 func (r *TenantRoleAssignmentRepo) Save(ctx context.Context, a *domain.TenantRoleAssignment) error {
 	if err := ensureTenantRoleSchema(ctx, r.conn); err != nil {
 		return err
 	}
 	const q = `INSERT INTO gov.user_role_assignments
-	    (id, user_id, role_id, unit_kerja_id, assigned_by, valid_from, valid_until)
-	    VALUES ($1,$2,$3,$4,$5,$6,$7)`
-	_, err := r.conn.Exec(ctx, q, a.ID, a.UserID, a.RoleID, a.UnitKerjaID, a.AssignedBy, a.ValidFrom, a.ValidUntil)
+	    (id, user_id, role_id, unit_kerja_id, include_subtree, assigned_by, valid_from, valid_until)
+	    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`
+	_, err := r.conn.Exec(ctx, q, a.ID, a.UserID, a.RoleID, a.UnitKerjaID, a.IncludeSubtree,
+		a.AssignedBy, a.ValidFrom, a.ValidUntil)
 	return err
 }
 
@@ -207,8 +208,8 @@ func (r *TenantRoleAssignmentRepo) ListByUser(ctx context.Context, userID uuid.U
 	var out []*domain.TenantRoleAssignment
 	for rows.Next() {
 		var a domain.TenantRoleAssignment
-		if err := rows.Scan(&a.ID, &a.UserID, &a.RoleID, &a.UnitKerjaID, &a.AssignedBy,
-			&a.ValidFrom, &a.ValidUntil, &a.CreatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.UserID, &a.RoleID, &a.UnitKerjaID, &a.IncludeSubtree,
+			&a.AssignedBy, &a.ValidFrom, &a.ValidUntil, &a.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, &a)

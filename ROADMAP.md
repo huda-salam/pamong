@@ -200,9 +200,11 @@ Tujuan: model person/employment/persona, multi-tenant, role berlapis, tiga alur 
   - Bagian `Exports`/`Imports` di manifest, registrasi saat bootstrap
   - DoD: modul A pakai permission export modul B; tanpa import → linter tolak
 
-- **PR-2.3.5** ABAC + hierarki OPD + delegasi/PLT ← 2.3.1, 2.3.3
+- **PR-2.3.5** ABAC + hierarki OPD + delegasi/PLT ← 2.3.1, 2.3.3 ✅
   - Atribut unit kerja, tree OPD, delegasi berwaktu
   - DoD: data-level permission per unit kerja; delegasi kedaluwarsa otomatis
+  - Selesai: `core/permission.ScopedEngine` (2-tahap), `gov.org_units` (adjacency+CTE),
+    `delegation/` (orang→orang, expiry lazy). Wiring Authority live + emitter central→Grant = 2.4.
 
 ### Sub-phase 2.4 — Auth flow
 
@@ -601,20 +603,47 @@ rule linter `markerref`).
   seperti role sentral: saat auth flow aktif, terbitkan event penugasan untuk refresh/revoke
   token. Belum ada konsumen sekarang.
 
-- **[PR-2.3.5] Penegakan scope unit kerja (data-level ABAC).** `gov.user_role_assignments`
-  punya kolom `unit_kerja_id` & `TenantRoleAssignment.UnitKerjaID` (PR-2.3.3), tetapi BELUM
-  ditegakkan saat evaluasi — marker `// DEFERRED(Phase-2.3.5)` di `tenantrole/domain/entity.go`.
-  Resolver tenant role mengembalikan role tanpa memfilter unit kerja; pembatasan "data mana yang
-  boleh diakses per unit kerja" dibangun bersama ABAC + hierarki OPD di PR-2.3.5. Kolom sudah
-  disimpan & di-round-trip agar penegakannya nanti tak butuh migrasi/perubahan skema.
+- **[PR-2.3.5] Penegakan scope unit kerja (data-level ABAC). SELESAI.** Ditegakkan di
+  `core/permission.ScopedEngine` (Tahap 1 RBAC `Engine.Allows` UTUH + Tahap 2 scope via
+  scoped-grant + hierarki OPD). `unit_kerja_id` + `include_subtree` (kolom additive baru)
+  pada `gov.user_role_assignments` menentukan jangkauan; `gov.org_units` (adjacency, recursive
+  CTE) menjawab subtree. Delegasi/PLT (`gov.delegations`, orang→orang, expiry lazy) = jalur
+  grant mandiri. Lihat backlog turunan di bawah.
+
+- **[Phase-3.x] ABAC atribut tahun anggaran/periode.** MVP ABAC (PR-2.3.5) hanya `unit_kerja_id`
+  (flat + subtree); `permission.ResourceScope` sengaja struct agar atribut tahun/periode bisa
+  ditambah additive. Marker `DEFERRED(Phase-3.x)` di `core/permission/scope.go` & `scoped_engine.go`.
+  Scoping tahun fiskal sebagian sudah ditangani `data_lifecycle: annual_cutoff` (schema-per-tahun)
+  & `fiscal_periods` — desain ABAC-tahun saat modul keuangan hadir agar tak tumpang-tindih.
+
+- **[Phase-2.4] Wiring Authority live + seam scoped + revoke/event delegasi.** Evaluasi data-level
+  PR-2.3.5 terbukti via integration (test berperan sbg middleware). Yang menyusul saat auth flow:
+  (a) middleware membangun `permission.Authority` (RoleNames+RoleGrants dari resolver tenant,
+  emitter central-role→Grant `TenantWide`, DelegatedGrants dari resolver delegasi) lalu
+  `ScopedEngine.Bind` → `gateway.Context.SetScopedEvaluator`, mengaktifkan `RequirePermissionInUnit`
+  (kini default permisif bila evaluator nil); (b) use case `RevokeDelegation` + publish event
+  delegasi (refresh/revoke klaim token). Emitter central-role→Grant belum dibuat → `identity/`
+  TAK disentuh di PR-2.3.5.
+
+- **[Phase-2.4] Sumber non-delegable dari manifest.** `CreateDelegation` menolak permission
+  non-delegable dari `domain.NonDelegableSet` yang di-inject (MVP: daftar manual). DEFERRED:
+  sumber dari flag `non_delegable` per-permission di manifest modul (lihat `delegation/domain/policy.go`).
+
+- **[Phase-3.6+] Job purge/notifikasi delegasi kedaluwarsa.** Kedaluwarsa delegasi sudah BENAR
+  & lazy saat evaluasi (`ListActiveByDelegatee` filter di SQL) — tak bergantung job. Job scheduler
+  untuk membersihkan/menotifikasi delegasi yang lewat masa berlaku = hiasan, menyusul saat
+  `core/scheduler` ada.
 
 - **[Phase-2.x / infra] Runner migrasi framework-gov formal.** Tabel framework `gov.*` masih
-  dibuat lewat EnsureSchema-on-write, bukan migrasi formal: `gov.user_profiles` (PR-2.2.4) dan
-  kini `gov.tenant_roles` + `gov.tenant_role_permissions` + `gov.user_role_assignments`
-  (PR-2.3.3, di `tenantrole/adapter/db/schema.go`). Bangun set migrasi framework yang dijalankan
-  per-tenant via `Migrator` + retrofit tabel-tabel ini, sekaligus menambah FK referensial yang
-  ditunda: `gov.user_role_assignments.user_id → gov.user_profiles(id)` (di-skip pada jalur ensure
-  karena kedua tabel ensure-on-write tanpa jaminan urutan pembuatan).
+  dibuat lewat EnsureSchema-on-write, bukan migrasi formal: `gov.user_profiles` (PR-2.2.4),
+  `gov.tenant_roles` + `gov.tenant_role_permissions` + `gov.user_role_assignments` (PR-2.3.3,
+  kolom `include_subtree` PR-2.3.5), dan kini `gov.org_units` + `gov.delegations` (PR-2.3.5, di
+  `tenantrole/adapter/db/hierarchy.go` & `delegation/adapter/db/schema.go`). Bangun set migrasi
+  framework yang dijalankan per-tenant via `Migrator` + retrofit tabel-tabel ini, sekaligus
+  menambah FK referensial yang ditunda: `gov.user_role_assignments.user_id → gov.user_profiles(id)`
+  dan `gov.user_role_assignments.unit_kerja_id → gov.org_units(id)` (di-skip pada jalur ensure
+  karena tabel ensure-on-write tanpa jaminan urutan pembuatan). Catatan: `gov.org_units` adalah
+  placeholder minimal — modul OPD penuh kelak menjadi pemiliknya lewat port `permission.Hierarchy`.
 
 - **[Tooling / linter] Rule `markerref` (penegakan ref penanda).** CODE_CONVENTION §9
   mewajibkan tiap `TODO`/`FIXME`/`DEFERRED` ber-ref (PR/#issue/Phase), tapi belum ada

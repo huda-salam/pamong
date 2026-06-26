@@ -81,12 +81,13 @@ func (r *auditedTenantRoleAssignmentRepo) ListByUser(ctx context.Context, userID
 
 func tenantAssignmentFields(a *domain.TenantRoleAssignment) map[string]any {
 	return map[string]any{
-		"user_id":       a.UserID,
-		"role_id":       a.RoleID,
-		"unit_kerja_id": a.UnitKerjaID,
-		"assigned_by":   a.AssignedBy,
-		"valid_from":    a.ValidFrom,
-		"valid_until":   a.ValidUntil,
+		"user_id":         a.UserID,
+		"role_id":         a.RoleID,
+		"unit_kerja_id":   a.UnitKerjaID,
+		"include_subtree": a.IncludeSubtree,
+		"assigned_by":     a.AssignedBy,
+		"valid_from":      a.ValidFrom,
+		"valid_until":     a.ValidUntil,
 	}
 }
 

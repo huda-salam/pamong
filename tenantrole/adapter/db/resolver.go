@@ -28,7 +28,9 @@ func NewTenantRoleResolver(conn db.Conn) *TenantRoleResolver {
 
 // EffectiveRoles mengembalikan nama role tenant yang berlaku untuk user saat ini (assignment
 // dalam masa berlaku; lihat domain.TenantRoleAssignment.AppliesTo). JOIN dibatasi schema gov
-// (no-cross-schema-join). Scope unit kerja tidak difilter di sini (DEFERRED 2.3.5).
+// (no-cross-schema-join). Ini masukan RBAC Tahap 1 (nama role); scope unit kerja (Tahap 2)
+// di-resolve TERPISAH oleh TenantScopedGrantResolver — sengaja dipisah agar resolusi konflik
+// strict/global di Engine tetap berbasis nama role utuh.
 func (r *TenantRoleResolver) EffectiveRoles(ctx context.Context, userID uuid.UUID) ([]string, error) {
 	if err := ensureTenantRoleSchema(ctx, r.conn); err != nil {
 		return nil, err
