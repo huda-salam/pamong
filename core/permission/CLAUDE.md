@@ -28,13 +28,23 @@ biasa karena struktur jabatan pemerintahan + delegasi wewenang.
   mengevaluasi, bukan menyimpan master)
 
 ## File kunci
-- engine.go — entry evaluasi permission request
-- rbac.go — role-based evaluation
-- abac.go — attribute-based evaluation
-- hierarchy.go — OPD tree, pewarisan
-- delegation.go — PLT/pelaksana, validasi waktu
-- registry.go — registrasi permission dari manifest, export/import
-- enforcer.go — helper untuk gateway middleware & AuthContext
+
+Sudah ada (PR-2.3.1 — RBAC dasar, evaluasi union in-memory):
+- permission.go — tipe Permission, Layer (tenant/scoped/global), Role
+- catalog.go — port RoleCatalog + MemoryCatalog (seam; impl DB menyusul 2.3.2/2.3.3)
+- engine.go — Engine.Allows (union antar role), IsStrict (flag; intersection menyusul)
+- (konsumen) port/permission.go PermissionEvaluator → dipakai gateway.Context.RequirePermission
+
+Menyusul (belum ada — rencana per ROADMAP):
+- catalog DB central (2.3.2: id.central_roles, scoped tenant_scope[]) & tenant (2.3.3: gov.tenant_roles)
+- registrasi permission dari manifest + export/import antar modul (2.3.4)
+- abac (atribut unit/anggaran/periode), hierarchy (tree OPD + pewarisan),
+  delegation (PLT/pelaksana, validasi waktu) — semuanya 2.3.5
+- enforcer/helper middleware bila diperlukan saat wiring auth nyata
+
+Catatan resolusi: prioritas "global menang" & strict-intersection (F7 PRD) baru
+berdampak saat lapis central + tenant hidup berdampingan (2.3.2/2.3.3); di 2.3.1
+evaluasi murni union.
 
 ## Konvensi khusus
 - Permission string format {modul}:{entity}:{aksi}. Selalu konstanta.
