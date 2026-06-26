@@ -31,6 +31,13 @@ type CredentialRepository interface {
 	ListByPerson(ctx context.Context, personID uuid.UUID) ([]*Credential, error)
 }
 
+// TenantAssignmentRepository menyimpan & me-resolve penugasan employment ke tenant
+// (id.tenant_assignments, sentral).
+type TenantAssignmentRepository interface {
+	Save(ctx context.Context, a *TenantAssignment) error
+	ListByEmployment(ctx context.Context, employmentID uuid.UUID) ([]*TenantAssignment, error)
+}
+
 // TenantRegistry menyimpan & me-resolve registry tenant (id.tenant_registry, sentral).
 type TenantRegistry interface {
 	Save(ctx context.Context, t *Tenant) error

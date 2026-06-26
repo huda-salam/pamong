@@ -142,6 +142,41 @@ func tenantFields(t *domain.Tenant) map[string]any {
 	}
 }
 
+// --- Tenant assignment ---
+
+type auditedTenantAssignmentRepo struct {
+	inner  domain.TenantAssignmentRepository
+	engine *audit.Engine
+}
+
+// NewAuditedTenantAssignmentRepo membungkus TenantAssignmentRepository dengan pencatatan
+// audit. Penugasan ke tenant adalah mutasi identitas sensitif — wajib ter-audit (ADR-003).
+func NewAuditedTenantAssignmentRepo(inner domain.TenantAssignmentRepository, engine *audit.Engine) domain.TenantAssignmentRepository {
+	return &auditedTenantAssignmentRepo{inner: inner, engine: engine}
+}
+
+func (r *auditedTenantAssignmentRepo) Save(ctx context.Context, a *domain.TenantAssignment) error {
+	if err := r.inner.Save(ctx, a); err != nil {
+		return err
+	}
+	return recordAudit(ctx, r.engine, "identity.TenantAssignment", a.ID, audit.ActionCreate, nil, tenantAssignmentFields(a))
+}
+
+func (r *auditedTenantAssignmentRepo) ListByEmployment(ctx context.Context, employmentID uuid.UUID) ([]*domain.TenantAssignment, error) {
+	return r.inner.ListByEmployment(ctx, employmentID)
+}
+
+func tenantAssignmentFields(a *domain.TenantAssignment) map[string]any {
+	return map[string]any{
+		"employment_id":  a.EmploymentID,
+		"tenant_id":      a.TenantID,
+		"is_home_tenant": a.IsHomeTenant,
+		"assigned_by":    a.AssignedBy,
+		"valid_from":     a.ValidFrom,
+		"valid_until":    a.ValidUntil,
+	}
+}
+
 // tenantAuditID menurunkan UUID deterministik dari tenant_id (natural key string) agar
 // muat di kolom entity_id audit dan riwayat per-tenant bisa di-query konsisten.
 func tenantAuditID(tenantID string) uuid.UUID {

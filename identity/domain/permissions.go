@@ -9,4 +9,10 @@ const (
 	PermTenantDaftar   = "identity:tenant:daftar"
 	PermTenantBaca     = "identity:tenant:baca"
 	PermTenantNonaktif = "identity:tenant:nonaktif"
+
+	// PermAssignmentTugaskan = menugaskan employment ke tenant (home tenant).
+	// PermAssignmentCrossTenant = tambahan wajib bila penugasan cross-tenant
+	// (is_home_tenant=false; mis. PJ Bupati) — sesuai catatan skema id.tenant_assignments.
+	PermAssignmentTugaskan    = "identity:assignment:tugaskan"
+	PermAssignmentCrossTenant = "identity:assignment:cross_tenant"
 )

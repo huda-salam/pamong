@@ -13,11 +13,12 @@ import (
 // CreatePerson membuat master person baru (anchor NIK). Person adalah akar identitas;
 // employment & credential menyusul lewat use case lain.
 type CreatePerson struct {
-	persons domain.PersonRepository
+	persons   domain.PersonRepository
+	publisher port.EventPublisher
 }
 
-func NewCreatePerson(persons domain.PersonRepository) *CreatePerson {
-	return &CreatePerson{persons: persons}
+func NewCreatePerson(persons domain.PersonRepository, publisher port.EventPublisher) *CreatePerson {
+	return &CreatePerson{persons: persons, publisher: publisher}
 }
 
 // CreatePersonInput DTO masuk; ID & timestamp di-generate sistem.
@@ -29,11 +30,8 @@ type CreatePersonInput struct {
 	TglLahir    *time.Time
 }
 
-// Execute: permission -> bentuk entity -> validasi -> persist. Konflik NIK duplikat
-// dipetakan adapter ke core.ErrConflict.
-//
-// Catatan: event identity.person.dibuat (untuk sync clone ke tenant) diterbitkan saat
-// sync engine + event bus tersedia (PR-2.2.4 / 3.1.1) — belum di sini.
+// Execute: permission -> bentuk entity -> validasi -> persist -> terbitkan event
+// identity.person.dibuat. Konflik NIK duplikat dipetakan adapter ke core.ErrConflict.
 func (uc *CreatePerson) Execute(ctx port.AuthContext, in CreatePersonInput) (*domain.Person, error) {
 	if err := ctx.RequirePermission(domain.PermPersonBuat); err != nil {
 		return nil, err
@@ -52,6 +50,16 @@ func (uc *CreatePerson) Execute(ctx port.AuthContext, in CreatePersonInput) (*do
 		return nil, err
 	}
 	if err := uc.persons.Save(ctx, p); err != nil {
+		return nil, err
+	}
+
+	if err := uc.publisher.Publish(ctx, port.Event{
+		Name:     domain.EventPersonDibuat,
+		CausedBy: ctx.PersonID().String(),
+		Payload: domain.PersonDibuatPayload{
+			PersonID: p.ID, NIK: p.NIK, NamaLengkap: p.NamaLengkap,
+		},
+	}); err != nil {
 		return nil, err
 	}
 	return p, nil

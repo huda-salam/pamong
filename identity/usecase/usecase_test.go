@@ -75,7 +75,8 @@ func (f *fakeEmployments) ListByPerson(context.Context, uuid.UUID) ([]*domain.Em
 
 func TestCreatePerson_Success(t *testing.T) {
 	persons := newFakePersons()
-	uc := usecase.NewCreatePerson(persons)
+	pub := testkit.NewMockPublisher()
+	uc := usecase.NewCreatePerson(persons, pub)
 	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermPersonBuat))
 
 	p, err := uc.Execute(ctx, usecase.CreatePersonInput{NIK: "3578010101900001", NamaLengkap: "Budi"})
@@ -88,10 +89,12 @@ func TestCreatePerson_Success(t *testing.T) {
 	if _, err := persons.FindByNIK(ctx, "3578010101900001"); err != nil {
 		t.Fatalf("person tidak tersimpan: %v", err)
 	}
+	// Sukses harus menerbitkan event untuk sync clone.
+	testkit.AssertEventPublished(t, pub, domain.EventPersonDibuat)
 }
 
 func TestCreatePerson_PermissionDenied(t *testing.T) {
-	uc := usecase.NewCreatePerson(newFakePersons())
+	uc := usecase.NewCreatePerson(newFakePersons(), testkit.NewMockPublisher())
 	ctx := testkit.Ctx(t) // tanpa permission
 	_, err := uc.Execute(ctx, usecase.CreatePersonInput{NIK: "3578010101900001", NamaLengkap: "Budi"})
 	var fe *core.FrameworkError
@@ -101,7 +104,7 @@ func TestCreatePerson_PermissionDenied(t *testing.T) {
 }
 
 func TestCreatePerson_NIKInvalid(t *testing.T) {
-	uc := usecase.NewCreatePerson(newFakePersons())
+	uc := usecase.NewCreatePerson(newFakePersons(), testkit.NewMockPublisher())
 	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermPersonBuat))
 	_, err := uc.Execute(ctx, usecase.CreatePersonInput{NIK: "123", NamaLengkap: "Budi"})
 	if !errors.Is(err, domain.ErrNIKInvalid) {
@@ -117,7 +120,8 @@ func TestAttachEmployment_ASN_Success(t *testing.T) {
 	person := &domain.Person{ID: uuid.New(), NIK: "3578010101900001", NamaLengkap: "Budi", IsActive: true}
 	_ = persons.Save(context.Background(), person)
 
-	uc := usecase.NewAttachEmployment(persons, emps)
+	pub := testkit.NewMockPublisher()
+	uc := usecase.NewAttachEmployment(persons, emps, pub)
 	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermEmploymentLampir))
 
 	e, err := uc.Execute(ctx, usecase.AttachEmploymentInput{
@@ -129,6 +133,7 @@ func TestAttachEmployment_ASN_Success(t *testing.T) {
 	if e.ValidFrom.IsZero() {
 		t.Fatal("valid_from harus terisi default now()")
 	}
+	testkit.AssertEventPublished(t, pub, domain.EventEmploymentDibuat)
 }
 
 func TestAttachEmployment_ASN_TanpaNIP_Ditolak(t *testing.T) {
@@ -136,7 +141,7 @@ func TestAttachEmployment_ASN_TanpaNIP_Ditolak(t *testing.T) {
 	person := &domain.Person{ID: uuid.New(), NIK: "3578010101900001", NamaLengkap: "Budi", IsActive: true}
 	_ = persons.Save(context.Background(), person)
 
-	uc := usecase.NewAttachEmployment(persons, newFakeEmployments())
+	uc := usecase.NewAttachEmployment(persons, newFakeEmployments(), testkit.NewMockPublisher())
 	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermEmploymentLampir))
 
 	_, err := uc.Execute(ctx, usecase.AttachEmploymentInput{PersonID: person.ID, Status: domain.StatusASN})
@@ -146,7 +151,7 @@ func TestAttachEmployment_ASN_TanpaNIP_Ditolak(t *testing.T) {
 }
 
 func TestAttachEmployment_PersonTidakAda(t *testing.T) {
-	uc := usecase.NewAttachEmployment(newFakePersons(), newFakeEmployments())
+	uc := usecase.NewAttachEmployment(newFakePersons(), newFakeEmployments(), testkit.NewMockPublisher())
 	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermEmploymentLampir))
 	_, err := uc.Execute(ctx, usecase.AttachEmploymentInput{
 		PersonID: uuid.New(), Status: domain.StatusNonASN,

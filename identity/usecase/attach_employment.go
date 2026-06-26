@@ -13,10 +13,11 @@ import (
 type AttachEmployment struct {
 	persons     domain.PersonRepository
 	employments domain.EmploymentRepository
+	publisher   port.EventPublisher
 }
 
-func NewAttachEmployment(p domain.PersonRepository, e domain.EmploymentRepository) *AttachEmployment {
-	return &AttachEmployment{persons: p, employments: e}
+func NewAttachEmployment(p domain.PersonRepository, e domain.EmploymentRepository, publisher port.EventPublisher) *AttachEmployment {
+	return &AttachEmployment{persons: p, employments: e, publisher: publisher}
 }
 
 // AttachEmploymentInput DTO masuk.
@@ -58,6 +59,16 @@ func (uc *AttachEmployment) Execute(ctx port.AuthContext, in AttachEmploymentInp
 		return nil, err
 	}
 	if err := uc.employments.Save(ctx, e); err != nil {
+		return nil, err
+	}
+
+	if err := uc.publisher.Publish(ctx, port.Event{
+		Name:     domain.EventEmploymentDibuat,
+		CausedBy: ctx.PersonID().String(),
+		Payload: domain.EmploymentDibuatPayload{
+			EmploymentID: e.ID, PersonID: e.PersonID, Status: string(e.Status), NIP: e.NIP,
+		},
+	}); err != nil {
 		return nil, err
 	}
 	return e, nil

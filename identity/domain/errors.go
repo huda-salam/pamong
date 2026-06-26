@@ -20,4 +20,7 @@ var (
 	ErrTenantNamaKosong  = core.ErrValidation("nama", "tidak boleh kosong")
 	ErrTenantTierInvalid = core.ErrValidation("tier", "harus 1, 2, atau 3")
 	ErrTenantDBKosong    = core.ErrValidation("db", "db_host dan db_name wajib diisi")
+
+	ErrEmploymentIDKosong = core.ErrValidation("employment_id", "tidak boleh kosong")
+	ErrAssignedByKosong   = core.ErrValidation("assigned_by", "tidak boleh kosong")
 )

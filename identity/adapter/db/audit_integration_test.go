@@ -33,14 +33,15 @@ func TestIdentityAudit_AutoRecordedAndChained(t *testing.T) {
 		testkit.WithPermission(domain.PermEmploymentLampir),
 	)
 
-	// Jalankan use case nyata.
-	p, err := usecase.NewCreatePerson(persons).Execute(actx, usecase.CreatePersonInput{
+	// Jalankan use case nyata. Publisher memory-less (mock) — audit yang diuji di sini.
+	pub := testkit.NewMockPublisher()
+	p, err := usecase.NewCreatePerson(persons, pub).Execute(actx, usecase.CreatePersonInput{
 		NIK: "3578010101900001", NamaLengkap: "Budi",
 	})
 	if err != nil {
 		t.Fatalf("create person: %v", err)
 	}
-	if _, err := usecase.NewAttachEmployment(persons, employments).Execute(actx, usecase.AttachEmploymentInput{
+	if _, err := usecase.NewAttachEmployment(persons, employments, pub).Execute(actx, usecase.AttachEmploymentInput{
 		PersonID: p.ID, Status: domain.StatusASN, NIP: "199001012015011001",
 	}); err != nil {
 		t.Fatalf("attach employment: %v", err)
