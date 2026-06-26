@@ -596,6 +596,26 @@ rule linter `markerref`).
   auth flow aktif, terbitkan `identity.central_role.diassign`/`.dicabut` untuk memicu refresh
   klaim token pada login berikutnya & revocation token aktif. Belum ada konsumen sekarang.
 
+- **[Phase-2.4] Event role tenant.** `usecase.CreateTenantRole` & `AssignTenantRole`
+  (PR-2.3.3) belum menerbitkan event — marker `// DEFERRED(Phase-2.4)` di keduanya. Sama
+  seperti role sentral: saat auth flow aktif, terbitkan event penugasan untuk refresh/revoke
+  token. Belum ada konsumen sekarang.
+
+- **[PR-2.3.5] Penegakan scope unit kerja (data-level ABAC).** `gov.user_role_assignments`
+  punya kolom `unit_kerja_id` & `TenantRoleAssignment.UnitKerjaID` (PR-2.3.3), tetapi BELUM
+  ditegakkan saat evaluasi — marker `// DEFERRED(Phase-2.3.5)` di `tenantrole/domain/entity.go`.
+  Resolver tenant role mengembalikan role tanpa memfilter unit kerja; pembatasan "data mana yang
+  boleh diakses per unit kerja" dibangun bersama ABAC + hierarki OPD di PR-2.3.5. Kolom sudah
+  disimpan & di-round-trip agar penegakannya nanti tak butuh migrasi/perubahan skema.
+
+- **[Phase-2.x / infra] Runner migrasi framework-gov formal.** Tabel framework `gov.*` masih
+  dibuat lewat EnsureSchema-on-write, bukan migrasi formal: `gov.user_profiles` (PR-2.2.4) dan
+  kini `gov.tenant_roles` + `gov.tenant_role_permissions` + `gov.user_role_assignments`
+  (PR-2.3.3, di `tenantrole/adapter/db/schema.go`). Bangun set migrasi framework yang dijalankan
+  per-tenant via `Migrator` + retrofit tabel-tabel ini, sekaligus menambah FK referensial yang
+  ditunda: `gov.user_role_assignments.user_id → gov.user_profiles(id)` (di-skip pada jalur ensure
+  karena kedua tabel ensure-on-write tanpa jaminan urutan pembuatan).
+
 - **[Tooling / linter] Rule `markerref` (penegakan ref penanda).** CODE_CONVENTION §9
   mewajibkan tiap `TODO`/`FIXME`/`DEFERRED` ber-ref (PR/#issue/Phase), tapi belum ada
   penegak otomatis — saat ini hanya review manusia (linter aktif baru `domainnoinfra`; CI
