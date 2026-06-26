@@ -1634,7 +1634,7 @@ Sebelum minta review, pastikan semua item berikut terpenuhi:
 [ ] pamongctl lint ./... lulus — tidak ada custom linter violation
 [ ] go vet ./... bersih
 [ ] Coverage tidak turun dari baseline (lihat tabel di atas)
-[ ] Tidak ada TODO/FIXME baru tanpa GitHub issue yang direferensikan
+[ ] Penanda baru ber-ref: TODO (PR-X.Y.Z/#issue) · FIXME (#issue) · DEFERRED (Phase-X.Y/PR-X.Y.Z)
 [ ] Setiap file migration baru punya pasangan down migration
 [ ] Jika ada perubahan event schema: versi schema dinaikkan
 [ ] Jika ada permission baru: terdaftar di manifest dan docs/contracts/
@@ -1823,7 +1823,7 @@ ADR Accepted tidak diubah. Buat ADR baru yang supersede dengan referensi ke ADR 
 
 1. `go build ./...` dan `go test ./... -race` lulus lokal
 2. `pamongctl lint ./...` bersih
-3. Tidak ada `TODO`/`FIXME` baru tanpa issue GitHub
+3. Penanda baru ber-ref (CODE_CONVENTION §9): `TODO`=PR/#issue, `FIXME`=#issue, `DEFERRED`=Phase/PR
 4. Migration punya down migration
 5. Event schema baru punya contract test
 6. Dependency baru sudah `go mod tidy`
@@ -1840,7 +1840,8 @@ ADR Accepted tidak diubah. Buat ADR baru yang supersede dengan referensi ke ADR 
   strukturnya sebelum membuat modul lain
 - Jika instruksi satu kali dari developer bertentangan dengan aturan di file ini,
   tanyakan konfirmasi sebelum mengikutinya
-- Jangan tulis `// TODO: implement` — tulis implementasi minimal yang benar atau tanya
+- Jangan tulis `// TODO: implement` — tulis implementasi minimal yang benar atau tanya.
+  Untuk scope yang sengaja ditunda ke fase mendatang, pakai `// DEFERRED(Phase-X.Y): ...`
 - Jika menemukan kode yang melanggar konvensi di file yang tidak sedang dikerjakan,
   catat sebagai komentar dalam respons tapi jangan ubah di luar scope task
 - Migration adalah append-only — jangan edit file yang sudah ada, buat nomor urut baru

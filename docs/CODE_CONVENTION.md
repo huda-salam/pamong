@@ -200,34 +200,49 @@ publisher.Publish(ctx, port.Event{Name: domain.EventSPMDisahkan, Payload: p})
 
 ---
 
-## 9. TODO & FIXME
+## 9. TODO, DEFERRED & FIXME
 
-Dua tipe penanda, dua format berbeda tergantung apakah pekerjaan sudah ada
-di ROADMAP atau belum.
+Tiga penanda, masing-masing untuk niat berbeda. Bedakan dengan tegas — gate CI
+memperlakukannya beda.
 
 ### Format baku
 
 ```go
 // TODO: PR-1.2.1 implementasi koneksi DB nyata (sekarang stub)
+// DEFERRED(Phase-2.4): validasi bisnis penugasan tenant — cek tenant aktif & cegah duplikat
 // FIXME: #123 query ini double-count jika ada koreksi di hari yang sama
 ```
 
-### Dua tipe dan formatnya
+### Tiga tipe dan formatnya
 
 | Marker | Situasi | Format referensi | Contoh |
 |---|---|---|---|
-| `TODO` | Implementasi yang sudah dijadwalkan di ROADMAP | `PR-X.Y.Z` | `// TODO: PR-3.1.1 ganti memory driver dengan NATS` |
-| `TODO` | Implementasi yang belum ada jadwalnya | `#issue` | `// TODO: #123 tambah validasi duplikat nomor surat` |
+| `TODO` | Gap kecil jangka-dekat yang sudah dijadwalkan di ROADMAP | `PR-X.Y.Z` | `// TODO: PR-3.1.1 ganti memory driver dengan NATS` |
+| `TODO` | Gap kecil jangka-dekat yang belum ada jadwalnya | `#issue` | `// TODO: #123 tambah validasi duplikat nomor surat` |
+| `DEFERRED` | Penundaan **sengaja** ke fase/PR mendatang (bukan utang yang ditagih) | `Phase-X.Y` atau `PR-X.Y.Z` | `// DEFERRED(Phase-2.4): model nama person dipecah gelar/nama` |
 | `FIXME` | Bug/workaround yang diketahui — selalu di luar jadwal | `#issue` | `// FIXME: #456 race condition di concurrent tenant init` |
 
-**Karena ROADMAP sudah terstruktur per-PR**, sebagian besar TODO cukup
-referensi `PR-X.Y.Z` dan tidak perlu membuka issue baru — ROADMAP sudah
-menjadi kontrak yang terlacak.
+**Karena ROADMAP sudah terstruktur per-PR**, sebagian besar `TODO`/`DEFERRED`
+cukup merujuk `PR-X.Y.Z` (atau `Phase-X.Y` untuk DEFERRED) dan tidak perlu
+membuka issue baru — ROADMAP sudah menjadi kontrak yang terlacak.
+
+### Kapan TODO, kapan DEFERRED
+
+- `TODO` = **utang jangka-dekat**. Gap kecil yang seharusnya cepat ditutup; tetap
+  butuh `PR-X.Y.Z` atau `#issue` dan **tidak boleh berlama-lama**.
+- `DEFERRED` = **penundaan sah & disengaja** ke fase mendatang. Ini bukan "lupa",
+  melainkan scope yang sadar ditunda dan sudah dipetakan ke ROADMAP. **Boleh hidup
+  di kode selama fase tujuannya belum tiba** — tidak ditagih per-milestone.
 
 ### Aturan
 
 - `TODO: PR-X.Y.Z` — tidak perlu issue baru; ROADMAP adalah sumber kebenaran.
 - `TODO: #issue` — buka issue dulu, baru tulis TODO. Jangan tulis `#?` atau `nanti`.
+- `DEFERRED(<ref>)` — `<ref>` wajib `Phase-X.Y` atau `PR-X.Y.Z`; **tanpa ref → CI tolak**.
+  Tidak perlu issue GitHub.
+  - Penundaan **substantif** (lintas-PR atau keputusan arsitektural) **wajib** punya
+    entri padanan di "Backlog teknis" `ROADMAP.md`. Yang remeh & jelas dari ROADMAP
+    cukup marker saja.
 - `FIXME` **selalu** butuh nomor issue — ini bug yang diketahui, harus terlacak.
 - **Jangan tulis `// TODO: implement`** tanpa konteks apapun. Tulis implementasi
   minimal yang benar, atau tentukan PR/issue-nya.
@@ -239,6 +254,8 @@ menjadi kontrak yang terlacak.
   ```
 
 - **FIXME tidak boleh bertahan lebih dari satu milestone** tanpa progress di issue-nya.
+  (`DEFERRED` justru sebaliknya — sah bertahan sampai fase tujuannya tiba; namun **ditinjau
+  saat tutup fase**, lihat audit DEFERRED di ROADMAP "Backlog teknis".)
 
 ---
 
@@ -259,5 +276,5 @@ menjadi kontrak yang terlacak.
 ✗ EntityDef tanpa Audit & Lockable eksplisit     [linter: entity-explicit-auditable]
 ✗ migration up tanpa down                        [linter: migration-needs-down]
 ✗ menelan error tanpa alasan terdokumentasi
-✗ TODO/FIXME tanpa issue terkait
+✗ TODO/FIXME tanpa ref (PR-X.Y.Z / #issue); DEFERRED tanpa Phase-X.Y atau PR-X.Y.Z
 ```

@@ -555,6 +555,17 @@ menyusul sambil modul bisnis pertama dikembangkan.
 Item yang sengaja ditunda dengan pemetaan ke phase/PR tempat pengerjaannya. Bukan PR
 baru tersendiri kecuali disebut — diselesaikan saat phase terkait dikerjakan.
 
+Penundaan substantif yang ditandai di kode dengan `// DEFERRED(Phase-X.Y | PR-X.Y.Z): ...`
+(CODE_CONVENTION §9) wajib punya entri padanan di sini, sehingga marker di kode dan
+backlog ROADMAP selalu sinkron.
+
+**Audit DEFERRED saat tutup fase.** Karena DEFERRED sah berumur panjang (tak ditagih
+per-milestone seperti TODO/FIXME), saat menutup sebuah Phase/sub-phase jalankan
+`grep -rn 'DEFERRED(' --include='*.go'` dan pastikan tak ada penanda yang Phase/PR
+tujuannya sudah tiba/lewat tanpa dikerjakan. DEFERRED yang fasenya lewat = utang yang
+harus ditutup atau dijadwalkan ulang secara eksplisit. Ini gerbang manusia (belum ada
+rule linter `markerref`).
+
 - **[PR-2.4.5] Validasi bisnis penugasan tenant.** `usecase.AssignEmploymentToTenant`
   punya stub kosong `validateAssignment` (PR-2.2.4). Isi di 2.4.5: tenant tujuan ada &
   aktif (lewat `TenantRegistry`), employment masih aktif, cegah duplikat penugasan.

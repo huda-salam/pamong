@@ -137,7 +137,9 @@ Nama package atau komponen yang berubah:
   bebas dari import net/http (linter: domain-no-infra-import).
   ```
 - **Jangan commit kode yang tidak dikompilasi.** Jalankan `go build ./...` sebelum commit.
-- Tidak ada `TODO`/`FIXME` tanpa referensi GitHub issue (`// TODO: #123 ...`).
+- Tidak ada penanda tanpa referensi: `TODO` butuh `PR-X.Y.Z` atau `#issue`,
+  `FIXME` butuh `#issue`, `DEFERRED` butuh `Phase-X.Y` atau `PR-X.Y.Z`
+  (lihat CODE_CONVENTION §9).
 
 ---
 
@@ -161,7 +163,7 @@ Semua harus terpenuhi — CI akan menolak jika tidak:
 [ ] go vet ./... bersih
 [ ] pamongctl lint ./... bersih (bila pamongctl sudah tersedia)
 [ ] Coverage tidak turun dari baseline (domain ≥ 90%, usecase ≥ 85%)
-[ ] Tidak ada TODO/FIXME tanpa issue GitHub terkait
+[ ] Tidak ada penanda tanpa ref (TODO: PR/#issue · FIXME: #issue · DEFERRED: Phase/PR)
 [ ] Migration baru punya down migration
 [ ] Event schema baru punya contract test
 [ ] Permission baru terdaftar di manifest
