@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/huda-salam/pamong/core"
 	"github.com/huda-salam/pamong/port"
 )
 
@@ -23,6 +24,7 @@ type Context struct {
 	roles            map[string]bool
 	centralRoles     map[string]bool
 	isCrossTenant    bool
+	eval             port.PermissionEvaluator
 }
 
 var _ port.AuthContext = (*Context)(nil)
@@ -65,10 +67,34 @@ func (c *Context) HasCentralRole(role string) bool {
 	return c.centralRoles[role]
 }
 
+// SetPermissionEvaluator menyuntik engine evaluasi permission (core/permission.Engine
+// lewat port.PermissionEvaluator). Dipanggil middleware auth setelah katalog role
+// terisi. Bila tidak diset, RequirePermission default permisif (lihat di bawah).
+func (c *Context) SetPermissionEvaluator(e port.PermissionEvaluator) { c.eval = e }
+
 func (c *Context) RequirePermission(perm string) error {
-	// Implementasi penuh ada di Phase 2 (permission engine).
-	// Saat ini cukup untuk kompilasi; middleware akan mengganti dengan evaluasi nyata.
-	return nil
+	if c.eval == nil {
+		// Evaluator belum di-wire (request tanpa auth, atau sebelum populasi
+		// katalog role di 2.3.2/2.3.3). Default permisif — perilaku tetap seperti
+		// sebelum engine terpasang, sehingga seam ini tidak merusak alur lama.
+		return nil
+	}
+	if c.eval.Allows(c.roleList(), perm) {
+		return nil
+	}
+	return core.ErrPermissionDenied(perm)
+}
+
+// roleList menggabungkan nama role tenant dan central yang dibawa context.
+func (c *Context) roleList() []string {
+	out := make([]string, 0, len(c.roles)+len(c.centralRoles))
+	for r := range c.roles {
+		out = append(out, r)
+	}
+	for r := range c.centralRoles {
+		out = append(out, r)
+	}
+	return out
 }
 
 // --- context.Context (diteruskan ke context.Context yang di-embed) ---
