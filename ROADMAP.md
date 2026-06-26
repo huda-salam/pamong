@@ -595,3 +595,10 @@ rule linter `markerref`).
   (PR-2.3.2) belum menerbitkan event — ada marker `// DEFERRED(Phase-2.4)` di keduanya. Saat
   auth flow aktif, terbitkan `identity.central_role.diassign`/`.dicabut` untuk memicu refresh
   klaim token pada login berikutnya & revocation token aktif. Belum ada konsumen sekarang.
+
+- **[Tooling / linter] Rule `markerref` (penegakan ref penanda).** CODE_CONVENTION §9
+  mewajibkan tiap `TODO`/`FIXME`/`DEFERRED` ber-ref (PR/#issue/Phase), tapi belum ada
+  penegak otomatis — saat ini hanya review manusia (linter aktif baru `domainnoinfra`; CI
+  tak punya grep-gate). Tambah analyzer `tools/linter/rules/markerref` (scan komentar, cek
+  format ref) + daftarkan di `registry.go` (pola sama dgn placeholder yang sudah dicatat di
+  sana). §9 sudah jadi spesifikasinya. Setelah ada, wording "via review" di §9 jadi "via CI".

@@ -202,8 +202,8 @@ publisher.Publish(ctx, port.Event{Name: domain.EventSPMDisahkan, Payload: p})
 
 ## 9. TODO, DEFERRED & FIXME
 
-Tiga penanda, masing-masing untuk niat berbeda. Bedakan dengan tegas — gate CI
-memperlakukannya beda.
+Tiga penanda, masing-masing untuk niat berbeda. Bedakan dengan tegas — penegakannya
+berbeda (saat ini lewat review; rule linter `markerref` menyusul, lihat ROADMAP).
 
 ### Format baku
 
@@ -238,8 +238,8 @@ membuka issue baru — ROADMAP sudah menjadi kontrak yang terlacak.
 
 - `TODO: PR-X.Y.Z` — tidak perlu issue baru; ROADMAP adalah sumber kebenaran.
 - `TODO: #issue` — buka issue dulu, baru tulis TODO. Jangan tulis `#?` atau `nanti`.
-- `DEFERRED(<ref>)` — `<ref>` wajib `Phase-X.Y` atau `PR-X.Y.Z`; **tanpa ref → CI tolak**.
-  Tidak perlu issue GitHub.
+- `DEFERRED(<ref>)` — `<ref>` wajib `Phase-X.Y` atau `PR-X.Y.Z`; **tanpa ref = ditolak**
+  (saat ini lewat review; rule linter `markerref` menyusul). Tidak perlu issue GitHub.
   - Penundaan **substantif** (lintas-PR atau keputusan arsitektural) **wajib** punya
     entri padanan di "Backlog teknis" `ROADMAP.md`. Yang remeh & jelas dari ROADMAP
     cukup marker saja.
@@ -276,5 +276,5 @@ membuka issue baru — ROADMAP sudah menjadi kontrak yang terlacak.
 ✗ EntityDef tanpa Audit & Lockable eksplisit     [linter: entity-explicit-auditable]
 ✗ migration up tanpa down                        [linter: migration-needs-down]
 ✗ menelan error tanpa alasan terdokumentasi
-✗ TODO/FIXME tanpa ref (PR-X.Y.Z / #issue); DEFERRED tanpa Phase-X.Y atau PR-X.Y.Z
+✗ TODO/FIXME tanpa ref (PR-X.Y.Z / #issue); DEFERRED tanpa Phase/PR  [review; linter markerref menyusul]
 ```
