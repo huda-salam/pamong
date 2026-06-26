@@ -39,6 +39,14 @@ central_db:
   pool_max: 10
   pool_idle: 2
 
+# provision_db: kredensial ADMIN (ber-CREATEDB) untuk provisioning tenant DB (ADR-006).
+# TERPISAH dari `db` (runtime, least-privilege). Kosong = provisioning tidak tersedia
+# sampai diisi via env/local. `maintenance` = DB tempat connect saat CREATE DATABASE.
+provision_db:
+  user: ""
+  password: ""
+  maintenance: postgres
+
 eventbus:
   driver: memory
   url: ""

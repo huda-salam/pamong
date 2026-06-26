@@ -290,6 +290,14 @@ GOV_IDENTITY_DB_PASSWORD=...
 GOV_IDENTITY_DB_POOL_MAX=10
 GOV_IDENTITY_DB_POOL_IDLE=2
 
+# Provisioning tenant DB (ADR-006) — kredensial ADMIN ber-CREATEDB, TERPISAH dari GOV_DB_*
+# (runtime, least-privilege). Dipakai HANYA oleh `pamongctl tenant provision`: connect ke
+# GOV_PROVISION_DB_MAINTENANCE pada host target lalu CREATE DATABASE ... OWNER <GOV_DB_USER>.
+# Host target & port dari registry + GOV_DB_PORT. Kosongkan jika tidak melakukan provisioning.
+GOV_PROVISION_DB_USER=...             # role ber-CREATEDB
+GOV_PROVISION_DB_PASSWORD=...
+GOV_PROVISION_DB_MAINTENANCE=postgres # DB tempat connect saat CREATE DATABASE
+
 # Event bus
 GOV_EVENTBUS_DRIVER=nats             # nats | redis | memory (testing only)
 GOV_EVENTBUS_URL=nats://localhost:4222

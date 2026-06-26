@@ -21,15 +21,16 @@ type AppConfig struct {
 	// request (tenant resolver), bukan dari config (ADR-004).
 	TenantID string `yaml:"tenant_id" env:"GOV_TENANT_ID"`
 
-	DB         DBConfig            `yaml:"db"`
-	IdentityDB IdentityDBConfig    `yaml:"identity_db"`
-	CentralDB  CentralDBConfig     `yaml:"central_db"`
-	EventBus   EventBusConfig      `yaml:"eventbus"`
-	Storage    StorageConfig       `yaml:"storage"`
-	Cache      CacheConfig         `yaml:"cache"`
-	Observ     ObservabilityConfig `yaml:"observability"`
-	Auth       AuthConfig          `yaml:"auth"`
-	RateLimit  RateLimitConfig     `yaml:"ratelimit"`
+	DB          DBConfig            `yaml:"db"`
+	IdentityDB  IdentityDBConfig    `yaml:"identity_db"`
+	CentralDB   CentralDBConfig     `yaml:"central_db"`
+	ProvisionDB ProvisionDBConfig   `yaml:"provision_db"`
+	EventBus    EventBusConfig      `yaml:"eventbus"`
+	Storage     StorageConfig       `yaml:"storage"`
+	Cache       CacheConfig         `yaml:"cache"`
+	Observ      ObservabilityConfig `yaml:"observability"`
+	Auth        AuthConfig          `yaml:"auth"`
+	RateLimit   RateLimitConfig     `yaml:"ratelimit"`
 }
 
 // DBConfig — DEFAULT/SHARED koneksi tenant DB (ADR-004). BUKAN "satu tenant DB":
@@ -92,6 +93,17 @@ func (c *AppConfig) CentralDBResolved() CentralDBConfig {
 		PoolMax:  c.IdentityDB.PoolMax,
 		PoolIdle: c.IdentityDB.PoolIdle,
 	}
+}
+
+// ProvisionDBConfig — kredensial ADMIN untuk provisioning tenant DB (ADR-006). TERPISAH
+// dari kredensial runtime (DBConfig) demi least privilege: role ini ber-CREATEDB dan
+// dipakai HANYA saat membuat tenant DB baru (`pamongctl tenant provision`), tidak pernah
+// untuk melayani request. Host target & port diambil dari registry + DBConfig.Port; di
+// sini hanya kredensial admin + nama DB maintenance tempat `CREATE DATABASE` dieksekusi.
+type ProvisionDBConfig struct {
+	User        string `yaml:"user" env:"GOV_PROVISION_DB_USER"`
+	Password    string `yaml:"password" env:"GOV_PROVISION_DB_PASSWORD"`
+	Maintenance string `yaml:"maintenance" env:"GOV_PROVISION_DB_MAINTENANCE"` // DB untuk connect saat CREATE DATABASE; default "postgres"
 }
 
 // EventBusConfig — driver event bus.
