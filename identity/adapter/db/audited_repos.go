@@ -177,6 +177,83 @@ func tenantAssignmentFields(a *domain.TenantAssignment) map[string]any {
 	}
 }
 
+// --- Central role ---
+
+type auditedCentralRoleRepo struct {
+	inner  domain.CentralRoleRepository
+	engine *audit.Engine
+}
+
+// NewAuditedCentralRoleRepo membungkus CentralRoleRepository dengan pencatatan audit.
+// Membuat role sentral (berlaku lintas tenant) adalah mutasi identitas sensitif (ADR-003).
+func NewAuditedCentralRoleRepo(inner domain.CentralRoleRepository, engine *audit.Engine) domain.CentralRoleRepository {
+	return &auditedCentralRoleRepo{inner: inner, engine: engine}
+}
+
+func (r *auditedCentralRoleRepo) Save(ctx context.Context, role *domain.CentralRole) error {
+	if err := r.inner.Save(ctx, role); err != nil {
+		return err
+	}
+	return recordAudit(ctx, r.engine, "identity.CentralRole", role.ID, audit.ActionCreate, nil, centralRoleFields(role))
+}
+
+func (r *auditedCentralRoleRepo) FindByID(ctx context.Context, id uuid.UUID) (*domain.CentralRole, error) {
+	return r.inner.FindByID(ctx, id)
+}
+
+func (r *auditedCentralRoleRepo) FindByName(ctx context.Context, name string) (*domain.CentralRole, error) {
+	return r.inner.FindByName(ctx, name)
+}
+
+func (r *auditedCentralRoleRepo) List(ctx context.Context) ([]*domain.CentralRole, error) {
+	return r.inner.List(ctx)
+}
+
+func centralRoleFields(r *domain.CentralRole) map[string]any {
+	return map[string]any{
+		"name":        r.Name,
+		"label":       r.Label,
+		"scope_type":  string(r.ScopeType),
+		"description": r.Description,
+		"permissions": r.Permissions,
+	}
+}
+
+// --- Central role assignment ---
+
+type auditedCentralRoleAssignmentRepo struct {
+	inner  domain.CentralRoleAssignmentRepository
+	engine *audit.Engine
+}
+
+// NewAuditedCentralRoleAssignmentRepo membungkus CentralRoleAssignmentRepository dengan
+// pencatatan audit. Menugaskan role sentral = pemberian wewenang lintas tenant, wajib ter-audit.
+func NewAuditedCentralRoleAssignmentRepo(inner domain.CentralRoleAssignmentRepository, engine *audit.Engine) domain.CentralRoleAssignmentRepository {
+	return &auditedCentralRoleAssignmentRepo{inner: inner, engine: engine}
+}
+
+func (r *auditedCentralRoleAssignmentRepo) Save(ctx context.Context, a *domain.CentralRoleAssignment) error {
+	if err := r.inner.Save(ctx, a); err != nil {
+		return err
+	}
+	return recordAudit(ctx, r.engine, "identity.CentralRoleAssignment", a.ID, audit.ActionCreate, nil, centralAssignmentFields(a))
+}
+
+func (r *auditedCentralRoleAssignmentRepo) ListByPerson(ctx context.Context, personID uuid.UUID) ([]*domain.CentralRoleAssignment, error) {
+	return r.inner.ListByPerson(ctx, personID)
+}
+
+func centralAssignmentFields(a *domain.CentralRoleAssignment) map[string]any {
+	return map[string]any{
+		"person_id":    a.PersonID,
+		"role_id":      a.RoleID,
+		"tenant_scope": a.TenantScope,
+		"assigned_by":  a.AssignedBy,
+		"valid_from":   a.ValidFrom,
+		"valid_until":  a.ValidUntil,
+	}
+}
+
 // tenantAuditID menurunkan UUID deterministik dari tenant_id (natural key string) agar
 // muat di kolom entity_id audit dan riwayat per-tenant bisa di-query konsisten.
 func tenantAuditID(tenantID string) uuid.UUID {

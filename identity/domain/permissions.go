@@ -15,4 +15,9 @@ const (
 	// (is_home_tenant=false; mis. PJ Bupati) — sesuai catatan skema id.tenant_assignments.
 	PermAssignmentTugaskan    = "identity:assignment:tugaskan"
 	PermAssignmentCrossTenant = "identity:assignment:cross_tenant"
+
+	// Role sentral (PR-2.3.2) — dikelola admin platform. Membuat role global/scoped
+	// dan menugaskannya ke person adalah mutasi identitas sensitif (ter-audit ADR-003).
+	PermCentralRoleBuat   = "identity:central_role:buat"
+	PermCentralRoleAssign = "identity:central_role:assign"
 )

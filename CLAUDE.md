@@ -679,12 +679,25 @@ CREATE TABLE id.central_roles (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Grant role sentral -> permission (join table; bentuk RBAC kanonik, pola yang ditiru
+-- tenant role & manifest). Hanya menyimpan string permission ({modul}:{entity}:{aksi});
+-- DEFINISI permission tetap di manifest modul (kode), bukan di sini (PR-2.3.2).
+CREATE TABLE id.central_role_permissions (
+    role_id    UUID NOT NULL REFERENCES id.central_roles(id) ON DELETE CASCADE,
+    permission VARCHAR(150) NOT NULL,
+    PRIMARY KEY (role_id, permission)
+);
+
 -- Assignment role sentral ke person
 CREATE TABLE id.central_role_assignments (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     person_id       UUID NOT NULL REFERENCES id.persons(id),
     role_id         UUID NOT NULL REFERENCES id.central_roles(id),
-    -- untuk scoped role: array tenant_id yang berlaku, NULL berarti global
+    -- untuk scoped role: array tenant_id yang berlaku. OTORITAS global vs scoped adalah
+    -- central_roles.scope_type, BUKAN kekosongan kolom ini: role scoped dgn tenant_scope
+    -- kosong → tak berlaku di mana pun (resolver fail-closed, cegah eskalasi). SENGAJA tanpa
+    -- FK ke tenant_registry: agar token region (mis. 'prov:jatim') bisa masuk kelak untuk
+    -- wildcard provinsi tanpa ubah skema (ditunda; lihat CentralRoleAssignment.AppliesTo).
     tenant_scope    VARCHAR(100)[],
     assigned_by     UUID NOT NULL REFERENCES id.persons(id),
     valid_from      TIMESTAMPTZ NOT NULL DEFAULT now(),

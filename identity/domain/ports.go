@@ -38,6 +38,23 @@ type TenantAssignmentRepository interface {
 	ListByEmployment(ctx context.Context, employmentID uuid.UUID) ([]*TenantAssignment, error)
 }
 
+// CentralRoleRepository menyimpan & me-resolve role sentral + grant permission-nya
+// (id.central_roles + id.central_role_permissions, sentral). Save bersifat atomik:
+// role beserta seluruh permission-nya ditulis dalam satu transaksi.
+type CentralRoleRepository interface {
+	Save(ctx context.Context, r *CentralRole) error
+	FindByID(ctx context.Context, id uuid.UUID) (*CentralRole, error)
+	FindByName(ctx context.Context, name string) (*CentralRole, error)
+	List(ctx context.Context) ([]*CentralRole, error)
+}
+
+// CentralRoleAssignmentRepository menyimpan & me-resolve assignment role sentral ke person
+// (id.central_role_assignments, sentral).
+type CentralRoleAssignmentRepository interface {
+	Save(ctx context.Context, a *CentralRoleAssignment) error
+	ListByPerson(ctx context.Context, personID uuid.UUID) ([]*CentralRoleAssignment, error)
+}
+
 // TenantRegistry menyimpan & me-resolve registry tenant (id.tenant_registry, sentral).
 type TenantRegistry interface {
 	Save(ctx context.Context, t *Tenant) error

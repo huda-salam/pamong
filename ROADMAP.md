@@ -579,3 +579,8 @@ baru tersendiri kecuali disebut — diselesaikan saat phase terkait dikerjakan.
   ber-UUID tetap, mis. konstanta `domain.SystemActorID`) — bukan kolom nullable — agar audit
   tetap punya aktor eksplisit & mudah difilter. Seed lewat migration identity baru +
   pakai konstanta saat flow non-manusia dibangun. (Migration 003 append-only, tidak diedit.)
+
+- **[Phase-2.4] Event role sentral.** `usecase.CreateCentralRole` & `AssignCentralRole`
+  (PR-2.3.2) belum menerbitkan event — ada marker `// DEFERRED(Phase-2.4)` di keduanya. Saat
+  auth flow aktif, terbitkan `identity.central_role.diassign`/`.dicabut` untuk memicu refresh
+  klaim token pada login berikutnya & revocation token aktif. Belum ada konsumen sekarang.

@@ -23,4 +23,12 @@ var (
 
 	ErrEmploymentIDKosong = core.ErrValidation("employment_id", "tidak boleh kosong")
 	ErrAssignedByKosong   = core.ErrValidation("assigned_by", "tidak boleh kosong")
+
+	ErrCentralRoleNameInvalid = core.ErrValidation("name", "harus snake_case, mulai huruf, 3-100 char (a-z0-9_)")
+	ErrCentralRoleLabelKosong = core.ErrValidation("label", "tidak boleh kosong")
+	ErrScopeTypeInvalid       = core.ErrValidation("scope_type", "harus 'global' atau 'scoped'")
+	ErrRoleIDKosong           = core.ErrValidation("role_id", "tidak boleh kosong")
+	// Koherensi scope_type role vs tenant_scope assignment (ditegakkan di use case).
+	ErrScopeWajibUntukScoped = core.ErrValidation("tenant_scope", "wajib diisi untuk role scoped")
+	ErrScopeDilarangGlobal   = core.ErrValidation("tenant_scope", "harus kosong untuk role global")
 )

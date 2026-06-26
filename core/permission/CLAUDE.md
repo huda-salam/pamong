@@ -35,8 +35,16 @@ Sudah ada (PR-2.3.1 — RBAC dasar, evaluasi union in-memory):
 - engine.go — Engine.Allows (union antar role), IsStrict (flag; intersection menyusul)
 - (konsumen) port/permission.go PermissionEvaluator → dipakai gateway.Context.RequirePermission
 
+Sudah ada (PR-2.3.2 — central roles persist di identity DB):
+- catalog DB central + resolver scope hidup di `identity/adapter/db` (impor core/permission,
+  bukan sebaliknya): CentralRoleCatalog (snapshot definisi role → Lookup tanpa I/O, interface
+  RoleCatalog tak berubah) + CentralRoleResolver (EffectiveRoles: global selalu, scoped via
+  tenant_scope[], di luar masa berlaku diabaikan — lihat domain.CentralRoleAssignment.AppliesTo).
+  Engine TETAP tenant-agnostic: scope di-resolve di luar Engine. Resolusi konflik penuh
+  (global-precedence + strict-intersection) tetap menyusul 2.3.3 (saat lapis tenant juga di-DB-kan).
+
 Menyusul (belum ada — rencana per ROADMAP):
-- catalog DB central (2.3.2: id.central_roles, scoped tenant_scope[]) & tenant (2.3.3: gov.tenant_roles)
+- catalog DB tenant (2.3.3: gov.tenant_roles)
 - registrasi permission dari manifest + export/import antar modul (2.3.4)
 - abac (atribut unit/anggaran/periode), hierarchy (tree OPD + pewarisan),
   delegation (PLT/pelaksana, validasi waktu) — semuanya 2.3.5
