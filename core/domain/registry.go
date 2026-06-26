@@ -106,11 +106,112 @@ func (r *Registry) Validate() error {
 		}
 	}
 
+	// Validasi export/import permission antar modul (PR-2.3.4).
+	errs = append(errs, r.validatePermissions()...)
+
 	if len(errs) > 0 {
 		sort.Strings(errs)
 		return fmt.Errorf("registry modul tidak valid:\n  - %s", strings.Join(errs, "\n  - "))
 	}
 	return nil
+}
+
+// validatePermissions menegakkan kontrak export/import permission antar modul
+// (CLAUDE.md "Konvensi penamaan → Permission", PR-2.3.4):
+//   - setiap Exports harus permission yang didefinisikan modul itu sendiri di Groups,
+//     dan ber-prefix nama modul ({modul}:{entity}:{aksi});
+//   - setiap Imports.From harus modul terdaftar yang benar-benar meng-export
+//     permission tersebut, dan Permission ber-prefix From.
+//
+// Ini pasangan boot-time (cross-manifest) dari linter permission-must-be-registered
+// yang menegakkan sisi penggunaan kode. Validasi di sini menutup loop: deklarasi
+// import yang menggantung atau tak ter-export gagal cepat saat boot.
+func (r *Registry) validatePermissions() []string {
+	var errs []string
+
+	// Peta permission yang di-export tiap modul + permission yang didefinisikan di Groups.
+	exportsByModule := make(map[string]map[string]bool)
+	definedByModule := make(map[string]map[string]bool)
+	for _, name := range r.uniqueNames() {
+		pm := r.byName[name].Manifest().Permissions
+		defined := make(map[string]bool)
+		for _, g := range pm.Groups {
+			for _, p := range g.Permissions {
+				defined[p.Name] = true
+			}
+		}
+		definedByModule[name] = defined
+		exp := make(map[string]bool)
+		for _, e := range pm.Exports {
+			exp[e] = true
+		}
+		exportsByModule[name] = exp
+	}
+
+	for _, name := range r.uniqueNames() {
+		pm := r.byName[name].Manifest().Permissions
+
+		for _, e := range pm.Exports {
+			if permModule(e) != name {
+				errs = append(errs, fmt.Sprintf(
+					"modul %q meng-export permission %q yang bukan miliknya (prefix harus %q)", name, e, name))
+				continue
+			}
+			if !definedByModule[name][e] {
+				errs = append(errs, fmt.Sprintf(
+					"modul %q meng-export permission %q yang tidak didefinisikan di Groups-nya", name, e))
+			}
+		}
+
+		for _, imp := range pm.Imports {
+			if permModule(imp.Permission) != imp.From {
+				errs = append(errs, fmt.Sprintf(
+					"modul %q meng-import %q dari %q tetapi prefix permission bukan %q",
+					name, imp.Permission, imp.From, imp.From))
+				continue
+			}
+			if imp.From == name {
+				errs = append(errs, fmt.Sprintf(
+					"modul %q meng-import permission dari dirinya sendiri (%q) — pakai langsung tanpa Imports",
+					name, imp.Permission))
+				continue
+			}
+			if _, ok := r.byName[imp.From]; !ok {
+				errs = append(errs, fmt.Sprintf(
+					"modul %q meng-import dari modul %q yang tidak terdaftar", name, imp.From))
+				continue
+			}
+			if !exportsByModule[imp.From][imp.Permission] {
+				errs = append(errs, fmt.Sprintf(
+					"modul %q meng-import %q dari %q tetapi modul itu tidak meng-export-nya",
+					name, imp.Permission, imp.From))
+			}
+		}
+	}
+	return errs
+}
+
+// ExportedPermissions mengembalikan semua permission yang di-export modul terdaftar,
+// dipetakan permission -> nama modul pemilik. Ini katalog permission lintas-modul yang
+// dikenal sistem; dipakai validasi import dan dapat dirujuk konsumen lain (mis. saat
+// wiring auth) tanpa menyentuh paket modul.
+func (r *Registry) ExportedPermissions() map[string]string {
+	out := make(map[string]string)
+	for _, name := range r.uniqueNames() {
+		for _, e := range r.byName[name].Manifest().Permissions.Exports {
+			out[e] = name
+		}
+	}
+	return out
+}
+
+// permModule mengembalikan segmen modul (sebelum titik dua pertama) dari sebuah
+// string permission {modul}:{entity}:{aksi}. Mengembalikan "" bila tak ada titik dua.
+func permModule(perm string) string {
+	if i := strings.Index(perm, ":"); i >= 0 {
+		return perm[:i]
+	}
+	return ""
 }
 
 // uniqueNames mengembalikan nama modul unik (urutan registrasi).

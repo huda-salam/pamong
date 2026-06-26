@@ -9,10 +9,10 @@ import (
 	"golang.org/x/tools/go/analysis"
 
 	"github.com/huda-salam/pamong/tools/linter/rules/domainnoinfra"
+	"github.com/huda-salam/pamong/tools/linter/rules/permissionregistered"
 	// Tambahkan rule lain di sini saat dibuat:
 	// "github.com/huda-salam/pamong/tools/linter/rules/handlerpermission"
 	// "github.com/huda-salam/pamong/tools/linter/rules/eventconst"
-	// "github.com/huda-salam/pamong/tools/linter/rules/permissionregistered"
 	// "github.com/huda-salam/pamong/tools/linter/rules/configdirectenv"
 	// "github.com/huda-salam/pamong/tools/linter/rules/rawsqlannotate"
 )
@@ -20,6 +20,7 @@ import (
 // All adalah seluruh analyzer GovFramework. Dipakai oleh pamongctl lint dan oleh CI.
 var All = []*analysis.Analyzer{
 	domainnoinfra.Analyzer,
+	permissionregistered.Analyzer,
 	// handlerpermission.Analyzer,
 	// eventconst.Analyzer,
 	// ...

@@ -14,20 +14,4 @@ func notImplemented(cmd *cobra.Command, pr string) error {
 	return nil
 }
 
-// validateCmd: validasi manifest, DAG dependency, permission, event schema. PR-1.1.1 / PR-5.2.2.
-func validateCmd() *cobra.Command {
-	c := &cobra.Command{
-		Use:   "validate",
-		Short: "Validasi manifest, dependency DAG, permission, dan event schema",
-	}
-	c.AddCommand(&cobra.Command{
-		Use:   "modules",
-		Short: "Validasi semua manifest modul & deteksi siklus dependency",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return notImplemented(cmd, "PR-1.1.1")
-		},
-	})
-	return c
-}
-
 // migrateCmd: jalankan migrasi per-tenant. PR-1.2.3.
