@@ -921,6 +921,17 @@ type AuthContext interface {
 - Role sentral baru hanya bisa ditambah admin platform lewat UI admin sentral atau migration `identity/`
 - Modul publik yang butuh data internal **wajib** lewat service port yang di-expose modul internal,
   tidak boleh akses lintas-DB atau lintas-modul langsung
+- **Atribut identitas pada dokumen di-snapshot saat pembuatan, bukan dibaca live.** Modul yang
+  menyalin nama/jabatan/NIP ke dokumen bisnis (surat, SPM, dst) wajib menyimpan nilainya saat
+  dokumen dibuat — bukan join/baca ke `gov.user_profiles` saat ditampilkan. Perubahan identitas
+  (mis. penambahan gelar D3→S1→S2) **tidak retroaktif**: dokumen lama tetap memakai nama saat itu.
+  `gov.user_profiles` adalah clone *hidup* (selalu nilai terbaru) untuk "siapa user ini sekarang",
+  bukan sumber untuk dokumen historis.
+- **Perubahan nama/identitas mengalir satu arah: identity → event → clone.** Nama person adalah
+  data inti identity; perubahannya (termasuk gelar yang berasal dari kepegawaian) hanya boleh lewat
+  use case identity yang ber-permission & ter-audit, lalu menerbitkan `identity.person.diperbarui`
+  yang disinkronkan ke clone tenant. Modul kepegawaian **memicu** lewat command/event, tidak menulis
+  nama langsung.
 - Linter akan reject jika ada import package `identity/` dari modul bisnis manapun
   (akses hanya lewat port dan event)
 

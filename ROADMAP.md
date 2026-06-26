@@ -547,3 +547,35 @@ Phase 0 + 1 + 2 + 3.1 + 3.2 + 3.3 + 5.1 + 5.2. Strategy registry (3.3) masuk MVP
 karena modul keuangan butuh selectable policy (FIFO/average, aset/beban) sejak awal.
 Customization layer (3.4), scheduler lanjutan, UI, dan notifikasi lengkap bisa
 menyusul sambil modul bisnis pertama dikembangkan.
+
+---
+
+## Backlog teknis (utang yang ditemukan saat implementasi)
+
+Item yang sengaja ditunda dengan pemetaan ke phase/PR tempat pengerjaannya. Bukan PR
+baru tersendiri kecuali disebut — diselesaikan saat phase terkait dikerjakan.
+
+- **[PR-2.4.5] Validasi bisnis penugasan tenant.** `usecase.AssignEmploymentToTenant`
+  punya stub kosong `validateAssignment` (PR-2.2.4). Isi di 2.4.5: tenant tujuan ada &
+  aktif (lewat `TenantRegistry`), employment masih aktif, cegah duplikat penugasan.
+  Saat ini penugasan (termasuk cross-tenant) hanya dijaga gerbang permission.
+
+- **[Phase 2 / identity, lanjutan PR-2.2.4] Propagasi perubahan nama/identitas.** Belum ada
+  use case `UpdatePersonName` + handler sync untuk `identity.person.diperbarui` (update
+  `gov.user_profiles`). Diperlukan saat penambahan gelar (D3→S1→S2) atau koreksi nama.
+  Pemicu berasal dari kepegawaian (verifikasi ijazah) via command/event; mutasi tetap di
+  identity (ber-permission & ter-audit). Non-retroaktif sudah terjamin oleh aturan snapshot
+  dokumen (CLAUDE.md, "Aturan pengembangan terkait identity").
+
+- **[ADR — saat desain integrasi modul kepegawaian] Model nama person.** Putuskan apakah
+  `id.persons.nama_lengkap` (single VARCHAR) dipecah menjadi `gelar_depan` + `nama` +
+  `gelar_belakang` agar render dengan/tanpa gelar dan riwayat penambahan gelar terlacak.
+  Ini mengubah skema identity (sensitif) → wajib ADR sebelum diterapkan. **Belum dibuat.**
+
+- **[Pipeline migrasi data / provisioning otomatis] Sentinel SYSTEM actor.** `assigned_by`
+  pada `id.tenant_assignments` (juga aktor audit) saat ini `NOT NULL → id.persons`, sehingga
+  aksi non-manusia tak punya aktor sah: migrasi legacy bulk-assign, provisioning otomatis,
+  dan admin pertama (chicken-and-egg). Keputusan: pakai **sentinel** (baris person `SYSTEM`
+  ber-UUID tetap, mis. konstanta `domain.SystemActorID`) — bukan kolom nullable — agar audit
+  tetap punya aktor eksplisit & mudah difilter. Seed lewat migration identity baru +
+  pakai konstanta saat flow non-manusia dibangun. (Migration 003 append-only, tidak diedit.)

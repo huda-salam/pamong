@@ -64,6 +64,12 @@ func (uc *AssignEmploymentToTenant) Execute(ctx port.AuthContext, in AssignEmplo
 		return nil, err
 	}
 
+	// Titik validasi bisnis penugasan. Sengaja kosong di PR-2.2.4 — cross-tenant baru
+	// dijaga permission. Diisi PR-2.4.5 (lihat validateAssignment).
+	if err := uc.validateAssignment(ctx, in, emp); err != nil {
+		return nil, err
+	}
+
 	validFrom := in.ValidFrom
 	if validFrom.IsZero() {
 		validFrom = time.Now()
@@ -103,4 +109,14 @@ func (uc *AssignEmploymentToTenant) Execute(ctx port.AuthContext, in AssignEmplo
 		return nil, err
 	}
 	return a, nil
+}
+
+// validateAssignment adalah titik validasi bisnis penugasan ke tenant. Stub kosong di
+// PR-2.2.4: saat ini penugasan (termasuk cross-tenant) hanya dijaga gerbang permission.
+//
+// TODO(PR-2.4.5): isi validasi — tenant tujuan ada & aktif (lewat TenantRegistry),
+// employment masih aktif, dan cegah duplikat penugasan ke tenant yang sama. Pengisian ini
+// akan menambah dependency TenantRegistry ke use case. Lihat ROADMAP "Backlog teknis".
+func (uc *AssignEmploymentToTenant) validateAssignment(_ port.AuthContext, _ AssignEmploymentToTenantInput, _ *domain.Employment) error {
+	return nil
 }
