@@ -61,3 +61,14 @@ func ErrConflict(msg string) error {
 		Message: msg,
 	}
 }
+
+// ErrTooManyRequests dipublikasikan saat batas laju (rate limit) terlampaui (HTTP 429).
+// Dipakai proteksi brute-force/flooding — mis. terlalu banyak permintaan/verifikasi OTP untuk
+// satu kredensial. Berbeda dari ErrUnauthorized (401: kredensial salah): 429 = "benar atau salah,
+// kamu terlalu sering". Pesan tidak membocorkan apakah kredensial ada.
+func ErrTooManyRequests(reason string) error {
+	return &FrameworkError{
+		Code:    "TOO_MANY_REQUESTS",
+		Message: reason,
+	}
+}

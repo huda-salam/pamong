@@ -47,6 +47,8 @@ func httpStatus(code string) int {
 		return http.StatusUnprocessableEntity
 	case "CONFLICT":
 		return http.StatusConflict
+	case "TOO_MANY_REQUESTS":
+		return http.StatusTooManyRequests
 	case "BAD_REQUEST":
 		return http.StatusBadRequest
 	default:

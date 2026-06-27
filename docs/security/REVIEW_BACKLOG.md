@@ -74,9 +74,35 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
     menolak tenant di luar penugasan aktif / persona non-employee.
 - Cek lanjutan reviewer: tak ada jalur yang menerbitkan token sebelum verifikasi tuntas; token
   sementara benar-benar tak berdaya (RequirePermission menolak karena role kosong).
-- **DEFERRED(Phase-2.4/PR-2.4.x):** jalur OTP (no_hp/email tanpa password) + **rate-limit &
-  proteksi brute-force** belum dibangun (marker di `login_citizen.go`). Saat ini verifikasi via
-  password bcrypt; credential OTP-only (secret_hash kosong) ditolak.
+### A6. Jalur OTP citizen + rate-limit (PR-2.4.4) — `HARDENED`, perlu konfirmasi reviewer
+- `identity/usecase/request_otp.go`, `verify_otp.go`, `otp.go` (policy+helper seragam);
+  `identity/adapter/auth/otp.go` (crypto/rand + bcrypt); `identity/adapter/db/otp_repository.go`;
+  `identity/domain/otp.go`; `port/{otp,messaging,ratelimit}.go`; `infra/ratelimit/memory.go`;
+  `core.ErrTooManyRequests` (429); migrasi `006_create_otps`. ADR-008.
+- Properti yang dijaga:
+  - **Kode OTP `crypto/rand`** (bukan math/rand; uniform tanpa bias modulo), disimpan sebagai
+    **hash bcrypt** (bukan plaintext), tak pernah di-log/di-return; `Verify` timing-safe (bcrypt).
+    Kripto hanya di adapter — domain & use case bebas dependency (cermin PasswordVerifier).
+  - **Respons kegagalan SERAGAM** (`errInvalidOTP` → 401) untuk credential tak ada / OTP tak ada /
+    kedaluwarsa / sudah dipakai / attempts habis / kode salah / person non-aktif — tak membocorkan
+    tahap yang gagal.
+  - **Sekali pakai + cap tebak**: OTP di-`Consume` SEBELUM token terbit (replay tertutup); cap
+    `MaxOTPAttempts=5` per OTP menghanguskan saat habis; verify menilai OTP **terbaru** per credential.
+  - **Token citizen tanpa role internal**: resolver role TAK PERNAH dipanggil di jalur OTP (sama
+    seperti LoginCitizen password). **Diuji**: `TestVerifyOTP_Success_IssuesCitizenToken_NoInternalRoles`.
+  - **Enumeration-resistant pada RequestOTP**: credential tak dikenal / person non-aktif → sukses
+    senyap tanpa kirim. **CATATAN reviewer**: kegagalan *pengiriman* (provider down) → error 500 →
+    sedikit sinyal "akun ada" saat outage. Trade-off sadar (UX retry) — ADR-008 §deferred (refinable:
+    swallow + log / enumeration-resistance penuh).
+  - **Rate-limit per-kredensial (Opsi B)** di use case via `port.RateLimiter` (bukan per-IP gateway):
+    request 3/15mnt, verify 10/15mnt; limiter error → **fail-closed** (aksi tak lanjut). **Diuji**:
+    `TestRequestOTP_RateLimited`, `TestRequestOTP_LimiterError_FailClosed`, `TestVerifyOTP_RateLimited`.
+- Cek lanjutan reviewer: TOCTOU `FindLatest`→`IsUsable`→`Consume` di bawah verify konkuren kode
+  benar → paling jauh token ganda utk person yang SAMA (bukan eskalasi); dinilai non-konkret. Opsi C
+  (lapis gateway per-IP + Redis multi-instance) ditunda di balik `port.RateLimiter` (additive).
+- **DEFERRED(Phase-2.4/PR-2.4.x):** ~~jalur OTP + rate-limit~~ SELESAI di PR-2.4.4. Live wiring
+  HTTP/messaging/ratelimit konkret menyusul Phase 5.1.1 (router). Konfigurasi `OTPPolicy` dari
+  `core/config` saat ada kebutuhan tenant.
 - **DEFERRED(PR-2.4.5):** cross-tenant assignment ber-permission `identity:assignment:cross_tenant`
   (penerbitan/orkestrasi PJ/PLT) — login sudah menangani *pemilihan* tenant lintas penugasan yang
   sudah ada (`is_cross_tenant` di klaim), tapi *pembuatan* penugasan cross-tenant ada di 2.4.5.

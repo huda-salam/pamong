@@ -230,12 +230,14 @@ Tujuan: model person/employment/persona, multi-tenant, role berlapis, tiga alur 
     sebagian tertutup). `port.PasswordVerifier` + adapter bcrypt `identity/adapter/auth`.
     INVARIANT: role disaring per-tenant saat mint token (CentralRoleResolver/TenantRoleResolver).
 
-- **PR-2.4.4** Alur login citizen (portal publik) ← 2.4.1 — sebagian di PR-2.4.3
+- **PR-2.4.4** Alur login citizen (portal publik) ← 2.4.1 — SELESAI (password 2.4.3 + OTP 2.4.4)
   - Login NIK/email/HP, OTP, persona citizen tanpa cek employment
-  - DoD: ASN bisa login publik → token persona=citizen tanpa role internal ✅ (`LoginCitizen`,
-    PR-2.4.3, password-based; diuji `TestLoginCitizen_Success_NoInternalRoles`)
-  - SISA 2.4.4: jalur OTP (no_hp/email tanpa password) + rate-limit & proteksi brute-force
-    (DEFERRED, lihat backlog & REVIEW_BACKLOG A5).
+  - DoD: ASN bisa login publik → token persona=citizen tanpa role internal ✅ (`LoginCitizen`
+    password, PR-2.4.3; jalur OTP `VerifyOTP`, PR-2.4.4; diuji `TestLoginCitizen_*` +
+    `TestVerifyOTP_Success_IssuesCitizenToken_NoInternalRoles`)
+  - Jalur OTP (no_hp/email tanpa password): `RequestOTP`+`VerifyOTP`, crypto/rand+bcrypt,
+    sekali-pakai, cap tebak; rate-limit per-kredensial via `port.RateLimiter` (Opsi B). ADR-008,
+    REVIEW_BACKLOG A6. Live wiring HTTP/messaging/ratelimit konkret → Phase 5.1.1.
 
 - **PR-2.4.5** Cross-tenant assignment ← 2.4.3, 2.3.2
   - Penugasan lintas tenant dengan otorisasi admin sentral

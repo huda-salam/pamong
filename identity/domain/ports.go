@@ -64,6 +64,23 @@ type TenantRegistry interface {
 	SetActive(ctx context.Context, tenantID string, active bool) error
 }
 
+// OTPRepository menyimpan & me-resolve OTP ephemeral (id.otps, sentral). OTP menempel pada
+// credential (email/no_hp); jalur login OTP (PR-2.4.4) menerbitkan, lalu memverifikasi terhadap
+// OTP terbaru milik credential tersebut.
+type OTPRepository interface {
+	// Create menyimpan OTP baru (sekali, saat penerbitan).
+	Create(ctx context.Context, o *OTP) error
+	// FindLatestByCredential mengembalikan OTP TERBARU (created_at desc) milik credential.
+	// OTP yang lebih baru menggantikan yang lama: verifikasi selalu menilai yang terakhir terbit.
+	// Mengembalikan core.ErrNotFound bila credential belum pernah punya OTP.
+	FindLatestByCredential(ctx context.Context, credentialID uuid.UUID) (*OTP, error)
+	// RecordAttempt mempersist jumlah percobaan terbaru untuk satu OTP (setelah tebakan gagal).
+	RecordAttempt(ctx context.Context, id uuid.UUID, attempts int) error
+	// Consume menandai OTP tak bisa dipakai lagi (consumed_at = now): dipanggil setelah verifikasi
+	// sukses ATAU saat attempts habis. Idempoten.
+	Consume(ctx context.Context, id uuid.UUID) error
+}
+
 // RevokedTokenStore menyimpan & mengecek daftar token (jti) yang dicabut
 // (id.revoked_tokens, sentral). Codec verifikasi (identity/adapter/token) berkonsultasi ke
 // IsRevoked SETELAH tanda tangan & klaim token sah. Denylist per-jti: token berumur pendek,

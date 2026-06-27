@@ -22,6 +22,8 @@ func TestWriteError_StatusMapping(t *testing.T) {
 		{"PermissionDenied", core.ErrPermissionDenied("p"), http.StatusForbidden},
 		{"Validation", core.ErrValidation("f", "r"), http.StatusUnprocessableEntity},
 		{"Conflict", core.ErrConflict("c"), http.StatusConflict},
+		{"TooManyRequests", core.ErrTooManyRequests("terlalu sering"), http.StatusTooManyRequests},
+		{"Unauthorized", core.ErrUnauthorized("tak terbukti"), http.StatusUnauthorized},
 		{"BadRequest", gateway.ErrBadRequest("body rusak"), http.StatusBadRequest},
 		{"ErrorBiasa", errors.New("kegagalan tak terduga"), http.StatusInternalServerError},
 	}
