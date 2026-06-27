@@ -47,6 +47,30 @@ func WithContext(r *http.Request, c *Context) *http.Request {
 
 type contextKey struct{}
 
+// NewContextFromClaims membuat Context yang sudah ter-populasi dari Claims terverifikasi.
+// Dipanggil oleh middleware auth (PR-2.4.2) setelah token lolos Verify; eval & scopedEval
+// disuntik sesudahnya via SetPermissionEvaluator / SetScopedEvaluator.
+func NewContextFromClaims(parent context.Context, c *port.Claims) *Context {
+	roles := make(map[string]bool, len(c.TenantRoles))
+	for _, r := range c.TenantRoles {
+		roles[r] = true
+	}
+	central := make(map[string]bool, len(c.CentralRoles))
+	for _, r := range c.CentralRoles {
+		central[r] = true
+	}
+	return &Context{
+		Context:          parent,
+		personID:         c.PersonID,
+		persona:          c.Persona,
+		employmentStatus: c.EmploymentStatus,
+		tenantID:         c.TenantID,
+		roles:            roles,
+		centralRoles:     central,
+		isCrossTenant:    c.IsCrossTenant,
+	}
+}
+
 // --- port.AuthContext ---
 
 func (c *Context) PersonID() uuid.UUID      { return c.personID }
