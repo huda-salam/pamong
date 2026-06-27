@@ -52,10 +52,34 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
 - **Vektor `X-Tenant-ID` ditutup:** lihat C1 — header dihapus total, tenant hanya dari klaim
   tersigning.
 
-### A5. Alur login employee/citizen + cross-tenant — `DEFERRED(PR-2.4.3/2.4.4/2.4.5)`
-- (belum ada) `identity/usecase/login_*`, OTP, pemilihan tenant
-- Review saat hadir: ASN login publik **tanpa** role internal (kebocoran wewenang); OTP rate-limit
-  & brute-force; cross-tenant assignment wajib `identity:assignment:cross_tenant`.
+### A5. Alur login employee/citizen (PR-2.4.3) — `HARDENED`, perlu konfirmasi reviewer
+- `identity/usecase/login.go` (helper+invariant), `login_employee.go` (LoginEmployee+SelectTenant),
+  `login_citizen.go`; `identity/adapter/auth/password.go` (bcrypt), `port/password.go`.
+- Properti yang dijaga:
+  - **Respons kegagalan SERAGAM** (`errInvalidCredential` → 401) untuk credential tak ada / hash
+    kosong (SSO/OTP-only) / password salah / person non-aktif → tak membocorkan bagian yang gagal.
+  - **Verifikasi password timing-safe** (bcrypt `CompareHashAndPassword`); password >72 byte ditolak
+    (cegah pemotongan diam-diam); hash tak pernah di-return ke jalur lain.
+  - **Persona ditentukan jalur masuk, bukan tipe orang:** employee hanya NIP/NIK; citizen hanya
+    NIK/email/no_hp (silang ditolak). LoginCitizen **tidak pernah** memanggil resolver role →
+    token citizen mustahil membawa role internal (ASN login publik = warga murni). **Diuji**:
+    `TestLoginCitizen_Success_NoInternalRoles`.
+  - **Reject tanpa employment aktif** (orang biasa tak bisa masuk internal) + tanpa penugasan
+    tenant aktif; tenant non-aktif tak ditawarkan.
+  - **INVARIANT scope difilter saat login**: hanya role yang berlaku untuk (person, tenant) yang
+    dibakar (central via `CentralRoleResolver.EffectiveRoles(person, tenant)`; tenant via resolver
+    terikat DB tenant). **Diuji**: `TestLoginEmployee_ScopeFiltered_NoCrossTenantRoleLeak`.
+  - **Pemilihan tenant aman**: token sementara (multi-tenant) tanpa tenant & tanpa role (hanya bisa
+    panggil SelectTenant); `SelectTenant` ambil person_id dari klaim tersigning (bukan input) &
+    menolak tenant di luar penugasan aktif / persona non-employee.
+- Cek lanjutan reviewer: tak ada jalur yang menerbitkan token sebelum verifikasi tuntas; token
+  sementara benar-benar tak berdaya (RequirePermission menolak karena role kosong).
+- **DEFERRED(Phase-2.4/PR-2.4.x):** jalur OTP (no_hp/email tanpa password) + **rate-limit &
+  proteksi brute-force** belum dibangun (marker di `login_citizen.go`). Saat ini verifikasi via
+  password bcrypt; credential OTP-only (secret_hash kosong) ditolak.
+- **DEFERRED(PR-2.4.5):** cross-tenant assignment ber-permission `identity:assignment:cross_tenant`
+  (penerbitan/orkestrasi PJ/PLT) — login sudah menangani *pemilihan* tenant lintas penugasan yang
+  sudah ada (`is_cross_tenant` di klaim), tapi *pembuatan* penugasan cross-tenant ada di 2.4.5.
 
 ---
 

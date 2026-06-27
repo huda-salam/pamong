@@ -220,13 +220,22 @@ Tujuan: model person/employment/persona, multi-tenant, role berlapis, tiga alur 
   - Carrier auth+tenant+trace, implementasi `AuthContext`
   - DoD: `RequirePermission`, `IsCitizen`, `HasCentralRole` berfungsi di test
 
-- **PR-2.4.3** Alur login employee (sentral & daerah) ← 2.4.2, 2.2.2
+- **PR-2.4.3** Alur login employee (sentral & daerah) ← 2.4.2, 2.2.2 ✅
   - Resolusi tenant, pemilihan tenant, scoped token
   - DoD: user 1-tenant langsung masuk; cross-tenant memilih tenant
+  - Selesai: `identity/usecase` `LoginEmployee` (credential NIP/NIK + password → employment aktif →
+    penugasan tenant; tunggal=token final, >1=token sementara+daftar) & `SelectTenant`
+    (person_id dari klaim tersigning, validasi penugasan aktif). **Login citizen juga di PR ini**
+    (`LoginCitizen`, NIK/email/no_hp, tanpa cek employment & tanpa role internal — DoD 2.4.4
+    sebagian tertutup). `port.PasswordVerifier` + adapter bcrypt `identity/adapter/auth`.
+    INVARIANT: role disaring per-tenant saat mint token (CentralRoleResolver/TenantRoleResolver).
 
-- **PR-2.4.4** Alur login citizen (portal publik) ← 2.4.1
+- **PR-2.4.4** Alur login citizen (portal publik) ← 2.4.1 — sebagian di PR-2.4.3
   - Login NIK/email/HP, OTP, persona citizen tanpa cek employment
-  - DoD: ASN bisa login publik → token persona=citizen tanpa role internal
+  - DoD: ASN bisa login publik → token persona=citizen tanpa role internal ✅ (`LoginCitizen`,
+    PR-2.4.3, password-based; diuji `TestLoginCitizen_Success_NoInternalRoles`)
+  - SISA 2.4.4: jalur OTP (no_hp/email tanpa password) + rate-limit & proteksi brute-force
+    (DEFERRED, lihat backlog & REVIEW_BACKLOG A5).
 
 - **PR-2.4.5** Cross-tenant assignment ← 2.4.3, 2.3.2
   - Penugasan lintas tenant dengan otorisasi admin sentral
@@ -614,6 +623,21 @@ rule linter `markerref`).
   + satu cek di codec `Verify`). Plus: bungkus `RevokedTokenStore` dengan use case revoke
   ber-permission + ber-audit (ADR-003) saat ada caller nyata (admin "akhiri sesi" / handler
   event). Lihat ADR-007 "Keputusan tertunda".
+
+- **[Phase-2.4/PR-2.4.x] OTP & proteksi brute-force login.** `LoginCitizen` (PR-2.4.3) hanya
+  jalur password (bcrypt); credential OTP-only (`secret_hash` kosong) ditolak. Belum ada: jalur
+  OTP no_hp/email (kirim+verifikasi kode) dan rate-limit/lockout terhadap brute-force pada SEMUA
+  alur login. Marker `// DEFERRED(Phase-2.4/PR-2.4.x)` di `identity/usecase/login_citizen.go`.
+  Lihat REVIEW_BACKLOG A5.
+
+- **[Phase-2.4] Live wiring alur login.** `LoginEmployee`/`SelectTenant`/`LoginCitizen`
+  (PR-2.4.3) belum di-wire ke gateway/handler & `main.go` (preseden codec/sync: di-test dulu).
+  Saat wiring: rakit dengan `identity/adapter/auth.NewBcryptVerifier`, `port.TokenIssuer` (codec
+  dari config), `identity/adapter/db.CentralRoleResolver` (memenuhi `usecase.CentralRoleResolver`),
+  dan `TenantRoleResolver` per-tenant (atas `tenantrole.TenantRoleResolver` + `TenantConnManager`
+  → memilih DB tenant terpilih). Handler login = driving adapter baru (POST /auth/login,
+  /auth/select-tenant, /auth/public/login). Belum ada use case pembuatan credential ber-password
+  (pakai `PasswordVerifier.Hash`) — dibutuhkan untuk seed/admin saat handler dibangun.
 
 - **[Phase-2.4] Live wiring token codec.** `identity/adapter/token.JWTCodec` belum di-wire
   ke server (preseden event bus & sync engine: di-test, belum di `main.go`). Saat 2.4.2/2.4.3:

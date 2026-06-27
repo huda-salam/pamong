@@ -38,3 +38,17 @@ func (a *TenantAssignment) Validate() error {
 	}
 	return nil
 }
+
+// AppliesTo melaporkan apakah penugasan aktif pada saat now (dalam [ValidFrom, ValidUntil)).
+// Tidak ada flag is_active terpisah pada id.tenant_assignments — masa berlaku yang menentukan.
+// Dipakai alur login (PR-2.4.3) untuk menyaring tenant yang berhak dimasuki person. Fungsi
+// murni — teruji tanpa DB.
+func (a *TenantAssignment) AppliesTo(now time.Time) bool {
+	if now.Before(a.ValidFrom) {
+		return false
+	}
+	if a.ValidUntil != nil && !now.Before(*a.ValidUntil) {
+		return false
+	}
+	return true
+}

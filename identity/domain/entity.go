@@ -86,6 +86,22 @@ func (e *Employment) Validate() error {
 	return nil
 }
 
+// IsActiveAt melaporkan apakah employment aktif pada saat now: flag IsActive menyala DAN now
+// berada dalam masa berlaku [ValidFrom, ValidUntil). Dipakai alur login (PR-2.4.3) untuk
+// menolak pegawai non-aktif/kedaluwarsa masuk portal internal. Fungsi murni — teruji tanpa DB.
+func (e *Employment) IsActiveAt(now time.Time) bool {
+	if !e.IsActive {
+		return false
+	}
+	if now.Before(e.ValidFrom) {
+		return false
+	}
+	if e.ValidUntil != nil && !now.Before(*e.ValidUntil) {
+		return false
+	}
+	return true
+}
+
 // CredType adalah jenis identifier login. Semua credential satu person resolve ke person
 // yang sama.
 type CredType string
