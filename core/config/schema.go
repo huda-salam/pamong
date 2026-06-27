@@ -9,6 +9,7 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // AppConfig adalah konfigurasi runtime aplikasi, hasil merge seluruh lapis config.
@@ -138,11 +139,29 @@ type ObservabilityConfig struct {
 	LogFormat      string `yaml:"log_format" env:"GOV_LOG_FORMAT"` // json | text
 }
 
-// AuthConfig — verifikasi token SSO.
+// AuthConfig memuat dua concern token yang TERPISAH:
+//   - Token INTERNAL — diterbitkan & diverifikasi Pamong sendiri (HS256, modular monolith;
+//     ADR-007). Dikendalikan TokenSecret + TokenTTLSeconds.
+//   - Token SSO EKSTERNAL — diverifikasi dari IdP lain (asimetris/JWKS). Dikendalikan
+//     JWKSURL + Issuer + Audience. Dipakai PR auth eksternal (bukan PR-2.4.1).
 type AuthConfig struct {
+	// Token internal (HS256) — identity/adapter/token.
+	TokenSecret     string `yaml:"token_secret" env:"GOV_AUTH_TOKEN_SECRET"` // kunci HMAC; wajib & ≥32 byte di production
+	TokenTTLSeconds int    `yaml:"token_ttl" env:"GOV_AUTH_TOKEN_TTL"`       // umur token internal (detik); 0 = default
+
+	// Token SSO eksternal (verifikasi token dari IdP lain).
 	JWKSURL  string `yaml:"jwks_url" env:"GOV_AUTH_JWKS_URL"`
 	Issuer   string `yaml:"issuer" env:"GOV_AUTH_ISSUER"`
 	Audience string `yaml:"audience" env:"GOV_AUTH_AUDIENCE"`
+}
+
+// TokenTTL mengembalikan umur token internal sebagai Duration, dengan default aman bila
+// tidak diset (TokenTTLSeconds <= 0).
+func (a AuthConfig) TokenTTL() time.Duration {
+	if a.TokenTTLSeconds <= 0 {
+		return time.Hour
+	}
+	return time.Duration(a.TokenTTLSeconds) * time.Second
 }
 
 // RateLimitConfig — pembatasan laju request.
@@ -151,6 +170,10 @@ type RateLimitConfig struct {
 	RPS     int  `yaml:"rps" env:"GOV_RATELIMIT_RPS"`
 	Burst   int  `yaml:"burst" env:"GOV_RATELIMIT_BURST"`
 }
+
+// minTokenSecretLen adalah panjang minimum kunci HMAC token internal (HS256). 32 byte =
+// 256 bit, setara ukuran output HS256; kunci lebih pendek melemahkan tanda tangan.
+const minTokenSecretLen = 32
 
 // nilai sah untuk field enumeratif — divalidasi saat boot agar salah ketik gagal cepat.
 var (
@@ -193,6 +216,13 @@ func (c *AppConfig) Validate() error {
 		}
 		if c.Observ.LogFormat == "text" {
 			errs = append(errs, "observability.log_format=text dilarang di production (gunakan json)")
+		}
+		// Token internal HS256: tanpa secret kuat, token bisa dipalsukan (ADR-007).
+		switch {
+		case c.Auth.TokenSecret == "":
+			errs = append(errs, "auth.token_secret wajib di production (kunci tanda tangan token internal)")
+		case len(c.Auth.TokenSecret) < minTokenSecretLen:
+			errs = append(errs, fmt.Sprintf("auth.token_secret minimal %d karakter untuk HS256", minTokenSecretLen))
 		}
 	}
 

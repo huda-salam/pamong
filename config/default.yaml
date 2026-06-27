@@ -72,6 +72,12 @@ observability:
   log_format: text
 
 auth:
+  # Token INTERNAL (diterbitkan & diverifikasi Pamong sendiri, HS256; ADR-007).
+  # token_secret: kunci HMAC. JANGAN commit nilai nyata — set di config/local.yaml atau env
+  # GOV_AUTH_TOKEN_SECRET. Wajib & ≥32 karakter di production (divalidasi saat boot).
+  token_secret: ""
+  token_ttl: 3600        # umur token internal (detik); 0 = default 1 jam
+  # Token SSO EKSTERNAL (verifikasi token dari IdP lain) — dipakai PR auth eksternal.
   jwks_url: ""
   issuer: ""
   audience: pamong

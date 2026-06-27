@@ -208,9 +208,13 @@ Tujuan: model person/employment/persona, multi-tenant, role berlapis, tiga alur 
 
 ### Sub-phase 2.4 — Auth flow
 
-- **PR-2.4.1** JWT issue & verify ← 2.1.2
+- **PR-2.4.1** JWT issue & verify ← 2.1.2 ✅
   - Issue token dengan claim sesuai CLAUDE.md, verifikasi, revocation via jti
   - DoD: token valid diverifikasi; token revoked ditolak
+  - Selesai: `port.TokenIssuer/Verifier` + `port.Claims` (seam, gateway tak import identity);
+    codec HS256 `identity/adapter/token` (golang-jwt/v5, pin alg); revocation durable
+    `id.revoked_tokens` (migrasi 005) + `RevokedTokenStore`; `core.ErrUnauthorized` (401). ADR-007.
+    Live wiring middleware + alur login = 2.4.2/2.4.3.
 
 - **PR-2.4.2** gateway.Context / AuthContext ← 2.4.1, 2.3.x
   - Carrier auth+tenant+trace, implementasi `AuthContext`
@@ -602,6 +606,25 @@ rule linter `markerref`).
   (PR-2.3.3) belum menerbitkan event — marker `// DEFERRED(Phase-2.4)` di keduanya. Sama
   seperti role sentral: saat auth flow aktif, terbitkan event penugasan untuk refresh/revoke
   token. Belum ada konsumen sekarang.
+
+- **[Phase-2.4] Revocation per-person + use case revoke (lanjutan PR-2.4.1).** Denylist jti
+  (`id.revoked_tokens`) sudah ada & teruji, tapi hanya bisa mencabut token yang jti-nya
+  diketahui. "Cabut semua token person" (mis. saat central role dicabut) butuh epoch
+  `tokens_valid_after` per person — token ber-`iat` lebih awal ditolak (additive: kolom/tabel
+  + satu cek di codec `Verify`). Plus: bungkus `RevokedTokenStore` dengan use case revoke
+  ber-permission + ber-audit (ADR-003) saat ada caller nyata (admin "akhiri sesi" / handler
+  event). Lihat ADR-007 "Keputusan tertunda".
+
+- **[Phase-2.4] Live wiring token codec.** `identity/adapter/token.JWTCodec` belum di-wire
+  ke server (preseden event bus & sync engine: di-test, belum di `main.go`). Saat 2.4.2/2.4.3:
+  bangun codec dari `AppConfig.Auth` (secret + `TokenTTL()`) + `RevokedTokenStore` DB, inject
+  `port.TokenVerifier` ke gateway auth middleware (verify → populasi `gateway.Context`) dan
+  `port.TokenIssuer` ke alur login. Secret production wajib (sudah ditegakkan `config.Validate`);
+  untuk dev, set di `config/local.yaml`.
+
+- **[Phase-3.6+] Purge entri revoked kedaluwarsa.** `id.revoked_tokens` punya index `expires_at`;
+  entri benar & lazy tanpa job (token mati setelah exp). Job pembersih (hapus `expires_at < now`)
+  menyusul saat `core/scheduler` ada — hiasan, bukan kebenaran.
 
 - **[PR-2.3.5] Penegakan scope unit kerja (data-level ABAC). SELESAI.** Ditegakkan di
   `core/permission.ScopedEngine` (Tahap 1 RBAC `Engine.Allows` UTUH + Tahap 2 scope via

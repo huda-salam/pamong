@@ -27,6 +27,16 @@ func ErrNotFound(entity, id string) error {
 	}
 }
 
+// ErrUnauthorized dipublikasikan saat otentikasi gagal — tak ada token, atau token tidak
+// valid/kedaluwarsa/dicabut (HTTP 401). Beda dari ErrPermissionDenied (403): 401 = "tak
+// terbukti siapa", 403 = "terbukti, tapi tak boleh".
+func ErrUnauthorized(reason string) error {
+	return &FrameworkError{
+		Code:    "UNAUTHORIZED",
+		Message: reason,
+	}
+}
+
 // ErrPermissionDenied dipublikasikan saat actor tidak punya permission (HTTP 403).
 func ErrPermissionDenied(perm string) error {
 	return &FrameworkError{

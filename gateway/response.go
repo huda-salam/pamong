@@ -39,6 +39,8 @@ func httpStatus(code string) int {
 	switch code {
 	case "NOT_FOUND":
 		return http.StatusNotFound
+	case "UNAUTHORIZED":
+		return http.StatusUnauthorized
 	case "PERMISSION_DENIED", "FORBIDDEN":
 		return http.StatusForbidden
 	case "VALIDATION_ERROR":

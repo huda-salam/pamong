@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -61,4 +62,16 @@ type TenantRegistry interface {
 	FindByID(ctx context.Context, tenantID string) (*Tenant, error)
 	List(ctx context.Context) ([]*Tenant, error)
 	SetActive(ctx context.Context, tenantID string, active bool) error
+}
+
+// RevokedTokenStore menyimpan & mengecek daftar token (jti) yang dicabut
+// (id.revoked_tokens, sentral). Codec verifikasi (identity/adapter/token) berkonsultasi ke
+// IsRevoked SETELAH tanda tangan & klaim token sah. Denylist per-jti: token berumur pendek,
+// entri cukup hidup sampai expiresAt lalu boleh dipurge.
+type RevokedTokenStore interface {
+	// Revoke menandai satu jti dicabut. expiresAt = exp token (batas hidup entri); reason
+	// untuk audit/diagnosa. Idempoten: mencabut jti yang sama dua kali tidak error.
+	Revoke(ctx context.Context, jti, personID uuid.UUID, expiresAt time.Time, reason string) error
+	// IsRevoked true bila jti pernah dicabut.
+	IsRevoked(ctx context.Context, jti uuid.UUID) (bool, error)
 }
