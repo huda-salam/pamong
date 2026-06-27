@@ -26,6 +26,11 @@ type Context struct {
 	isCrossTenant    bool
 	eval             port.PermissionEvaluator
 	scopedEval       port.ScopedEvaluator
+
+	// cachedRoles adalah gabungan nama role tenant+central, dihitung sekali saat
+	// konstruksi (role maps tak pernah berubah sesudahnya). Menghindari realokasi
+	// slice tiap pemanggilan RequirePermission.
+	cachedRoles []string
 }
 
 var _ port.AuthContext = (*Context)(nil)
@@ -59,6 +64,13 @@ func NewContextFromClaims(parent context.Context, c *port.Claims) *Context {
 	for _, r := range c.CentralRoles {
 		central[r] = true
 	}
+	roleList := make([]string, 0, len(roles)+len(central))
+	for r := range roles {
+		roleList = append(roleList, r)
+	}
+	for r := range central {
+		roleList = append(roleList, r)
+	}
 	return &Context{
 		Context:          parent,
 		personID:         c.PersonID,
@@ -68,6 +80,7 @@ func NewContextFromClaims(parent context.Context, c *port.Claims) *Context {
 		roles:            roles,
 		centralRoles:     central,
 		isCrossTenant:    c.IsCrossTenant,
+		cachedRoles:      roleList,
 	}
 }
 
@@ -88,6 +101,16 @@ func (c *Context) HasRole(role string) bool {
 	return c.roles[role] || c.centralRoles[role]
 }
 
+// HasCentralRole memeriksa KEBERADAAN nama central role pada klaim — ia TIDAK sadar
+// tenant_scope. Untuk scoped role (mis. regional_helpdesk yang hanya berlaku di tenant
+// tertentu), method ini mengembalikan true di tenant mana pun karena Context hanya
+// membawa nama role, bukan katalog yang tahu mana global vs scoped. Karena itu:
+//   - Keputusan OTORISASI WAJIB lewat RequirePermission (yang melalui Engine + katalog,
+//     menegakkan scope), BUKAN HasCentralRole.
+//   - HasCentralRole hanya untuk hint UI / cabang non-sekuriti.
+//
+// Invariant scope ditegakkan saat login (PR-2.4.3): CentralRoleResolver hanya memasukkan
+// nama role yang berlaku untuk person+tenant ke dalam token. Lihat docs/security/REVIEW_BACKLOG.md (A4/C1).
 func (c *Context) HasCentralRole(role string) bool {
 	return c.centralRoles[role]
 }
@@ -134,7 +157,12 @@ func (c *Context) RequirePermissionInUnit(perm string, unitID uuid.UUID) error {
 }
 
 // roleList menggabungkan nama role tenant dan central yang dibawa context.
+// Hasil di-cache saat konstruksi via NewContextFromClaims; jalur konstruksi lain
+// (mis. FromRequest fallback) menghitung sekali secara lazy.
 func (c *Context) roleList() []string {
+	if c.cachedRoles != nil {
+		return c.cachedRoles
+	}
 	out := make([]string, 0, len(c.roles)+len(c.centralRoles))
 	for r := range c.roles {
 		out = append(out, r)
@@ -142,6 +170,7 @@ func (c *Context) roleList() []string {
 	for r := range c.centralRoles {
 		out = append(out, r)
 	}
+	c.cachedRoles = out
 	return out
 }
 

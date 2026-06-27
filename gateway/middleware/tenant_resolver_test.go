@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/huda-salam/pamong/core"
 	"github.com/huda-salam/pamong/gateway"
 	"github.com/huda-salam/pamong/gateway/middleware"
@@ -40,12 +41,28 @@ func captureHandler(seen *string) http.Handler {
 	})
 }
 
-func doRequest(t *testing.T, h http.Handler, tenantHeader string) *httptest.ResponseRecorder {
-	t.Helper()
+// reqWithClaimTenant membangun request yang sudah membawa gateway.Context dengan tenant_id
+// dari klaim token tersigning (mensimulasikan auth middleware yang berjalan lebih dulu).
+// header opsional X-Tenant-ID disisipkan untuk membuktikan ia DIABAIKAN.
+func reqWithClaimTenant(claimTenant, headerTenant string) *http.Request {
 	r := httptest.NewRequest(http.MethodGet, "/x", nil)
-	if tenantHeader != "" {
-		r.Header.Set(middleware.TenantHeader, tenantHeader)
+	if headerTenant != "" {
+		r.Header.Set("X-Tenant-ID", headerTenant)
 	}
+	if claimTenant != "" {
+		c := gateway.NewContextFromClaims(r.Context(), &port.Claims{
+			PersonID: uuid.New(),
+			Persona:  "employee",
+			TenantID: claimTenant,
+		})
+		r = gateway.WithContext(r, c)
+	}
+	return r
+}
+
+func runResolver(t *testing.T, r *http.Request, seen *string) *httptest.ResponseRecorder {
+	t.Helper()
+	h := middleware.TenantResolver(newResolver())(captureHandler(seen))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	return w
@@ -53,22 +70,20 @@ func doRequest(t *testing.T, h http.Handler, tenantHeader string) *httptest.Resp
 
 func TestTenantResolver_Isolation(t *testing.T) {
 	var seen string
-	h := middleware.TenantResolver(newResolver())(captureHandler(&seen))
 
-	// Request tenant A → context tenant A.
-	if w := doRequest(t, h, "pemkot-a"); w.Code != http.StatusOK || seen != "pemkot-a" {
+	// Request tenant A (klaim) → context tenant A.
+	if w := runResolver(t, reqWithClaimTenant("pemkot-a", ""), &seen); w.Code != http.StatusOK || seen != "pemkot-a" {
 		t.Fatalf("tenant A: code=%d seen=%q", w.Code, seen)
 	}
-	// Request tenant B → context tenant B (request sebelumnya tidak bocor).
-	if w := doRequest(t, h, "pemkot-b"); w.Code != http.StatusOK || seen != "pemkot-b" {
+	// Request tenant B (klaim) → context tenant B (request sebelumnya tidak bocor).
+	if w := runResolver(t, reqWithClaimTenant("pemkot-b", ""), &seen); w.Code != http.StatusOK || seen != "pemkot-b" {
 		t.Fatalf("tenant B: code=%d seen=%q", w.Code, seen)
 	}
 }
 
 func TestTenantResolver_UnknownTenant_404(t *testing.T) {
 	var seen string
-	h := middleware.TenantResolver(newResolver())(captureHandler(&seen))
-	w := doRequest(t, h, "tidak-ada")
+	w := runResolver(t, reqWithClaimTenant("tidak-ada", ""), &seen)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("tenant tak dikenal harus 404, dapat %d", w.Code)
 	}
@@ -76,18 +91,33 @@ func TestTenantResolver_UnknownTenant_404(t *testing.T) {
 
 func TestTenantResolver_InactiveTenant_403(t *testing.T) {
 	var seen string
-	h := middleware.TenantResolver(newResolver())(captureHandler(&seen))
-	w := doRequest(t, h, "pemkot-x")
+	w := runResolver(t, reqWithClaimTenant("pemkot-x", ""), &seen)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("tenant nonaktif harus 403, dapat %d", w.Code)
 	}
 }
 
 func TestTenantResolver_NoTenant_PassThrough(t *testing.T) {
-	var seen string = "sentinel"
-	h := middleware.TenantResolver(newResolver())(captureHandler(&seen))
-	w := doRequest(t, h, "")
+	var seen = "sentinel"
+	// Tanpa klaim tenant (mis. anonimus/citizen) → lolos tanpa tenant.
+	w := runResolver(t, httptest.NewRequest(http.MethodGet, "/x", nil), &seen)
 	if w.Code != http.StatusOK || seen != "" {
 		t.Fatalf("tanpa tenant harus lolos tanpa tenant: code=%d seen=%q", w.Code, seen)
+	}
+}
+
+// TestTenantResolver_HeaderDiabaikan mengunci properti keamanan: X-Tenant-ID tak pernah
+// menjadi sumber tenant. Klien tak bisa memalsukan/menarget tenant lewat header.
+func TestTenantResolver_HeaderDiabaikan(t *testing.T) {
+	// Hanya header, tanpa klaim → diperlakukan tanpa tenant (header diabaikan).
+	var seen = "sentinel"
+	if w := runResolver(t, reqWithClaimTenant("", "pemkot-a"), &seen); w.Code != http.StatusOK || seen != "" {
+		t.Fatalf("header-only harus lolos tanpa tenant (diabaikan): code=%d seen=%q", w.Code, seen)
+	}
+
+	// Klaim pemkot-a + header pemkot-b → klaim menang, header diabaikan total.
+	seen = "sentinel"
+	if w := runResolver(t, reqWithClaimTenant("pemkot-a", "pemkot-b"), &seen); w.Code != http.StatusOK || seen != "pemkot-a" {
+		t.Fatalf("klaim harus menang atas header: code=%d seen=%q", w.Code, seen)
 	}
 }

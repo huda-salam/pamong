@@ -39,11 +39,18 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
 - Properti: kegagalan otentikasi → 401 (bukan 403/500); store-error → 500 (fail-closed),
   bukan 401-lalu-lolos.
 
-### A4. Auth middleware + populasi context — `DEFERRED(PR-2.4.2)`
-- (belum ada) `gateway/middleware/auth.go`, `gateway/context.go`
-- Review saat hadir: ekstraksi bearer token aman; **header `X-Tenant-ID` tak boleh meng-override
-  tenant dari klaim token** (vektor eskalasi lintas-tenant — lihat C1); pembangunan
-  Engine/ScopedEngine per-request benar (tak bocor antar request/tenant).
+### A4. Auth middleware + populasi context (PR-2.4.2) — `HARDENED`
+- `gateway/middleware/auth.go`, `gateway/context.go`
+- Properti: ekstraksi bearer aman (`CutPrefix`, hanya prefix `Bearer `); token invalid/revoked
+  → 401; tanpa token → anonimus (eval nil = permisif; penolakan TIDAK dari RequirePermission —
+  route publik vs internal dipisah saat registrasi router). Engine dibangun per-request via
+  EvaluatorFactory dari Claims (tak bocor antar request/tenant).
+- **`HasCentralRole` scope-blind (catatan):** Context hanya membawa NAMA role, bukan katalog
+  global-vs-scoped → `HasCentralRole` true di tenant mana pun. Mitigasi: otorisasi WAJIB lewat
+  `RequirePermission` (Engine menegakkan scope), bukan `HasCentralRole` (hint UI saja); invariant
+  scope difilter saat login di A5 (CentralRoleResolver hanya memasukkan nama role yang berlaku).
+- **Vektor `X-Tenant-ID` ditutup:** lihat C1 — header dihapus total, tenant hanya dari klaim
+  tersigning.
 
 ### A5. Alur login employee/citizen + cross-tenant — `DEFERRED(PR-2.4.3/2.4.4/2.4.5)`
 - (belum ada) `identity/usecase/login_*`, OTP, pemilihan tenant
@@ -91,11 +98,18 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
 
 ## C. Isolasi tenant — Phase 2.2
 
-### C1. Tenant resolver (PR-2.2.2) — `OPEN` (prioritas tinggi)
+### C1. Tenant resolver (PR-2.2.2, diperketat PR-2.4.2) — `RESOLVED`
 - `gateway/middleware/tenant_resolver.go`
-- Properti & cek: tenant dari klaim token diutamakan; **header `X-Tenant-ID` tak boleh
-  dipakai untuk pindah ke tenant lain saat token sudah menentukan tenant** (vektor eskalasi).
-  Tenant tak dikenal→404, nonaktif→403. Tiap request hanya pernah membawa tenant-nya sendiri.
+- **Keputusan (PR-2.4.2):** header `X-Tenant-ID` **dihapus total**. `extractTenantID` lama
+  (klaim → fallback header) diganti: tenant_id **hanya** dari klaim JWT tersigning (HS256).
+  Menutup vektor eskalasi lintas-tenant: klien (citizen/anonimus) tak bisa lagi memalsukan/
+  menarget tenant lewat header tak-tersigning. Regression test `TestTenantResolver_HeaderDiabaikan`
+  mengunci properti ini (header-only → tanpa tenant; klaim menang atas header).
+- Validasi registry tetap: tenant tak dikenal→404, nonaktif→403 (defense-in-depth bila token
+  membawa tenant yang sejak itu dinonaktifkan). Tiap request hanya membawa tenant-nya sendiri.
+- **Flow tanpa token yang perlu menarget tenant** (service/CLI/cross-tenant admin) ditunda;
+  bila dibutuhkan → mekanisme ber-permission & ter-audit (service token ber-claim / endpoint
+  tenant-switch yang menerbitkan token scoped baru), lewat ADR — **bukan** header mentah.
 
 ### C2. Routing pool DB per-tenant (PR-2.2.3) — `OPEN` (prioritas tinggi)
 - `infra/db/conn_manager.go`

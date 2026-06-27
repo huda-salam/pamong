@@ -35,9 +35,12 @@ type EvaluatorFactory interface {
 //     suntik ke Context via SetPermissionEvaluator.
 //  5. Teruskan ke handler berikutnya.
 //
-// Request tanpa header Authorization diteruskan sebagai anonymous (Context kosong, eval nil
-// → RequirePermission default permisif). Handler/use case yang memerlukan auth wajib
-// memanggil RequirePermission yang akan gagal karena tidak ada role.
+// Request tanpa header Authorization diteruskan sebagai anonymous (Context kosong, eval nil).
+// CATATAN: dengan eval nil, RequirePermission default PERMISIF (mengembalikan nil) — BUKAN
+// menolak. Penolakan request anonymous TIDAK berasal dari RequirePermission; ia bergantung
+// pada (a) route publik vs internal yang dipisah saat registrasi router, dan (b) evaluator
+// yang ter-wire (factory.Build) untuk request ber-token. Jangan mengandalkan RequirePermission
+// sendirian untuk menolak anonymous.
 //
 // ScopedEvaluator (RequirePermissionInUnit) tetap default permisif hingga wiring Authority
 // live di PR berikutnya (DEFERRED Phase-2.4, ROADMAP "Wiring Authority live").
@@ -78,9 +81,8 @@ func Auth(verifier port.TokenVerifier, factory EvaluatorFactory) func(http.Handl
 // extractBearer mengambil token dari header "Authorization: Bearer <token>".
 // Mengembalikan string kosong bila header tidak ada atau formatnya bukan Bearer.
 func extractBearer(r *http.Request) string {
-	v := r.Header.Get("Authorization")
-	if !strings.HasPrefix(v, "Bearer ") {
-		return ""
+	if after, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+		return after
 	}
-	return strings.TrimPrefix(v, "Bearer ")
+	return ""
 }

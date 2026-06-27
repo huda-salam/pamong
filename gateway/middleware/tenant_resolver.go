@@ -10,22 +10,27 @@ import (
 	"github.com/huda-salam/pamong/port"
 )
 
-// TenantHeader adalah header sumber tenant bila tidak datang dari klaim token.
-const TenantHeader = "X-Tenant-ID"
-
-// TenantResolver mengembalikan middleware yang menentukan tenant request dari klaim
-// token (bila ada) atau header X-Tenant-ID, memvalidasinya terhadap registry sentral,
+// TenantResolver mengembalikan middleware yang menentukan tenant request DARI KLAIM TOKEN
+// SAJA (di-set auth middleware ke gateway.Context), memvalidasinya terhadap registry sentral,
 // lalu menyuntikkan tenant_id ter-resolve ke gateway.Context (PRD gateway F5).
 //
+// Tidak ada sumber tenant tak-tersigning (mis. header X-Tenant-ID): tenant_id hanya berasal
+// dari klaim JWT yang ditandatangani (HS256) sehingga tak bisa dipalsukan klien. Flow tanpa
+// token yang perlu menarget tenant (service/CLI) wajib lewat mekanisme ber-permission &
+// ter-audit (service token ber-claim atau endpoint tenant-switch), bukan input mentah —
+// diputuskan lewat ADR saat dibutuhkan.
+//
 // Aturan:
-//   - tanpa tenant id → diteruskan tanpa tenant (mis. portal publik/citizen); downstream
-//     yang memutuskan apakah tenant wajib.
-//   - tenant tidak dikenal → 404; tenant nonaktif → 403. Isolasi: tiap request hanya
-//     pernah membawa tenant-nya sendiri.
+//   - tanpa tenant id di klaim → diteruskan tanpa tenant (mis. portal publik/citizen);
+//     downstream yang memutuskan apakah tenant wajib.
+//   - tenant tidak dikenal → 404; tenant nonaktif → 403 (defense-in-depth: token bisa
+//     membawa tenant yang sejak itu dinonaktifkan). Isolasi: tiap request hanya pernah
+//     membawa tenant-nya sendiri.
 func TenantResolver(resolver port.TenantResolver) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			tenantID := extractTenantID(r)
+			c := gateway.FromRequest(r)
+			tenantID := c.TenantID() // hanya dari klaim token tersigning
 			if tenantID == "" {
 				next.ServeHTTP(w, r)
 				return
@@ -44,18 +49,8 @@ func TenantResolver(resolver port.TenantResolver) func(http.Handler) http.Handle
 				return
 			}
 
-			c := gateway.FromRequest(r)
 			c.SetTenantID(info.TenantID)
 			next.ServeHTTP(w, gateway.WithContext(r, c))
 		})
 	}
-}
-
-// extractTenantID mengambil tenant dari klaim token (gateway.Context) bila sudah diset
-// auth middleware, jika tidak dari header X-Tenant-ID.
-func extractTenantID(r *http.Request) string {
-	if c := gateway.FromRequest(r); c.TenantID() != "" {
-		return c.TenantID()
-	}
-	return r.Header.Get(TenantHeader)
 }
