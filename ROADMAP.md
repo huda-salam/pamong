@@ -293,9 +293,13 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
     Engine.Start+Execute — guard AND, action dispatch, history; 14 unit test DoD.
     Security review: clear.)
 
-- **PR-3.2.2** YAML seed loader + schema validation ← 3.2.1
+- **PR-3.2.2** YAML seed loader + schema validation ← 3.2.1 — SELESAI
   - Muat definisi workflow dari YAML (baseline) → validasi struktur
   - DoD: YAML valid termuat; YAML invalid ditolak dengan pesan jelas
+  - `ParseYAML([]byte)`, `SeedYAML(data, store)` (idempoten: skip jika sudah ada),
+    `LoadYAML(path, store)`. states YAML map → sort+konversi ke []State; validasi
+    struktural didelegasikan ke validateDefinition. 9 unit test + security review: clear.
+    (commit `5a46539`)
 
 - **PR-3.2.3** Workflow definition store (DB) ← 3.2.2, 1.2.3
   - Simpan definisi ke DB, seed di-load saat bootstrap, override per-tenant
