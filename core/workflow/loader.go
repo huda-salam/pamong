@@ -159,8 +159,8 @@ func convertAndValidate(raw yamlDefinition) (WorkflowDefinition, error) {
 		AuthoringSource: "developer",
 	}
 
-	// Delegasikan validasi struktural ke validateDefinition — aturan sama dengan Register manual.
-	if err := validateDefinition(def); err != nil {
+	// Delegasikan validasi struktural ke Validate — aturan sama dengan Register manual.
+	if err := Validate(def); err != nil {
 		return WorkflowDefinition{}, fmt.Errorf("YAML workflow %q tidak valid: %w", raw.ID, err)
 	}
 	return def, nil

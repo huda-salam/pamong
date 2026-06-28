@@ -301,10 +301,15 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
     struktural didelegasikan ke validateDefinition. 9 unit test + security review: clear.
     (commit `5a46539`)
 
-- **PR-3.2.3** Workflow definition store (DB) ← 3.2.2, 1.2.3
+- **PR-3.2.3** Workflow definition store (DB) ← 3.2.2, 1.2.3 — SELESAI
   - Simpan definisi ke DB, seed di-load saat bootstrap, override per-tenant
   - Versioned + effective date + audit siapa-mengubah-apa
-  - DoD: definisi dari DB dieksekusi; perubahan ber-versi & ter-audit
+  - DoD: definisi dari DB dieksekusi; perubahan ber-versi & ter-audit ✅
+    (Validate() diekspor dari core/workflow/store.go; migration SQL
+    core/workflow/migrations/001_create_workflow_definitions.{up,down}.sql;
+    infra/workflow/db_store.go — DBStore: EnsureSchema, Register, RegisterAsActor,
+    Get, GetVersion; SeedYAML idempoten via Get-sebelum-Register di loader;
+    6 integration test lulus; security review: clear.)
 
 - **PR-3.2.4** Template selection per-tenant ← 3.2.3
   - Tenant memilih template ber-key + parameter binding peran→jabatan

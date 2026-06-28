@@ -23,7 +23,7 @@ var _ DefinitionStore = (*MemoryStore)(nil)
 // Register memvalidasi dan menyimpan definisi. Validasi dilakukan di sini (pintu masuk)
 // agar error struktur ketahuan saat load, bukan saat runtime eksekusi transisi.
 func (s *MemoryStore) Register(def WorkflowDefinition) error {
-	if err := validateDefinition(def); err != nil {
+	if err := Validate(def); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -43,13 +43,16 @@ func (s *MemoryStore) Get(id string) (WorkflowDefinition, error) {
 	return def, nil
 }
 
-// validateDefinition memeriksa invariant struktural definisi:
+// Validate memeriksa invariant struktural definisi:
 //   - ID, InitialState wajib terisi
 //   - Tidak ada nama state duplikat
 //   - InitialState harus ada di daftar States
 //   - Setiap transisi From/To harus merujuk state yang ada
 //   - Minimal satu state terminal ada (reachability penuh DEFERRED ke PR-3.2.2/loader)
-func validateDefinition(def WorkflowDefinition) error {
+//
+// Dipanggil oleh MemoryStore.Register dan DBStore.Register — satu titik validasi
+// untuk semua implementasi DefinitionStore.
+func Validate(def WorkflowDefinition) error {
 	if def.ID == "" {
 		return ErrInvalidDefinition("id workflow wajib diisi")
 	}
