@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,11 +26,18 @@ CREATE TABLE IF NOT EXISTS gov.outbox_events (
     idempotency_key TEXT NOT NULL DEFAULT '',
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     dispatched_at   TIMESTAMPTZ,
-    attempts        INT NOT NULL DEFAULT 0
+    attempts        INT NOT NULL DEFAULT 0,
+    next_retry_at   TIMESTAMPTZ,
+    failed_at       TIMESTAMPTZ
 );
+-- Idempotent migration: tambah kolom baru ke tabel yang sudah ada.
+ALTER TABLE gov.outbox_events ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ;
+ALTER TABLE gov.outbox_events ADD COLUMN IF NOT EXISTS failed_at TIMESTAMPTZ;
+-- Index mencakup filter DLQ + backoff sehingga hanya baris siap-kirim yang di-scan.
+DROP INDEX IF EXISTS idx_outbox_pending;
 CREATE INDEX IF NOT EXISTS idx_outbox_pending
-    ON gov.outbox_events (created_at)
-    WHERE dispatched_at IS NULL;`
+    ON gov.outbox_events (next_retry_at NULLS FIRST, created_at)
+    WHERE dispatched_at IS NULL AND failed_at IS NULL;`
 
 // EnsureOutboxSchema membuat schema gov dan tabel gov.outbox_events bila belum ada.
 // Dipanggil saat bootstrap sebelum relay dijalankan.
@@ -81,11 +89,26 @@ type OutboxRelay struct {
 	bus       *Bus
 	interval  time.Duration
 	batchSize int
+	policy    RetryPolicy
 }
 
-// NewOutboxRelay membuat relay dengan interval polling. batchSize default 10.
+// NewOutboxRelay membuat relay dengan interval polling dan RetryPolicy default.
+// batchSize default 10.
 func NewOutboxRelay(pool *db.Pool, bus *Bus, interval time.Duration) *OutboxRelay {
-	return &OutboxRelay{pool: pool, bus: bus, interval: interval, batchSize: 10}
+	return &OutboxRelay{
+		pool:      pool,
+		bus:       bus,
+		interval:  interval,
+		batchSize: 10,
+		policy:    DefaultRetryPolicy(),
+	}
+}
+
+// WithRetryPolicy mengganti kebijakan retry default. Kembalikan relay itu sendiri
+// agar bisa di-chain: NewOutboxRelay(...).WithRetryPolicy(p).
+func (r *OutboxRelay) WithRetryPolicy(p RetryPolicy) *OutboxRelay {
+	r.policy = p
+	return r
 }
 
 // Start menjalankan goroutine polling hingga ctx dibatalkan. Non-blocking.
@@ -111,6 +134,7 @@ type outboxRow struct {
 	tenantID       string
 	causedBy       string
 	idempotencyKey string
+	attempts       int
 }
 
 // RunOnce menjalankan satu siklus poll: kunci baris pending, dispatch, tandai selesai.
@@ -118,6 +142,10 @@ type outboxRow struct {
 //
 // Jaminan at-least-once: bila crash setelah Dispatch tapi sebelum UPDATE dispatched_at,
 // event akan dikirim ulang pada poll berikutnya. Consumer wajib idempoten (PRD F5).
+//
+// Backoff & DLQ: bila Dispatch gagal, relay menyimpan next_retry_at (backoff eksponensial).
+// Setelah attempts >= RetryPolicy.MaxAttempts, baris di-mark failed_at (DLQ) dan tidak
+// di-poll lagi sampai operator me-reset via UPDATE SET failed_at=NULL, attempts=0.
 func (r *OutboxRelay) RunOnce(ctx context.Context) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -127,10 +155,13 @@ func (r *OutboxRelay) RunOnce(ctx context.Context) error {
 
 	// SELECT FOR UPDATE SKIP LOCKED: aman untuk multi-instance relay — tiap instance
 	// hanya mengambil baris yang belum dikunci instance lain.
+	// Filter: hanya baris yang belum dispatched, belum DLQ, dan sudah lewat next_retry_at.
 	rows, err := tx.Query(ctx, `
-		SELECT id, event_name, payload, tenant_id, caused_by, idempotency_key
+		SELECT id, event_name, payload, tenant_id, caused_by, idempotency_key, attempts
 		FROM gov.outbox_events
 		WHERE dispatched_at IS NULL
+		  AND failed_at IS NULL
+		  AND (next_retry_at IS NULL OR next_retry_at <= now())
 		ORDER BY created_at
 		LIMIT $1
 		FOR UPDATE SKIP LOCKED`, r.batchSize)
@@ -142,7 +173,7 @@ func (r *OutboxRelay) RunOnce(ctx context.Context) error {
 	for rows.Next() {
 		var row outboxRow
 		if err := rows.Scan(&row.id, &row.eventName, &row.payload,
-			&row.tenantID, &row.causedBy, &row.idempotencyKey); err != nil {
+			&row.tenantID, &row.causedBy, &row.idempotencyKey, &row.attempts); err != nil {
 			rows.Close()
 			return fmt.Errorf("outbox relay scan: %w", err)
 		}
@@ -166,11 +197,27 @@ func (r *OutboxRelay) RunOnce(ctx context.Context) error {
 			CausedBy:       row.causedBy,
 			IdempotencyKey: row.idempotencyKey,
 		}
-		// Dispatch langsung ke driver — schema sudah divalidasi saat INSERT ke outbox.
 		if err := r.bus.driver.Dispatch(ctx, event); err != nil {
-			// DEFERRED(PR-3.1.4): DLQ setelah N kali gagal.
-			_, _ = tx.Exec(ctx,
-				`UPDATE gov.outbox_events SET attempts = attempts + 1 WHERE id = $1`, row.id)
+			newAttempts := row.attempts + 1
+			nextRetry, isDLQ := r.policy.NextRetry(newAttempts)
+			if isDLQ {
+				slog.Error("outbox event masuk DLQ setelah N kali gagal",
+					"event", row.eventName,
+					"id", row.id,
+					"attempts", newAttempts,
+					"err", err,
+					"dlq", true,
+				)
+				_, _ = tx.Exec(ctx,
+					`UPDATE gov.outbox_events
+					 SET attempts = $2, failed_at = now(), next_retry_at = NULL
+					 WHERE id = $1`, row.id, newAttempts)
+			} else {
+				_, _ = tx.Exec(ctx,
+					`UPDATE gov.outbox_events
+					 SET attempts = $2, next_retry_at = $3
+					 WHERE id = $1`, row.id, newAttempts, nextRetry)
+			}
 			continue
 		}
 		if _, err := tx.Exec(ctx,

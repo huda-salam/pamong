@@ -2,6 +2,7 @@ package eventbus
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
 	"github.com/huda-salam/pamong/port"
@@ -50,7 +51,9 @@ func (d *NATSDriver) Dispatch(ctx context.Context, event port.Event) error {
 
 // Subscribe mendaftarkan handler ke NATS subject yang sesuai nama event. Handler
 // dipanggil dengan context.Background() karena NATS Core tidak membawa context
-// per-message. Error dari handler di-swallow (DEFERRED PR-3.1.4: DLQ/retry).
+// per-message. NATS Core tidak bisa re-deliver pesan; error handler di-log structured
+// untuk observability. Guaranteed delivery bergantung pada outbox at-least-once
+// (OutboxRelay yang dispatch via driver ini setelah commit transaksi bisnis).
 // Deserialisasi payload memakai schema.Unmarshal sehingga handler menerima struct
 // konkret bertipe sama dengan yang didaftarkan di SchemaRegistry.
 func (d *NATSDriver) Subscribe(event string, handler port.EventHandler) error {
@@ -60,7 +63,14 @@ func (d *NATSDriver) Subscribe(event string, handler port.EventHandler) error {
 			// Schema belum terdaftar atau payload corrupt — abaikan message.
 			return
 		}
-		_ = handler(context.Background(), ev)
+		if err := handler(context.Background(), ev); err != nil {
+			// NATS Core tidak bisa re-deliver — log untuk observability.
+			// Re-delivery bergantung pada outbox at-least-once (via OutboxRelay).
+			slog.Error("NATS subscriber handler gagal",
+				"event", event,
+				"err", err,
+			)
+		}
 	})
 	if err != nil {
 		return err

@@ -112,6 +112,12 @@ type EventBusConfig struct {
 	Driver string `yaml:"driver" env:"GOV_EVENTBUS_DRIVER"` // nats | redis | memory
 	URL    string `yaml:"url" env:"GOV_EVENTBUS_URL"`
 	Stream string `yaml:"stream" env:"GOV_EVENTBUS_STREAM"`
+
+	// Retry & DLQ — dipakai OutboxRelay (PR-3.1.4).
+	// 0 = pakai default (MaxAttempts=5, BackoffBase=5s, BackoffMax=1h).
+	RetryMaxAttempts int           `yaml:"retry_max_attempts" env:"GOV_EVENTBUS_RETRY_MAX_ATTEMPTS"`
+	RetryBackoffBase time.Duration `yaml:"retry_backoff_base" env:"GOV_EVENTBUS_RETRY_BACKOFF_BASE"`
+	RetryBackoffMax  time.Duration `yaml:"retry_backoff_max" env:"GOV_EVENTBUS_RETRY_BACKOFF_MAX"`
 }
 
 // StorageConfig — driver object storage.

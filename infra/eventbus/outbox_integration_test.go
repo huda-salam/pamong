@@ -4,6 +4,7 @@ package eventbus_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -185,5 +186,136 @@ func TestOutbox_EventSudahDispatched_TidakDikirimUlang(t *testing.T) {
 
 	if count != 1 {
 		t.Errorf("event harus dikirim tepat sekali, dikirim %d kali", count)
+	}
+}
+
+// TestOutbox_HandlerGagalTerusMenerus_MasukDLQ adalah DoD utama PR-3.1.4:
+// membuktikan bahwa setelah MaxAttempts kali gagal, event masuk DLQ (failed_at di-set)
+// dan tidak dipercobakan lagi oleh relay berikutnya.
+func TestOutbox_HandlerGagalTerusMenerus_MasukDLQ(t *testing.T) {
+	pool, ctx := newIntegrationPool(t)
+	bus := newBusForIntegration(t)
+
+	if err := eventbus.EnsureOutboxSchema(ctx, pool); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+
+	dispatchErr := errors.New("layanan hilir tidak tersedia")
+	callCount := 0
+	_ = bus.Subscribe(eventSuratDiterima, func(_ context.Context, _ port.Event) error {
+		callCount++
+		return dispatchErr
+	})
+
+	// Tulis satu event ke outbox.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	store := eventbus.NewOutboxStore(tx, bus.Schema())
+	if err := store.Publish(ctx, port.Event{
+		Name:    eventSuratDiterima,
+		Payload: suratDiterima{NomorSurat: "DLQ/001/2025"},
+	}); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("publish: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// RetryPolicy: MaxAttempts=3, BackoffBase=0 agar test tidak sleep.
+	policy := eventbus.RetryPolicy{
+		MaxAttempts: 3,
+		BackoffBase: 0, // tanpa backoff sehingga tiap RunOnce langsung memproses
+		BackoffMax:  time.Minute,
+	}
+	relay := eventbus.NewOutboxRelay(pool, bus, time.Hour).WithRetryPolicy(policy)
+
+	// Jalankan relay sebanyak MaxAttempts kali — tiap cycle gagal.
+	for i := 0; i < policy.MaxAttempts; i++ {
+		if err := relay.RunOnce(ctx); err != nil {
+			t.Fatalf("RunOnce siklus %d: %v", i+1, err)
+		}
+	}
+
+	// Setelah MaxAttempts siklus, baris harus sudah di-DLQ (failed_at IS NOT NULL).
+	var failedAt *time.Time
+	row := pool.QueryRow(ctx,
+		`SELECT failed_at FROM gov.outbox_events WHERE event_name = $1`, eventSuratDiterima)
+	if err := row.Scan(&failedAt); err != nil {
+		t.Fatalf("query failed_at: %v", err)
+	}
+	if failedAt == nil {
+		t.Errorf("event harus masuk DLQ (failed_at di-set) setelah %d kali gagal, failed_at=NULL",
+			policy.MaxAttempts)
+	}
+
+	// RunOnce tambahan tidak boleh memproses baris DLQ.
+	prevCallCount := callCount
+	if err := relay.RunOnce(ctx); err != nil {
+		t.Fatalf("RunOnce setelah DLQ: %v", err)
+	}
+	if callCount != prevCallCount {
+		t.Errorf("relay tidak boleh memproses baris DLQ, callCount bertambah dari %d ke %d",
+			prevCallCount, callCount)
+	}
+}
+
+// TestOutbox_Backoff_EventTidakDiPollSebelumWaktuRetry membuktikan bahwa baris
+// yang sedang dalam backoff (next_retry_at di masa depan) tidak di-poll oleh relay.
+func TestOutbox_Backoff_EventTidakDiPollSebelumWaktuRetry(t *testing.T) {
+	pool, ctx := newIntegrationPool(t)
+	bus := newBusForIntegration(t)
+
+	if err := eventbus.EnsureOutboxSchema(ctx, pool); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+
+	dispatchCount := 0
+	_ = bus.Subscribe(eventSuratDiterima, func(_ context.Context, _ port.Event) error {
+		dispatchCount++
+		return errors.New("gagal")
+	})
+
+	// Tulis event ke outbox.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	store := eventbus.NewOutboxStore(tx, bus.Schema())
+	if err := store.Publish(ctx, port.Event{
+		Name:    eventSuratDiterima,
+		Payload: suratDiterima{NomorSurat: "BACKOFF/001/2025"},
+	}); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("publish: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// BackoffBase besar (1 jam) agar next_retry_at jauh di masa depan.
+	policy := eventbus.RetryPolicy{
+		MaxAttempts: 10,
+		BackoffBase: time.Hour,
+		BackoffMax:  24 * time.Hour,
+	}
+	relay := eventbus.NewOutboxRelay(pool, bus, time.Hour).WithRetryPolicy(policy)
+
+	// Siklus pertama: Dispatch dipanggil (gagal), next_retry_at di-set ke ~1 jam mendatang.
+	if err := relay.RunOnce(ctx); err != nil {
+		t.Fatalf("RunOnce pertama: %v", err)
+	}
+	if dispatchCount != 1 {
+		t.Fatalf("siklus pertama harus dispatch sekali, dapat %d", dispatchCount)
+	}
+
+	// Siklus kedua: baris masih dalam backoff — tidak boleh di-poll.
+	if err := relay.RunOnce(ctx); err != nil {
+		t.Fatalf("RunOnce kedua: %v", err)
+	}
+	if dispatchCount != 1 {
+		t.Errorf("siklus kedua tidak boleh dispatch saat masih backoff, dispatchCount=%d", dispatchCount)
 	}
 }

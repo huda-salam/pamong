@@ -273,9 +273,14 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
     `NATSDriver` Subscribe/Dispatch; `factory.go` `NewFromConfig` switch by config;
     4 integration test embed NATS server. Redis DEFERRED. Security review: clear.)
 
-- **PR-3.1.4** DLQ & retry ← 3.1.3
+- **PR-3.1.4** DLQ & retry ← 3.1.3 — SELESAI
   - Retry backoff, dead letter queue, alert
-  - DoD: handler gagal → masuk DLQ setelah N retry
+  - DoD: handler gagal → masuk DLQ setelah N retry ✅
+    (`retry.go` RetryPolicy eksponensial + cap; `outbox.go` DDL tambah
+    next_retry_at+failed_at, SELECT filter DLQ+backoff, relay mark DLQ via
+    slog.Error dlq=true; `nats.go` log structured handler error; `config/schema.go`
+    3 field retry GOV_EVENTBUS_RETRY_*; 7 unit test RetryPolicy + 2 integration test
+    DLQ+backoff. Security review: clear.)
 
 ### Sub-phase 3.2 — Workflow engine
 
