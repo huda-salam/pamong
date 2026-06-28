@@ -1,6 +1,7 @@
 package eventbus
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sync"
@@ -70,6 +71,24 @@ func normalize(t reflect.Type) reflect.Type {
 		t = t.Elem()
 	}
 	return t
+}
+
+// Unmarshal membuat instance baru dari tipe payload terdaftar untuk event `name`
+// lalu meng-unmarshal `data` JSON ke dalamnya. Dipakai relay untuk merekonstruksi
+// payload bertype-safe dari JSONB outbox. Mengembalikan pointer ke nilai baru.
+func (r *SchemaRegistry) Unmarshal(name string, data []byte) (any, error) {
+	r.mu.RLock()
+	t, ok := r.schema[name]
+	r.mu.RUnlock()
+	if !ok {
+		return nil, core.ErrValidation("event", fmt.Sprintf("event %q tidak terdaftar di schema registry", name))
+	}
+	v := reflect.New(t).Interface() // *T agar json.Unmarshal bisa populate field
+	if err := json.Unmarshal(data, v); err != nil {
+		return nil, fmt.Errorf("unmarshal payload event %q: %w", name, err)
+	}
+	// Dereference ke T agar type assertion subscriber konsisten dengan jalur publish langsung.
+	return reflect.ValueOf(v).Elem().Interface(), nil
 }
 
 func typeName(t reflect.Type) string {

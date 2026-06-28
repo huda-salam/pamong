@@ -258,9 +258,13 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
   - Interface publish/subscribe, schema registry, driver memory untuk test
   - DoD: publish/subscribe lokal lulus; event tanpa schema ditolak
 
-- **PR-3.1.2** Outbox pattern ← 3.1.1, 1.2.1
+- **PR-3.1.2** Outbox pattern ← 3.1.1, 1.2.1 — SELESAI
   - Event tersimpan transaksional, dikirim setelah commit
-  - DoD: rollback transaksi → event tidak terkirim
+  - DoD: rollback transaksi → event tidak terkirim ✅
+    (`gov.outbox_events` + `EnsureOutboxSchema`; `OutboxStore` implements
+    `port.EventPublisher` — INSERT dalam tx bisnis; `OutboxRelay` poll
+    SELECT FOR UPDATE SKIP LOCKED + dispatch via driver + mark dispatched_at;
+    `SchemaRegistry.Unmarshal` reconstruct typed payload. Security review: clear.)
 
 - **PR-3.1.3** Driver NATS/Redis Streams ← 3.1.1
   - Driver produksi, dipilih via config
