@@ -12,13 +12,14 @@ import (
 // event identity.employment.ditugaskan yang memicu sync engine meng-clone person ke
 // gov.user_profiles tenant tujuan (DoD PR-2.2.4).
 //
-// PR ini menangani penugasan home-tenant. Penugasan cross-tenant (is_home_tenant=false,
-// mis. PJ Bupati) tetap diterima di sini namun butuh permission tambahan; orkestrasi
-// penuh cross-tenant (pemilihan tenant, PLT) dilengkapi PR-2.4.5.
+// Cross-tenant (is_home_tenant=false, mis. PJ Bupati/PLT): butuh permission tambahan
+// identity:assignment:cross_tenant + validasi bisnis penuh (tenant aktif, employment
+// aktif, anti-duplikat) yang dilengkapi PR-2.4.5.
 type AssignEmploymentToTenant struct {
 	persons     domain.PersonRepository
 	employments domain.EmploymentRepository
 	assignments domain.TenantAssignmentRepository
+	registry    domain.TenantRegistry
 	publisher   port.EventPublisher
 }
 
@@ -26,9 +27,10 @@ func NewAssignEmploymentToTenant(
 	p domain.PersonRepository,
 	e domain.EmploymentRepository,
 	a domain.TenantAssignmentRepository,
+	reg domain.TenantRegistry,
 	pub port.EventPublisher,
 ) *AssignEmploymentToTenant {
-	return &AssignEmploymentToTenant{persons: p, employments: e, assignments: a, publisher: pub}
+	return &AssignEmploymentToTenant{persons: p, employments: e, assignments: a, registry: reg, publisher: pub}
 }
 
 // AssignEmploymentToTenantInput DTO masuk. CrossTenant=false (default) = penugasan ke
@@ -111,10 +113,30 @@ func (uc *AssignEmploymentToTenant) Execute(ctx port.AuthContext, in AssignEmplo
 	return a, nil
 }
 
-// validateAssignment adalah titik validasi bisnis penugasan ke tenant. Kosong di PR-2.2.4:
-// penugasan (termasuk cross-tenant) untuk sementara hanya dijaga gerbang permission.
-// Pengisian (tenant tujuan ada & aktif via TenantRegistry, employment masih aktif, anti
-// duplikat) dijadwalkan PR-2.4.5 — lihat ROADMAP "Backlog teknis".
-func (uc *AssignEmploymentToTenant) validateAssignment(_ port.AuthContext, _ AssignEmploymentToTenantInput, _ *domain.Employment) error {
+// validateAssignment menegakkan tiga invariant bisnis penugasan (PR-2.4.5):
+//  1. Employment harus aktif saat penugasan dibuat.
+//  2. Tenant tujuan harus terdaftar dan aktif di registry.
+//  3. Tidak boleh ada penugasan aktif lain ke tenant yang sama untuk employment ini.
+func (uc *AssignEmploymentToTenant) validateAssignment(ctx port.AuthContext, in AssignEmploymentToTenantInput, emp *domain.Employment) error {
+	now := time.Now()
+
+	if !emp.IsActiveAt(now) {
+		return domain.ErrEmploymentTidakAktif
+	}
+
+	tenant, err := uc.registry.FindByID(ctx, in.TenantID)
+	if err != nil || !tenant.IsActive {
+		return domain.ErrTenantTidakAktif
+	}
+
+	existing, err := uc.assignments.ListByEmployment(ctx, emp.ID)
+	if err != nil {
+		return err
+	}
+	for _, a := range existing {
+		if a.TenantID == in.TenantID && a.AppliesTo(now) {
+			return domain.ErrAssignmentDuplikat
+		}
+	}
 	return nil
 }

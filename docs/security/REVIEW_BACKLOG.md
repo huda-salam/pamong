@@ -103,9 +103,11 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
 - **DEFERRED(Phase-2.4/PR-2.4.x):** ~~jalur OTP + rate-limit~~ SELESAI di PR-2.4.4. Live wiring
   HTTP/messaging/ratelimit konkret menyusul Phase 5.1.1 (router). Konfigurasi `OTPPolicy` dari
   `core/config` saat ada kebutuhan tenant.
-- **DEFERRED(PR-2.4.5):** cross-tenant assignment ber-permission `identity:assignment:cross_tenant`
-  (penerbitan/orkestrasi PJ/PLT) — login sudah menangani *pemilihan* tenant lintas penugasan yang
-  sudah ada (`is_cross_tenant` di klaim), tapi *pembuatan* penugasan cross-tenant ada di 2.4.5.
+- **PR-2.4.5 `HARDENED`:** `identity/usecase/assign_employment_tenant.go` — `validateAssignment`
+  kini menegakkan 3 invariant bisnis: employment aktif (`IsActiveAt`), tenant ada & aktif di
+  registry, anti-duplikat penugasan aktif ke tenant yang sama. Tidak ada permukaan kripto/token
+  baru; otorisasi (`PermAssignmentCrossTenant`) sudah ada sejak PR-2.2.4 dan tetap di baris pertama.
+  Security review inline sebelum commit: tidak ada temuan ≥ MEDIUM.
 
 ---
 

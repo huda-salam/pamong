@@ -54,6 +54,15 @@ func (f *fakeAssignments) ListByEmployment(_ context.Context, employmentID uuid.
 	return out, nil
 }
 
+// seedTenant menyiapkan satu tenant di fakeRegistry dengan status aktif yang ditentukan.
+func seedTenant(t *testing.T, reg *fakeRegistry, tenantID string, active bool) {
+	t.Helper()
+	_ = reg.Save(context.Background(), &domain.Tenant{
+		TenantID: tenantID, Nama: tenantID, Tier: domain.TierShared,
+		DBHost: "db", DBName: "gov_" + tenantID, IsActive: active,
+	})
+}
+
 // seedPersonEmployment menyiapkan satu person ASN + employment-nya pada fakes.
 func seedPersonEmployment(t *testing.T) (*fakePersons, *storeEmployments, *domain.Person, *domain.Employment) {
 	t.Helper()
@@ -72,7 +81,9 @@ func TestAssignEmploymentToTenant_Success(t *testing.T) {
 	persons, emps, person, emp := seedPersonEmployment(t)
 	assignments := &fakeAssignments{}
 	pub := testkit.NewMockPublisher()
-	uc := usecase.NewAssignEmploymentToTenant(persons, emps, assignments, pub)
+	reg := newFakeRegistry()
+	seedTenant(t, reg, "pemkot-surabaya", true)
+	uc := usecase.NewAssignEmploymentToTenant(persons, emps, assignments, reg, pub)
 	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermAssignmentTugaskan))
 
 	a, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{
@@ -106,7 +117,7 @@ func TestAssignEmploymentToTenant_Success(t *testing.T) {
 
 func TestAssignEmploymentToTenant_PermissionDenied(t *testing.T) {
 	persons, emps, _, emp := seedPersonEmployment(t)
-	uc := usecase.NewAssignEmploymentToTenant(persons, emps, &fakeAssignments{}, testkit.NewMockPublisher())
+	uc := usecase.NewAssignEmploymentToTenant(persons, emps, &fakeAssignments{}, newFakeRegistry(), testkit.NewMockPublisher())
 	ctx := testkit.Ctx(t) // tanpa permission
 	_, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{EmploymentID: emp.ID, TenantID: "pemkot-surabaya"})
 	if !testkit.IsPermissionDenied(err) {
@@ -117,7 +128,7 @@ func TestAssignEmploymentToTenant_PermissionDenied(t *testing.T) {
 func TestAssignEmploymentToTenant_CrossTenant_ButuhPermissionEkstra(t *testing.T) {
 	persons, emps, _, emp := seedPersonEmployment(t)
 	pub := testkit.NewMockPublisher()
-	uc := usecase.NewAssignEmploymentToTenant(persons, emps, &fakeAssignments{}, pub)
+	uc := usecase.NewAssignEmploymentToTenant(persons, emps, &fakeAssignments{}, newFakeRegistry(), pub)
 	// Punya permission tugaskan dasar TAPI bukan cross_tenant.
 	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermAssignmentTugaskan))
 
@@ -134,11 +145,119 @@ func TestAssignEmploymentToTenant_CrossTenant_ButuhPermissionEkstra(t *testing.T
 }
 
 func TestAssignEmploymentToTenant_EmploymentTidakAda(t *testing.T) {
-	uc := usecase.NewAssignEmploymentToTenant(newFakePersons(), newStoreEmployments(), &fakeAssignments{}, testkit.NewMockPublisher())
+	uc := usecase.NewAssignEmploymentToTenant(newFakePersons(), newStoreEmployments(), &fakeAssignments{}, newFakeRegistry(), testkit.NewMockPublisher())
 	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermAssignmentTugaskan))
 	_, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{EmploymentID: uuid.New(), TenantID: "pemkot-surabaya"})
 	var fe *core.FrameworkError
 	if !errors.As(err, &fe) || fe.Code != "NOT_FOUND" {
 		t.Fatalf("employment tak ada harus NOT_FOUND, dapat: %v", err)
+	}
+}
+
+// --- Test baru PR-2.4.5: validasi bisnis validateAssignment ---
+
+func TestAssignEmploymentToTenant_EmploymentTidakAktif(t *testing.T) {
+	persons := newFakePersons()
+	emps := newStoreEmployments()
+	person := &domain.Person{ID: uuid.New(), NIK: "3578010101900002", NamaLengkap: "Sari", IsActive: true}
+	_ = persons.Save(context.Background(), person)
+	emp := &domain.Employment{
+		ID: uuid.New(), PersonID: person.ID, Status: domain.StatusASN, NIP: "199001022015012002",
+		IsActive: false, // sengaja tidak aktif
+	}
+	_ = emps.Save(context.Background(), emp)
+
+	reg := newFakeRegistry()
+	seedTenant(t, reg, "pemkot-surabaya", true)
+	uc := usecase.NewAssignEmploymentToTenant(persons, emps, &fakeAssignments{}, reg, testkit.NewMockPublisher())
+	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermAssignmentTugaskan))
+
+	_, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{
+		EmploymentID: emp.ID, TenantID: "pemkot-surabaya",
+	})
+	if !errors.Is(err, domain.ErrEmploymentTidakAktif) {
+		t.Fatalf("employment tidak aktif harus ErrEmploymentTidakAktif, dapat: %v", err)
+	}
+}
+
+func TestAssignEmploymentToTenant_TenantTidakDitemukan(t *testing.T) {
+	persons, emps, _, emp := seedPersonEmployment(t)
+	reg := newFakeRegistry() // kosong — tidak ada tenant terdaftar
+	uc := usecase.NewAssignEmploymentToTenant(persons, emps, &fakeAssignments{}, reg, testkit.NewMockPublisher())
+	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermAssignmentTugaskan))
+
+	_, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{
+		EmploymentID: emp.ID, TenantID: "tidak-ada",
+	})
+	if !errors.Is(err, domain.ErrTenantTidakAktif) {
+		t.Fatalf("tenant tidak ada harus ErrTenantTidakAktif, dapat: %v", err)
+	}
+}
+
+func TestAssignEmploymentToTenant_TenantTidakAktif(t *testing.T) {
+	persons, emps, _, emp := seedPersonEmployment(t)
+	reg := newFakeRegistry()
+	seedTenant(t, reg, "pemkot-surabaya", false) // terdaftar tapi nonaktif
+	uc := usecase.NewAssignEmploymentToTenant(persons, emps, &fakeAssignments{}, reg, testkit.NewMockPublisher())
+	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermAssignmentTugaskan))
+
+	_, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{
+		EmploymentID: emp.ID, TenantID: "pemkot-surabaya",
+	})
+	if !errors.Is(err, domain.ErrTenantTidakAktif) {
+		t.Fatalf("tenant nonaktif harus ErrTenantTidakAktif, dapat: %v", err)
+	}
+}
+
+func TestAssignEmploymentToTenant_DuplikatAssignment(t *testing.T) {
+	persons, emps, _, emp := seedPersonEmployment(t)
+	reg := newFakeRegistry()
+	seedTenant(t, reg, "pemkot-surabaya", true)
+	assignments := &fakeAssignments{}
+	uc := usecase.NewAssignEmploymentToTenant(persons, emps, assignments, reg, testkit.NewMockPublisher())
+	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermAssignmentTugaskan))
+
+	// Penugasan pertama sukses.
+	if _, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{
+		EmploymentID: emp.ID, TenantID: "pemkot-surabaya",
+	}); err != nil {
+		t.Fatalf("penugasan pertama harus sukses: %v", err)
+	}
+
+	// Penugasan kedua ke tenant yang sama harus ditolak.
+	_, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{
+		EmploymentID: emp.ID, TenantID: "pemkot-surabaya",
+	})
+	if !errors.Is(err, domain.ErrAssignmentDuplikat) {
+		t.Fatalf("duplikat assignment harus ErrAssignmentDuplikat, dapat: %v", err)
+	}
+}
+
+func TestAssignEmploymentToTenant_CrossTenant_Success(t *testing.T) {
+	persons, emps, _, emp := seedPersonEmployment(t)
+	reg := newFakeRegistry()
+	seedTenant(t, reg, "pemprov-jatim", true)
+	assignments := &fakeAssignments{}
+	pub := testkit.NewMockPublisher()
+	uc := usecase.NewAssignEmploymentToTenant(persons, emps, assignments, reg, pub)
+	ctx := testkit.Ctx(t,
+		testkit.WithPermission(domain.PermAssignmentTugaskan),
+		testkit.WithPermission(domain.PermAssignmentCrossTenant),
+	)
+
+	a, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{
+		EmploymentID: emp.ID, TenantID: "pemprov-jatim", CrossTenant: true,
+	})
+	if err != nil {
+		t.Fatalf("cross-tenant sukses harus tanpa error, dapat: %v", err)
+	}
+	if a.IsHomeTenant {
+		t.Fatal("cross-tenant assignment harus IsHomeTenant=false")
+	}
+
+	testkit.AssertEventPublished(t, pub, domain.EventEmploymentDitugaskan)
+	payload, ok := pub.Published()[0].Payload.(domain.EmploymentDitugaskanPayload)
+	if !ok || !payload.IsCrossTenant {
+		t.Fatalf("payload harus IsCrossTenant=true, dapat: %+v", pub.Published()[0].Payload)
 	}
 }

@@ -239,9 +239,12 @@ Tujuan: model person/employment/persona, multi-tenant, role berlapis, tiga alur 
     sekali-pakai, cap tebak; rate-limit per-kredensial via `port.RateLimiter` (Opsi B). ADR-008,
     REVIEW_BACKLOG A6. Live wiring HTTP/messaging/ratelimit konkret → Phase 5.1.1.
 
-- **PR-2.4.5** Cross-tenant assignment ← 2.4.3, 2.3.2
+- **PR-2.4.5** Cross-tenant assignment ← 2.4.3, 2.3.2 — SELESAI
   - Penugasan lintas tenant dengan otorisasi admin sentral
-  - DoD: assignment cross-tenant butuh permission khusus; PLT bisa pilih 2 tenant
+  - DoD: assignment cross-tenant butuh permission khusus; PLT bisa pilih 2 tenant ✅
+    (`validateAssignment`: employment aktif + tenant aktif di registry + anti-duplikat;
+    `TenantRegistry` diinject ke `AssignEmploymentToTenant`; 3 error domain baru;
+    5 test baru + 4 test lama diupdate. Security review: tidak ada temuan.)
 
 ---
 

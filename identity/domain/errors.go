@@ -21,8 +21,11 @@ var (
 	ErrTenantTierInvalid = core.ErrValidation("tier", "harus 1, 2, atau 3")
 	ErrTenantDBKosong    = core.ErrValidation("db", "db_host dan db_name wajib diisi")
 
-	ErrEmploymentIDKosong = core.ErrValidation("employment_id", "tidak boleh kosong")
-	ErrAssignedByKosong   = core.ErrValidation("assigned_by", "tidak boleh kosong")
+	ErrEmploymentIDKosong   = core.ErrValidation("employment_id", "tidak boleh kosong")
+	ErrAssignedByKosong     = core.ErrValidation("assigned_by", "tidak boleh kosong")
+	ErrEmploymentTidakAktif = core.ErrValidation("employment_id", "employment tidak aktif atau sudah berakhir")
+	ErrTenantTidakAktif     = core.ErrValidation("tenant_id", "tenant tidak ditemukan atau tidak aktif")
+	ErrAssignmentDuplikat   = core.ErrValidation("tenant_id", "sudah ada penugasan aktif ke tenant ini")
 
 	ErrCentralRoleNameInvalid = core.ErrValidation("name", "harus snake_case, mulai huruf, 3-100 char (a-z0-9_)")
 	ErrCentralRoleLabelKosong = core.ErrValidation("label", "tidak boleh kosong")
