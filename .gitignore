@@ -11,3 +11,5 @@ coverage.html
 # Editor / OS
 .DS_Store
 *.swp
+
+next-ses.txt
