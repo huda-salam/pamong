@@ -266,9 +266,12 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
     SELECT FOR UPDATE SKIP LOCKED + dispatch via driver + mark dispatched_at;
     `SchemaRegistry.Unmarshal` reconstruct typed payload. Security review: clear.)
 
-- **PR-3.1.3** Driver NATS/Redis Streams ← 3.1.1
+- **PR-3.1.3** Driver NATS/Redis Streams ← 3.1.1 — SELESAI
   - Driver produksi, dipilih via config
-  - DoD: integration test publish/subscribe lintas proses
+  - DoD: integration test publish/subscribe lintas proses ✅
+    (NATS Core driver: `wire.go` serialisasi JSON lintas transport; `nats.go`
+    `NATSDriver` Subscribe/Dispatch; `factory.go` `NewFromConfig` switch by config;
+    4 integration test embed NATS server. Redis DEFERRED. Security review: clear.)
 
 - **PR-3.1.4** DLQ & retry ← 3.1.3
   - Retry backoff, dead letter queue, alert
