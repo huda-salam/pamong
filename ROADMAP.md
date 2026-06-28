@@ -284,9 +284,14 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
 
 ### Sub-phase 3.2 — Workflow engine
 
-- **PR-3.2.1** State machine core ← 1.1.1
+- **PR-3.2.1** State machine core ← 1.1.1 — SELESAI
   - State, transition, action hook. Action HANYA boleh memanggil use case.
-  - DoD: transisi valid jalan; transisi ilegal ditolak; action tanpa use case ditolak
+  - DoD: transisi valid jalan; transisi ilegal ditolak; action tanpa use case ditolak ✅
+    (definition.go WorkflowDefinition/State/Transition/NotifySpec; instance.go
+    WorkflowInstance+TransitionRecord; ports.go ActionDispatcher/GuardEvaluator/
+    DefinitionStore; store.go MemoryStore dengan validasi saat Register; engine.go
+    Engine.Start+Execute — guard AND, action dispatch, history; 14 unit test DoD.
+    Security review: clear.)
 
 - **PR-3.2.2** YAML seed loader + schema validation ← 3.2.1
   - Muat definisi workflow dari YAML (baseline) → validasi struktur
