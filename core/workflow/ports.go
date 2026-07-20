@@ -30,3 +30,26 @@ type DefinitionStore interface {
 	Register(def WorkflowDefinition) error
 	Get(id string) (WorkflowDefinition, error)
 }
+
+// TemplateStore mengelola pilihan template workflow per-tenant beserta parameter
+// binding peran. Setiap tenant dapat memilih template yang berbeda untuk satu
+// "slot" (tipe workflow), dan memetakan peran generik dalam template ke role
+// konkret milik tenant tersebut.
+//
+// GetForTenant adalah entry point utama: mengambil WorkflowDefinition yang tepat
+// untuk tenant+slot yang diminta, sudah dengan role binding diterapkan.
+// Implementasi in-memory (PR-3.2.4); DB-backed di infra/workflow.DBTemplateStore.
+type TemplateStore interface {
+	// GetForTenant mengembalikan WorkflowDefinition yang dipilih tenant untuk slot
+	// tertentu, dengan role binding diterapkan. Kembalikan ErrTemplateNotConfigured
+	// bila tenant belum menetapkan pilihan untuk slot tersebut.
+	GetForTenant(tenantID, slot string) (WorkflowDefinition, error)
+
+	// SetTenantTemplate menyimpan atau mengganti pilihan template dan binding milik
+	// tenant. Idempoten: panggilan kedua menimpa pilihan sebelumnya.
+	SetTenantTemplate(cfg TenantWorkflowConfig) error
+
+	// GetTenantConfig mengembalikan config tersimpan untuk inspeksi (admin UI).
+	// Kembalikan ErrTemplateNotConfigured bila belum ada.
+	GetTenantConfig(tenantID, slot string) (TenantWorkflowConfig, error)
+}

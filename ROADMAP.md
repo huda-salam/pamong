@@ -311,9 +311,18 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
     Get, GetVersion; SeedYAML idempoten via Get-sebelum-Register di loader;
     6 integration test lulus; security review: clear.)
 
-- **PR-3.2.4** Template selection per-tenant ← 3.2.3
+- **PR-3.2.4** Template selection per-tenant ← 3.2.3 — SELESAI
   - Tenant memilih template ber-key + parameter binding peran→jabatan
-  - DoD: tenant A & B jalan dengan template berbeda, use case identik
+  - DoD: tenant A & B jalan dengan template berbeda, use case identik ✅
+    (port `TemplateStore` + `TenantWorkflowConfig` + `ApplyBindings` +
+    `MemoryTemplateStore` di core/workflow/template.go; `DBTemplateStore` di
+    infra/workflow/template_store.go — UPSERT pada (tenant_id, slot);
+    migration core/workflow/migrations/002_create_tenant_workflow_configs.{up,down}.sql;
+    15 unit test + 4 integration test; security review: clear.)
+  - CATATAN: pilihan template belum ber-versi/ter-audit dan `template_id`+`role_bindings`
+    belum divalidasi saat tulis — lihat backlog "[PR-3.3.2] Rekonsiliasi penyimpanan
+    template selection" butir (a)-(d) dan "[PR-3.6.x] Konsumsi role binding".
+    Belum ada use case admin / handler HTTP: store baru dipakai dari kode bootstrap.
 
 - **PR-3.2.5** Guard expression DSL ← 3.2.3, 2.4.2
   - Evaluator ekspresi boolean, di-compile saat load, tanpa side-effect
@@ -611,6 +620,78 @@ per-milestone seperti TODO/FIXME), saat menutup sebuah Phase/sub-phase jalankan
 tujuannya sudah tiba/lewat tanpa dikerjakan. DEFERRED yang fasenya lewat = utang yang
 harus ditutup atau dijadwalkan ulang secara eksplisit. Ini gerbang manusia (belum ada
 rule linter `markerref`).
+
+- **[PR-3.3.2] Rekonsiliasi penyimpanan template selection.** PRD workflow F4 menyebut
+  pilihan template "disimpan di gov.tenant_configs", tapi tabel/resolver itu baru hadir di
+  PR-3.3.2 (tenant config ber-scope). PR-3.2.4 tidak bergantung pada 3.3.2, jadi pilihan
+  template + role binding disimpan di tabel khusus `gov.tenant_workflow_configs`
+  (`infra/workflow/template_store.go`, migration `core/workflow/migrations/002`), PK natural
+  `(tenant_id, slot)` — flat, belum ber-scope unit kerja. Alasan tabel terpisah: binding peran
+  adalah data terstruktur (map), tidak pas di KV flat `tenant_configs`. Saat 3.3.2: putuskan
+  apakah template selection ikut resolver scoped `tenant[/unit/resource]` (agar pilihan
+  per-unit-kerja mungkin tanpa migrasi, sesuai titik ekstensi #2) atau tetap tabel khusus
+  dengan kolom scope tambahan. `TemplateStore` (port di `core/workflow/ports.go`) sudah jadi
+  seam — implementasi penyimpanan bisa diganti tanpa menyentuh engine/caller.
+
+  **Utang yang ikut ditutup di 3.3.2 — riwayat & audit pilihan template.** `SetTenantTemplate`
+  sekarang UPSERT murni pada `(tenant_id, slot)`: pilihan lama HILANG, hanya `set_by`/`set_at`
+  baris terakhir yang tersimpan. Ini menyimpang dari titik ekstensi #7 CLAUDE.md (versioned
+  config + effective date + riwayat + rollback) dan dari `core/workflow/CLAUDE.md` ("perubahan
+  definisi = aksi ber-permission + ter-audit") — padahal `workflow_definitions` (PR-3.2.3)
+  sendiri sudah ber-versi. Sengaja ditunda agar 3.2.4 tidak melebar; gerbang permission untuk
+  aksi set juga belum ada (use case admin belum dibuat). Yang wajib ada di 3.3.2:
+  (a) `effective_from` + versi/riwayat sehingga pilihan lama bisa dibaca & di-rollback,
+  (b) entri `gov.audit_logs` tiap perubahan pilihan, bukan sekadar kolom `set_by`,
+  (c) permission check di use case admin yang memanggil `SetTenantTemplateAsActor`,
+  (d) validasi `template_id` saat TULIS — sekarang tidak dicek sama sekali terhadap
+  `DefinitionStore`, sehingga config bisa menunjuk ID sembarang dan error baru muncul saat
+  `GetForTenant`. Use case admin wajib memastikan template terdaftar DAN memang template yang
+  sah untuk slot itu (cegah admin tenant mengarahkan slot ke definisi modul lain yang guard-nya
+  lebih longgar). Sengaja tidak divalidasi di 3.2.4 karena template boleh diseed setelah config
+  ditetapkan — pembatasan ini milik lapisan use case, bukan store.
+  Sampai (a)-(d) ada, perubahan pilihan template tidak dapat diaudit — jangan buka ke UI admin
+  tenant sebelum semuanya selesai.
+
+- **[PR-3.6.x] Konsumsi role binding saat notifikasi/eskalasi.** `ApplyBindings` (PR-3.2.4)
+  mengganti peran generik → role konkret tenant pada `State.EscalateToRole` & `NotifySpec.ToRole`,
+  tapi Engine sekarang mengambil definisi lewat `DefinitionStore` (unbound) dan belum menyentuh
+  Notify/EscalateToRole sama sekali (notifikasi DEFERRED PR-3.6.x). Alur pemilihan: caller
+  `TemplateStore.GetForTenant(tenant, slot)` → dapat def ber-binding → `Engine.Start(def.ID)`.
+  Saat notifikasi di-wire (3.6.x), pengirim notif WAJIB me-resolve peran lewat binding tenant
+  (pakai def hasil `GetForTenant`, bukan `DefinitionStore.Get` mentah), lalu resolusi role→orang
+  (PLT fallback) di core/permission + kepegawaian. Engine tetap tenant-agnostik (bicara PERAN).
+
+  **Prasyarat keamanan saat binding mulai dikonsumsi.** Selama notifikasi belum di-wire,
+  `RoleBindings` tidak berdampak: ia hanya mengganti NAMA peran tujuan, tidak memberi permission,
+  dan tidak ada yang membacanya. Begitu 3.6.x menyalakan notifikasi, binding berubah menjadi
+  jalur yang menentukan SIAPA MENERIMA DOKUMEN — dan nilainya saat ini tidak divalidasi sama
+  sekali (map string bebas). Maka di 3.6.x (atau di use case admin bila itu lebih dulu): nilai
+  binding WAJIB dibatasi ke role yang benar-benar terdaftar di `gov.tenant_roles` milik tenant
+  tersebut, agar notifikasi tidak bisa diarahkan ke nama role di luar tenant. Validasi ini
+  dilakukan saat TULIS (use case admin), bukan saat baca — supaya config yang tersimpan selalu
+  dalam keadaan sah.
+
+- **[belum terjadwal] Migrasi core & identity tidak dijalankan migrator — satukan lewat
+  `go:embed`.** `db.LoadMigrations(fs.FS)` (`infra/db/migration.go`) generik: ia mencari pola
+  `*/migrations/*.sql` pada FS apa pun. Tapi `tools/pamongctl/migrate.go` mengunci akarnya ke
+  flag `--modules` yang default-nya `"modules"`, sehingga HANYA `modules/*/migrations/` yang
+  dimuat. Akibatnya `core/workflow/migrations/001-002` dan `identity/migrations/001-006` tidak
+  pernah tersentuh `pamongctl migrate up`: tidak masuk `gov.migration_history`, tak punya
+  status, tak bisa di-`down`. Yang benar-benar membuat tabelnya adalah `EnsureSchema` dengan
+  DDL inline sebagai const Go — 9 file memakai pola ini (`infra/db/audit.go`,
+  `infra/eventbus/outbox.go`, `infra/workflow/db_store.go`, `infra/workflow/template_store.go`,
+  `identity/sync/writer_tenantdb.go`, `tenantrole/adapter/db/*`, `delegation/adapter/db/schema.go`).
+  Jadi tiap komponen punya DDL ganda: const Go yang AKTIF + file `.sql` yang DEKORATIF.
+
+  Arah perbaikan (PR tersendiri — menyentuh core + identity + CLI + urutan bootstrap, sengaja
+  tidak digabung ke 3.2.4): tiap komponen mengekspor `//go:embed migrations/*.sql` sebagai
+  `embed.FS`; `pamongctl migrate` menggabungkan FS `modules/` + core + identity; `EnsureSchema`
+  mengeksekusi SQL embedded yang sama alih-alih const paralel. `LoadMigrations` sudah menerima
+  `fs.FS` jadi migrator tidak perlu berubah, dan DDL yang ada sudah `CREATE ... IF NOT EXISTS`
+  sehingga bisa dipakai ulang apa adanya. Keputusan yang perlu diambil saat itu: `EnsureSchema`
+  tetap ada (dipakai test integrasi & bootstrap dev, tapi bersumber SQL embedded) atau dihapus
+  agar migrator jadi satu-satunya jalur — condong ke opsi pertama karena test integrasi
+  workflow/outbox/audit sekarang bergantung padanya.
 
 - **[PR-2.4.5] Validasi bisnis penugasan tenant.** `usecase.AssignEmploymentToTenant`
   punya stub kosong `validateAssignment` (PR-2.2.4). Isi di 2.4.5: tenant tujuan ada &

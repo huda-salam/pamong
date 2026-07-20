@@ -11,8 +11,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	coreWf "github.com/huda-salam/pamong/core/workflow"
-	infraWf "github.com/huda-salam/pamong/infra/workflow"
 	"github.com/huda-salam/pamong/infra/db"
+	infraWf "github.com/huda-salam/pamong/infra/workflow"
 )
 
 func newTestStore(t *testing.T) (*infraWf.DBStore, context.Context) {

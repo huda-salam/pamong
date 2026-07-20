@@ -45,3 +45,16 @@ func ErrActionUnknown(action string) error {
 	return core.ErrValidation("action",
 		fmt.Sprintf("use case %q tidak terdaftar di action dispatcher", action))
 }
+
+// ErrTemplateNotConfigured dipublikasikan saat tidak ada pilihan template yang
+// ditetapkan untuk kombinasi tenant + slot tertentu (HTTP 404).
+func ErrTemplateNotConfigured(tenantID, slot string) error {
+	return core.ErrNotFound("TenantWorkflowConfig",
+		fmt.Sprintf("tenant=%s slot=%s", tenantID, slot))
+}
+
+// ErrInvalidTemplateConfig dipublikasikan saat TenantWorkflowConfig gagal
+// validasi saat SetTenantTemplate (HTTP 422).
+func ErrInvalidTemplateConfig(reason string) error {
+	return core.ErrValidation("tenant_workflow_config", reason)
+}
