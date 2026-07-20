@@ -71,6 +71,9 @@ func TestTenantAssignmentRepo_SaveAndList(t *testing.T) {
 func TestTenantAssignment_Audited(t *testing.T) {
 	pool, ctx := setupIdentityDB(t)
 	applyAssignmentMigration(t, pool, ctx)
+	// Registry tenant dibutuhkan sejak PR-2.4.5: validateAssignment menolak penugasan
+	// ke tenant yang tidak terdaftar atau tidak aktif.
+	applyTenantMigration(t, pool)
 
 	auditStore := db.NewAuditStore(pool)
 	if err := auditStore.EnsureSchema(ctx); err != nil {
@@ -83,6 +86,15 @@ func TestTenantAssignment_Audited(t *testing.T) {
 	persons := db.NewAuditedPersonRepo(db.NewPersonRepo(pool), engine)
 	employments := db.NewAuditedEmploymentRepo(db.NewEmploymentRepo(pool), engine)
 	assignments := db.NewAuditedTenantAssignmentRepo(db.NewTenantAssignmentRepo(pool), engine)
+	registry := db.NewTenantRepo(pool)
+
+	// Tenant tujuan harus terdaftar & aktif agar validateAssignment lulus.
+	if err := registry.Save(ctx, &domain.Tenant{
+		TenantID: "pemkot-surabaya", Nama: "Pemkot Surabaya", Tier: 1,
+		DBHost: "db1", DBName: "gov_pemkot_surabaya", IsActive: true,
+	}); err != nil {
+		t.Fatalf("seed tenant registry: %v", err)
+	}
 
 	// Actor penugasan harus eksis sebagai person (FK assigned_by → id.persons).
 	actor := uuid.New()
@@ -111,7 +123,7 @@ func TestTenantAssignment_Audited(t *testing.T) {
 		t.Fatalf("attach employment: %v", err)
 	}
 
-	a, err := usecase.NewAssignEmploymentToTenant(persons, employments, assignments, pub).Execute(actx,
+	a, err := usecase.NewAssignEmploymentToTenant(persons, employments, assignments, registry, pub).Execute(actx,
 		usecase.AssignEmploymentToTenantInput{EmploymentID: emp.ID, TenantID: "pemkot-surabaya"})
 	if err != nil {
 		t.Fatalf("assign tenant: %v", err)
