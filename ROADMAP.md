@@ -671,6 +671,29 @@ rule linter `markerref`).
   dilakukan saat TULIS (use case admin), bukan saat baca — supaya config yang tersimpan selalu
   dalam keadaan sah.
 
+- **[belum terjadwal] Isolasi integration test — semua paket berbagi satu database.**
+  Tiap paket integration test me-reset schema-nya sendiri saat setup (`DROP TABLE` +
+  `CREATE SCHEMA IF NOT EXISTS gov`/`id`) di DB yang sama. Saat `go test` menjalankan paket
+  secara paralel (default `-p NumCPU`), mereka saling menimpa: `CREATE SCHEMA IF NOT EXISTS`
+  BUKAN operasi atomik di Postgres — dua koneksi yang memeriksa bersamaan sama-sama lolos lalu
+  satu kalah di unique index `pg_namespace_nspname_index` — dan satu paket bisa men-`DROP`
+  schema yang baru dibuat paket lain (`schema "gov" does not exist` di tengah test).
+  Ditambal sementara dengan `-p 1` di `.gitea/workflows/ci.yaml` (menyerialkan paket, semua
+  hijau) — itu menyembunyikan gejala, bukan menyembuhkan, dan memperlambat CI.
+  Perbaikan sebenarnya: tiap paket test memakai database sendiri (`pamong_test_<paket>`) atau
+  schema bernama acak per-run, sehingga tidak ada state bersama sama sekali. Setelah itu
+  `-p 1` dicabut.
+
+  Kaitannya dengan butir `go:embed` di bawah: race `CREATE SCHEMA IF NOT EXISTS` yang sama
+  akan muncul DI PRODUKSI begitu `EnsureSchema` dipanggil saat bootstrap aplikasi — dua replika
+  server yang boot berbarengan terhadap satu tenant DB adalah persis kondisi yang meledak di
+  test tadi. Saat ini belum terjadi karena `EnsureSchema` TIDAK punya pemanggil non-test
+  (hanya setup test), tapi komentar di kodenya menyatakan niat memakainya untuk bootstrap.
+  Karena itu DDL sebaiknya dipindah ke migrator (dijalankan sekali, sengaja) alih-alih
+  dijalankan tiap proses saat boot. Bila `EnsureSchema` tetap dipertahankan untuk dev/test,
+  bungkus dengan `pg_advisory_xact_lock` — idiom yang sudah dipakai `infra/db/audit.go:84`
+  untuk melindungi hash chain audit.
+
 - **[belum terjadwal] Migrasi core & identity tidak dijalankan migrator — satukan lewat
   `go:embed`.** `db.LoadMigrations(fs.FS)` (`infra/db/migration.go`) generik: ia mencari pola
   `*/migrations/*.sql` pada FS apa pun. Tapi `tools/pamongctl/migrate.go` mengunci akarnya ke

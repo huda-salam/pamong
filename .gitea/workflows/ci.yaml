@@ -74,10 +74,23 @@ jobs:
           go-version: "1.26"
           cache: true
 
+      # Scope ./... (bukan ./infra/... saja): 11 file integration test di identity/,
+      # tenantrole/, dan delegation/ sebelumnya tidak pernah dijalankan CI sehingga
+      # membusuk diam-diam — satu di antaranya bahkan tidak compile selama beberapa PR.
+      #
+      # -p 1 WAJIB: semua paket test berbagi satu database dan masing-masing me-reset
+      # schema gov/id saat setup (DROP + CREATE ... IF NOT EXISTS). CREATE SCHEMA IF NOT
+      # EXISTS bukan operasi atomik di Postgres, jadi paket yang jalan paralel saling
+      # menimpa: "duplicate key ... pg_namespace_nspname_index" atau schema hilang di
+      # tengah test paket lain. -p 1 menyerialkan paket sehingga stabil.
+      #
+      # -p 1 adalah penambal, bukan obat: akar masalahnya isolasi test yang berbagi DB.
+      # Perbaikan sebenarnya (database atau schema sendiri per paket test) dicatat di
+      # ROADMAP; setelah itu -p 1 bisa dicabut agar CI kembali paralel.
       - name: Integration test (Postgres service container)
         env:
           PAMONG_TEST_DB_DSN: postgres://postgres:test@postgres:5432/pamong_test?sslmode=disable
-        run: go test -tags=integration -race -count=1 ./infra/...
+        run: go test -tags=integration -race -count=1 -p 1 ./...
 
   build:
     runs-on: ubuntu-latest
