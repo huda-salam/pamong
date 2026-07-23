@@ -11,20 +11,33 @@ import (
 	"github.com/huda-salam/pamong/infra/db"
 )
 
-// templateConfigDDL membuat tabel gov.tenant_workflow_configs bila belum ada.
-// Identik dengan migration 002_create_tenant_workflow_configs.up.sql — dipakai
-// EnsureSchema untuk bootstrap langsung (pola AuditRepo/DBStore).
+// templateConfigDDL membuat tabel gov.tenant_workflow_configs dalam bentuk FINAL ber-versi
+// (PR-3.3.2b). Menggabungkan migration 002 + 003 — dipakai EnsureSchema untuk bootstrap
+// langsung (pola AuditRepo/DBStore). ALTER idempoten menutup deployment lama yang sempat
+// memakai skema non-versi PK (tenant_id, slot) (pola PR-3.1.4 outbox).
+//
+// Append-only ber-versi: tiap perubahan pilihan menambah baris (version = max+1 per
+// tenant+slot) dengan effective_from — pilihan lama tetap terbaca untuk audit/rollback.
 const templateConfigDDL = `
 CREATE SCHEMA IF NOT EXISTS gov;
 CREATE TABLE IF NOT EXISTS gov.tenant_workflow_configs (
-    tenant_id     TEXT        NOT NULL,
-    slot          TEXT        NOT NULL,
-    template_id   TEXT        NOT NULL,
-    role_bindings JSONB       NOT NULL DEFAULT '{}',
-    set_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    set_by        UUID,
-    PRIMARY KEY (tenant_id, slot)
-);`
+    tenant_id      TEXT        NOT NULL,
+    slot           TEXT        NOT NULL,
+    template_id    TEXT        NOT NULL,
+    role_bindings  JSONB       NOT NULL DEFAULT '{}',
+    version        INT         NOT NULL DEFAULT 1,
+    effective_from TIMESTAMPTZ NOT NULL DEFAULT now(),
+    set_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    set_by         UUID
+);
+ALTER TABLE gov.tenant_workflow_configs ADD COLUMN IF NOT EXISTS version INT NOT NULL DEFAULT 1;
+ALTER TABLE gov.tenant_workflow_configs ADD COLUMN IF NOT EXISTS effective_from TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE gov.tenant_workflow_configs DROP CONSTRAINT IF EXISTS tenant_workflow_configs_pkey;
+ALTER TABLE gov.tenant_workflow_configs DROP CONSTRAINT IF EXISTS uq_twc_version;
+ALTER TABLE gov.tenant_workflow_configs ADD CONSTRAINT uq_twc_version
+    UNIQUE (tenant_id, slot, version);
+CREATE INDEX IF NOT EXISTS idx_twc_lookup
+    ON gov.tenant_workflow_configs (tenant_id, slot);`
 
 // DBTemplateStore mengimplementasi coreWf.TemplateStore di atas Postgres.
 // UPSERT pada (tenant_id, slot) agar SetTenantTemplate idempoten — panggilan
@@ -55,20 +68,22 @@ func (s *DBTemplateStore) EnsureSchema(ctx context.Context) error {
 	return err
 }
 
-// SetTenantTemplate menyimpan atau mengganti pilihan template tenant. set_by diambil
+// SetTenantTemplate MENAMBAH satu versi pilihan template (append-only). set_by diambil
 // dari cfg.SetBy (NULL bila nil — mis. seed/framework), konsisten dengan MemoryTemplateStore.
 func (s *DBTemplateStore) SetTenantTemplate(cfg coreWf.TenantWorkflowConfig) error {
-	return s.upsert(context.Background(), cfg)
+	return s.appendVersion(context.Background(), cfg)
 }
 
-// SetTenantTemplateAsActor menyimpan pilihan template sekaligus mencatat aktor
-// (admin yang melakukan perubahan), menimpa cfg.SetBy. Dipakai use case admin, bukan seed.
+// SetTenantTemplateAsActor menambah versi pilihan sekaligus mencatat aktor (admin yang
+// melakukan perubahan), menimpa cfg.SetBy. Dipakai use case admin, bukan seed.
 func (s *DBTemplateStore) SetTenantTemplateAsActor(ctx context.Context, cfg coreWf.TenantWorkflowConfig, actorID uuid.UUID) error {
 	cfg.SetBy = &actorID
-	return s.upsert(ctx, cfg)
+	return s.appendVersion(ctx, cfg)
 }
 
-func (s *DBTemplateStore) upsert(ctx context.Context, cfg coreWf.TenantWorkflowConfig) error {
+// appendVersion menyisipkan versi baru; version = max+1 per (tenant, slot), dihitung atomik
+// dalam INSERT ... SELECT. effective_from nol → set_at (default sekarang).
+func (s *DBTemplateStore) appendVersion(ctx context.Context, cfg coreWf.TenantWorkflowConfig) error {
 	if cfg.TenantID == "" || cfg.Slot == "" || cfg.TemplateID == "" {
 		return coreWf.ErrInvalidTemplateConfig("tenant_id, slot, dan template_id wajib diisi")
 	}
@@ -82,39 +97,42 @@ func (s *DBTemplateStore) upsert(ctx context.Context, cfg coreWf.TenantWorkflowC
 	if setAt.IsZero() {
 		setAt = time.Now()
 	}
+	effectiveFrom := cfg.EffectiveFrom
+	if effectiveFrom.IsZero() {
+		effectiveFrom = setAt
+	}
 
-	// gov:raw-ok reason=upsert-tenant-template query=tenant-workflow-config-upsert
+	// gov:raw-ok reason=append-versioned-template query=tenant-workflow-config-append-version
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO gov.tenant_workflow_configs
-		    (tenant_id, slot, template_id, role_bindings, set_at, set_by)
-		VALUES ($1, $2, $3, $4::jsonb, $5, $6)
-		ON CONFLICT (tenant_id, slot) DO UPDATE SET
-		    template_id   = EXCLUDED.template_id,
-		    role_bindings = EXCLUDED.role_bindings,
-		    set_at        = EXCLUDED.set_at,
-		    set_by        = EXCLUDED.set_by`,
+		    (tenant_id, slot, template_id, role_bindings, version, effective_from, set_at, set_by)
+		SELECT $1, $2, $3, $4::jsonb,
+		       COALESCE(MAX(version), 0) + 1, $5, $6, $7
+		FROM gov.tenant_workflow_configs
+		WHERE tenant_id = $1 AND slot = $2`,
 		cfg.TenantID, cfg.Slot, cfg.TemplateID,
-		bindingsJSON, setAt, cfg.SetBy,
+		bindingsJSON, effectiveFrom, setAt, cfg.SetBy,
 	)
 	return err
 }
 
-// GetTenantConfig mengembalikan config tersimpan untuk pasangan tenant+slot.
+// GetTenantConfig mengembalikan versi TERBARU config untuk pasangan tenant+slot.
 // ErrTemplateNotConfigured bila belum ada.
 func (s *DBTemplateStore) GetTenantConfig(tenantID, slot string) (coreWf.TenantWorkflowConfig, error) {
-	// gov:raw-ok reason=select-by-tenant-slot query=tenant-workflow-config-get
+	// gov:raw-ok reason=select-latest-version query=tenant-workflow-config-get-latest
 	var (
 		cfg          coreWf.TenantWorkflowConfig
 		bindingsJSON []byte
 	)
 	err := s.pool.QueryRow(context.Background(), `
-		SELECT tenant_id, slot, template_id, role_bindings, set_at, set_by
+		SELECT tenant_id, slot, template_id, role_bindings, version, effective_from, set_at, set_by
 		FROM gov.tenant_workflow_configs
-		WHERE tenant_id = $1 AND slot = $2`,
+		WHERE tenant_id = $1 AND slot = $2
+		ORDER BY version DESC LIMIT 1`,
 		tenantID, slot,
 	).Scan(
 		&cfg.TenantID, &cfg.Slot, &cfg.TemplateID,
-		&bindingsJSON, &cfg.SetAt, &cfg.SetBy,
+		&bindingsJSON, &cfg.Version, &cfg.EffectiveFrom, &cfg.SetAt, &cfg.SetBy,
 	)
 	if db.IsNoRows(err) {
 		return coreWf.TenantWorkflowConfig{}, coreWf.ErrTemplateNotConfigured(tenantID, slot)
@@ -126,6 +144,42 @@ func (s *DBTemplateStore) GetTenantConfig(tenantID, slot string) (coreWf.TenantW
 		return coreWf.TenantWorkflowConfig{}, fmt.Errorf("deserialisasi role_bindings: %w", err)
 	}
 	return cfg, nil
+}
+
+// GetTenantConfigVersions mengembalikan SELURUH versi pilihan (terurut naik) untuk
+// riwayat/rollback/audit. Slice kosong (bukan error) bila belum ada pilihan.
+func (s *DBTemplateStore) GetTenantConfigVersions(tenantID, slot string) ([]coreWf.TenantWorkflowConfig, error) {
+	// gov:raw-ok reason=select-all-versions query=tenant-workflow-config-versions
+	rows, err := s.pool.Query(context.Background(), `
+		SELECT tenant_id, slot, template_id, role_bindings, version, effective_from, set_at, set_by
+		FROM gov.tenant_workflow_configs
+		WHERE tenant_id = $1 AND slot = $2
+		ORDER BY version ASC`,
+		tenantID, slot)
+	if err != nil {
+		return nil, fmt.Errorf("query versi tenant_workflow_config: %w", err)
+	}
+	defer rows.Close()
+
+	var out []coreWf.TenantWorkflowConfig
+	for rows.Next() {
+		var (
+			cfg          coreWf.TenantWorkflowConfig
+			bindingsJSON []byte
+		)
+		if err := rows.Scan(&cfg.TenantID, &cfg.Slot, &cfg.TemplateID,
+			&bindingsJSON, &cfg.Version, &cfg.EffectiveFrom, &cfg.SetAt, &cfg.SetBy); err != nil {
+			return nil, fmt.Errorf("scan versi tenant_workflow_config: %w", err)
+		}
+		if err := json.Unmarshal(bindingsJSON, &cfg.RoleBindings); err != nil {
+			return nil, fmt.Errorf("deserialisasi role_bindings: %w", err)
+		}
+		out = append(out, cfg)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterasi versi tenant_workflow_config: %w", err)
+	}
+	return out, nil
 }
 
 // GetForTenant mengembalikan WorkflowDefinition yang dipilih tenant dengan role

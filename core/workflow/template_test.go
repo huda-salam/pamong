@@ -141,7 +141,9 @@ func TestMemoryTemplateStore_Set_FieldWajibKosong_Error(t *testing.T) {
 	}
 }
 
-func TestMemoryTemplateStore_Set_Idempoten_TimpaPilihan(t *testing.T) {
+// Set kedua MENAMBAH versi (append-only, PR-3.3.2b): GetTenantConfig ambil terbaru,
+// tapi versi lama tetap terbaca lewat GetTenantConfigVersions (untuk audit/rollback).
+func TestMemoryTemplateStore_Set_AppendsVersions(t *testing.T) {
 	store := workflow.NewMemoryTemplateStore(newDefStore(t))
 
 	cfg1 := workflow.TenantWorkflowConfig{
@@ -160,9 +162,27 @@ func TestMemoryTemplateStore_Set_Idempoten_TimpaPilihan(t *testing.T) {
 	if err := store.SetTenantTemplate(cfg2); err != nil {
 		t.Fatalf("set kedua: %v", err)
 	}
+
 	got, _ := store.GetTenantConfig("tenant-a", "surat_masuk.disposisi")
 	if got.TemplateID != defTigaTahap.ID {
-		t.Errorf("pilihan seharusnya ditimpa ke tiga_tahap, dapat %q", got.TemplateID)
+		t.Errorf("pilihan terbaru seharusnya tiga_tahap, dapat %q", got.TemplateID)
+	}
+	if got.Version != 2 {
+		t.Errorf("versi terbaru seharusnya 2, dapat %d", got.Version)
+	}
+
+	versions, err := store.GetTenantConfigVersions("tenant-a", "surat_masuk.disposisi")
+	if err != nil {
+		t.Fatalf("GetTenantConfigVersions: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("seharusnya 2 versi tersimpan (append-only), dapat %d", len(versions))
+	}
+	if versions[0].TemplateID != defStandar.ID || versions[0].Version != 1 {
+		t.Errorf("versi 1 seharusnya standar, dapat %q v%d", versions[0].TemplateID, versions[0].Version)
+	}
+	if versions[1].TemplateID != defTigaTahap.ID || versions[1].Version != 2 {
+		t.Errorf("versi 2 seharusnya tiga_tahap, dapat %q v%d", versions[1].TemplateID, versions[1].Version)
 	}
 }
 

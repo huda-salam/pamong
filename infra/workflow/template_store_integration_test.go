@@ -142,8 +142,9 @@ func TestDBTemplateStore_GetConfig_BelumAda(t *testing.T) {
 	}
 }
 
-// TestDBTemplateStore_Upsert: Set kedua menimpa pilihan pertama (idempoten per slot).
-func TestDBTemplateStore_Upsert(t *testing.T) {
+// TestDBTemplateStore_AppendsVersions: Set kedua MENAMBAH versi (append-only, PR-3.3.2b);
+// GetTenantConfig ambil terbaru, GetTenantConfigVersions kembalikan semua (audit/rollback).
+func TestDBTemplateStore_AppendsVersions(t *testing.T) {
 	tplStore, defStore, _ := newTemplateStoreEnv(t)
 
 	_ = defStore.Register(sampleDef("surat_masuk.disposisi.standar"))
@@ -167,11 +168,22 @@ func TestDBTemplateStore_Upsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTenantConfig: %v", err)
 	}
-	if got.TemplateID != "surat_masuk.disposisi.tiga_tahap" {
-		t.Errorf("pilihan harus ditimpa ke tiga_tahap, dapat %q", got.TemplateID)
+	if got.TemplateID != "surat_masuk.disposisi.tiga_tahap" || got.Version != 2 {
+		t.Errorf("terbaru harus tiga_tahap v2, dapat %q v%d", got.TemplateID, got.Version)
 	}
 	if got.RoleBindings["validator_tahap_1"] != "kabag_umum" {
 		t.Errorf("RoleBindings harus diperbarui, dapat %q", got.RoleBindings["validator_tahap_1"])
+	}
+
+	versions, err := tplStore.GetTenantConfigVersions("pemkot-malang", "surat_masuk.disposisi")
+	if err != nil {
+		t.Fatalf("GetTenantConfigVersions: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("append-only: harus 2 versi, dapat %d", len(versions))
+	}
+	if versions[0].TemplateID != "surat_masuk.disposisi.standar" || versions[0].Version != 1 {
+		t.Errorf("versi 1 harus standar, dapat %q v%d", versions[0].TemplateID, versions[0].Version)
 	}
 }
 

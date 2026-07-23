@@ -347,7 +347,7 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
   - DoD: config tenant terbaca; scope unit kerja meng-override tenant
   - SELESAI: `gov.tenant_configs` + `core/config.Resolver` + `infra/config` store +
     `strategy.ConfigSelectionSource` (ganti MemorySelectionSource). SISA: rekonsiliasi
-    audit/versi/permission template selection → retarget 3.3.2b — kini tinggal meniru pola versi/effective-date PR-3.3.3 (lihat backlog).
+    template selection versi/effective-date/validasi SELESAI di PR-3.3.2b store-level; sisa hanya use case admin + permission (butir c).
 
 - **PR-3.3.3** Strategy choice versioning + non-retroaktif ← 3.3.2, 1.3.1 ✅
   - Pilihan ber-versi + effective date; periode terkunci tak berubah
@@ -692,7 +692,7 @@ rule linter `markerref`).
   `core/config/migrations/001`. `core/strategy` kini memakai `ConfigSelectionSource` di atas
   resolver ini sebagai jalur produksi (MemorySelectionSource tinggal untuk test). DoD terpenuhi:
   scope unit kerja meng-override tenant (unit-test + integration test). **SISA (belum dikerjakan):
-  rekonsiliasi penyimpanan template selection di bawah — retarget ke follow-up 3.3.2b (meniru pola PR-3.3.3 yang sudah jadi).**
+  rekonsiliasi template selection SELESAI store-level di PR-3.3.2b; sisa hanya use case admin + permission (butir c, lihat backlog).**
 
 - **[PR-3.3.2b] Rekonsiliasi penyimpanan template selection.** PRD workflow F4
   menyebut pilihan template "disimpan di gov.tenant_configs", tapi tabel/resolver itu baru hadir di
@@ -723,24 +723,22 @@ rule linter `markerref`).
   `TemplateStore` (port di `core/workflow/ports.go`) sudah jadi seam — penyimpanan bisa diganti tanpa
   menyentuh engine/caller.
 
-  **Utang yang masih terbuka — riwayat & audit pilihan template.** `SetTenantTemplate`
-  sekarang UPSERT murni pada `(tenant_id, slot)`: pilihan lama HILANG, hanya `set_by`/`set_at`
-  baris terakhir yang tersimpan. Ini menyimpang dari titik ekstensi #7 CLAUDE.md (versioned
-  config + effective date + riwayat + rollback) dan dari `core/workflow/CLAUDE.md` ("perubahan
-  definisi = aksi ber-permission + ter-audit") — padahal `workflow_definitions` (PR-3.2.3)
-  sendiri sudah ber-versi. Sengaja ditunda agar 3.2.4 tidak melebar; gerbang permission untuk
-  aksi set juga belum ada (use case admin belum dibuat). Yang wajib ada (retarget 3.3.2b, tiru pola PR-3.3.3):
-  (a) `effective_from` + versi/riwayat sehingga pilihan lama bisa dibaca & di-rollback,
-  (b) entri `gov.audit_logs` tiap perubahan pilihan, bukan sekadar kolom `set_by`,
-  (c) permission check di use case admin yang memanggil `SetTenantTemplateAsActor`,
-  (d) validasi `template_id` saat TULIS — sekarang tidak dicek sama sekali terhadap
-  `DefinitionStore`, sehingga config bisa menunjuk ID sembarang dan error baru muncul saat
-  `GetForTenant`. Use case admin wajib memastikan template terdaftar DAN memang template yang
-  sah untuk slot itu (cegah admin tenant mengarahkan slot ke definisi modul lain yang guard-nya
-  lebih longgar). Sengaja tidak divalidasi di 3.2.4 karena template boleh diseed setelah config
-  ditetapkan — pembatasan ini milik lapisan use case, bukan store.
-  Sampai (a)-(d) ada, perubahan pilihan template tidak dapat diaudit — jangan buka ke UI admin
-  tenant sebelum semuanya selesai.
+  **Riwayat & audit pilihan template — STORE-LEVEL SELESAI (PR-3.3.2b), sisa (c) menunggu use case.**
+  `SetTenantTemplate` dulu UPSERT murni pada `(tenant_id, slot)` (pilihan lama hilang). Kini
+  append-only ber-versi (migration `core/workflow/migrations/003`), meniru pola PR-3.3.3:
+  - (a) ✅ `version` + `effective_from` — `TenantWorkflowConfig` += Version/EffectiveFrom;
+    `SetTenantTemplate` append (Memory & DB); `GetTenantConfig`=terbaru; `GetTenantConfigVersions`
+    baca seluruh versi (riwayat/rollback).
+  - (b) ✅ (via pola workflow_definitions, bukan audit_logs terpisah) — versi append-only +
+    `set_by` = jejak siapa-mengubah-apa-kapan. Konsisten keputusan PR-3.3.3.
+  - (d) ✅ `TemplateChoiceManager.SetChoice` (core/workflow/template_choice.go) memvalidasi
+    `template_id` terhadap `DefinitionStore` SAAT TULIS + stamp `set_by`; jalur seed
+    `SetTenantTemplate` sengaja tetap tanpa validasi (template boleh diseed setelah config).
+  - (c) ⏳ **BELUM**: permission check + use case admin. `TemplateChoiceManager` sudah jadi seam
+    yang dipanggil use case, TAPI use case admin + permission string BELUM dibuat (scope 3.3.2b
+    sengaja store-level; permission dibahas saat write path di-wire ke gateway). Sampai (c) ada,
+    **jangan buka pilihan template ke UI admin tenant.** Slot validasi "template sah UNTUK slot itu"
+    (cegah arahkan slot ke definisi modul lain) juga milik use case ini.
 
 - **[PR-3.6.x] Konsumsi role binding saat notifikasi/eskalasi.** `ApplyBindings` (PR-3.2.4)
   mengganti peran generik → role konkret tenant pada `State.EscalateToRole` & `NotifySpec.ToRole`,

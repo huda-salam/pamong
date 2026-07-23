@@ -51,11 +51,16 @@ type TemplateStore interface {
 	// bila tenant belum menetapkan pilihan untuk slot tersebut.
 	GetForTenant(tenantID, slot string) (WorkflowDefinition, error)
 
-	// SetTenantTemplate menyimpan atau mengganti pilihan template dan binding milik
-	// tenant. Idempoten: panggilan kedua menimpa pilihan sebelumnya.
+	// SetTenantTemplate MENAMBAH satu versi pilihan template + binding (append-only, PR-3.3.2b):
+	// pilihan lama tetap tersimpan agar bisa dibaca & di-rollback. Jalur seed/framework tanpa
+	// validasi template_id — validasi + set_by aktor lewat TemplateChoiceManager.
 	SetTenantTemplate(cfg TenantWorkflowConfig) error
 
-	// GetTenantConfig mengembalikan config tersimpan untuk inspeksi (admin UI).
+	// GetTenantConfig mengembalikan versi TERBARU config untuk inspeksi (admin UI).
 	// Kembalikan ErrTemplateNotConfigured bila belum ada.
 	GetTenantConfig(tenantID, slot string) (TenantWorkflowConfig, error)
+
+	// GetTenantConfigVersions mengembalikan SELURUH versi pilihan (terurut naik) untuk
+	// riwayat/rollback/audit. Slice kosong (bukan error) bila belum ada pilihan.
+	GetTenantConfigVersions(tenantID, slot string) ([]TenantWorkflowConfig, error)
 }
