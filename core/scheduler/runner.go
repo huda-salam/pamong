@@ -18,6 +18,8 @@ import (
 type Runner struct {
 	registry *Registry
 	store    JobStore
+	locker   Locker // opsional; nil = single-instance (tanpa proteksi double-run)
+	lockTTL  time.Duration
 	now      func() time.Time
 	interval time.Duration
 }
@@ -31,6 +33,7 @@ func NewRunner(registry *Registry, store JobStore, interval time.Duration) *Runn
 	return &Runner{
 		registry: registry,
 		store:    store,
+		lockTTL:  5 * time.Minute,
 		now:      time.Now,
 		interval: interval,
 	}
@@ -39,6 +42,18 @@ func NewRunner(registry *Registry, store JobStore, interval time.Duration) *Runn
 // WithClock mengganti sumber waktu (untuk test deterministik). Kembalikan runner agar bisa di-chain.
 func (r *Runner) WithClock(now func() time.Time) *Runner {
 	r.now = now
+	return r
+}
+
+// WithLocker memasang lock terdistribusi agar satu job tidak jalan ganda di multi-instance
+// (PR-3.5.2). ttl adalah masa sewa lock — pilih lebih lama dari durasi terpanjang yang wajar
+// untuk job, agar lock tak kedaluwarsa saat job masih berjalan. ttl <= 0 memakai default 5m.
+// Tanpa WithLocker, Runner berperilaku single-instance seperti PR-3.5.1.
+func (r *Runner) WithLocker(locker Locker, ttl time.Duration) *Runner {
+	r.locker = locker
+	if ttl > 0 {
+		r.lockTTL = ttl
+	}
 	return r
 }
 
@@ -83,13 +98,56 @@ func (r *Runner) RunDue(ctx context.Context) (int, error) {
 	}
 	count := 0
 	for _, job := range due {
-		r.execute(ctx, job)
-		if err := r.advance(ctx, job); err != nil {
-			slog.Error("gagal memperbarui jadwal setelah eksekusi", "job", job.JobKey, "id", job.ID, "err", err)
+		if !r.runLocked(ctx, job) {
+			continue // job dipegang instance lain — bukan eksekusi kita
 		}
 		count++
 	}
 	return count, nil
+}
+
+// runLocked menjalankan satu job di bawah lock terdistribusi (bila terpasang). Mengembalikan
+// true bila job dieksekusi oleh instance ini, false bila dilewati karena instance lain memegang
+// lock. Tanpa locker, selalu eksekusi (single-instance).
+//
+// Lock dilepas setelah execute+advance. Re-check jatuh tempo setelah lock diambil menutup
+// balapan "dua instance sama-sama membaca due lalu satu sudah advance": instance yang kalah
+// lock skip; instance yang menang lock tapi menemukan job sudah di-advance (next_run maju)
+// juga skip — mencegah eksekusi ganda meski TTL lock kedaluwarsa antar tick.
+func (r *Runner) runLocked(ctx context.Context, job ScheduledJob) bool {
+	if r.locker == nil {
+		r.runOnce(ctx, job)
+		return true
+	}
+	lock, ok, err := r.locker.Acquire(ctx, jobLockKey(job.ID), r.lockTTL)
+	if err != nil {
+		slog.Error("gagal mengambil lock job", "job", job.JobKey, "id", job.ID, "err", err)
+		return false
+	}
+	if !ok {
+		return false
+	}
+	defer func() { _ = r.locker.Release(ctx, lock) }()
+
+	// Re-check di bawah lock: pastikan job masih jatuh tempo (belum di-advance instance lain).
+	fresh, err := r.store.GetSchedule(ctx, job.ID)
+	if err != nil {
+		slog.Error("gagal membaca ulang jadwal di bawah lock", "id", job.ID, "err", err)
+		return false
+	}
+	if !fresh.Enabled || fresh.NextRunAt.After(r.now()) {
+		return false // sudah dijalankan & di-advance instance lain
+	}
+	r.runOnce(ctx, fresh)
+	return true
+}
+
+// runOnce mengeksekusi handler satu job lalu memajukan jadwalnya (dipakai dengan/atau tanpa lock).
+func (r *Runner) runOnce(ctx context.Context, job ScheduledJob) {
+	r.execute(ctx, job)
+	if err := r.advance(ctx, job); err != nil {
+		slog.Error("gagal memperbarui jadwal setelah eksekusi", "job", job.JobKey, "id", job.ID, "err", err)
+	}
 }
 
 // execute menjalankan handler satu job dan mencatat riwayatnya (success/failed).

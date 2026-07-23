@@ -392,9 +392,13 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
     (gov.scheduled_jobs + gov.job_runs). One-shot (cron kosong) = seam deadline SLA (F2).
     Anti double-run multi-instance DITUNDA ke 3.5.2 (lock).
 
-- **PR-3.5.2** Distributed lock ← 3.5.1, 3.1.x
+- **PR-3.5.2** Distributed lock ← 3.5.1, 3.1.x ✅
   - Job tidak double-run di multi-instance
   - DoD: dua instance, job jalan sekali
+  - Impl: Locker port ber-sewa (lease+TTL, token guard), MemoryLocker + Postgres DBLocker
+    (gov.job_locks, acquire atomik INSERT..ON CONFLICT + guard kedaluwarsa). Runner.WithLocker
+    mengunci per-jadwal + re-check jatuh tempo di bawah lock. Sewa kedaluwarsa → ambil alih
+    (anti-deadlock bila instance mati). DoD terbukti: dua Runner konkuren, job jalan sekali.
 
 ### Sub-phase 3.6 — Notification & messaging
 
