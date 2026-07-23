@@ -338,13 +338,16 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
 
 ### Sub-phase 3.3 — Strategy registry & tenant config
 
-- **PR-3.3.1** Strategy registry + key resolution ← 1.1.1
+- **PR-3.3.1** Strategy registry + key resolution ← 1.1.1 ✅
   - Interface + registry ber-key + `Register()`; tolak key tak terdaftar
   - DoD: dua strategy dummy ter-register; use case memilih via key dari config
 
-- **PR-3.3.2** Tenant config ber-scope + resolver ← 3.3.1, 2.2.1
+- **PR-3.3.2** Tenant config ber-scope + resolver ← 3.3.1, 2.2.1 ✅ (inti)
   - Skema config `tenant[/unit/resource]`, resolusi paling-spesifik-menang
   - DoD: config tenant terbaca; scope unit kerja meng-override tenant
+  - SELESAI: `gov.tenant_configs` + `core/config.Resolver` + `infra/config` store +
+    `strategy.ConfigSelectionSource` (ganti MemorySelectionSource). SISA: rekonsiliasi
+    audit/versi/permission template selection → retarget 3.3.2b/3.3.3 (lihat backlog).
 
 - **PR-3.3.3** Strategy choice versioning + non-retroaktif ← 3.3.2, 1.3.1
   - Pilihan ber-versi + effective date; periode terkunci tak berubah
@@ -673,25 +676,50 @@ tujuannya sudah tiba/lewat tanpa dikerjakan. DEFERRED yang fasenya lewat = utang
 harus ditutup atau dijadwalkan ulang secara eksplisit. Ini gerbang manusia (belum ada
 rule linter `markerref`).
 
-- **[PR-3.3.2] Rekonsiliasi penyimpanan template selection.** PRD workflow F4 menyebut
-  pilihan template "disimpan di gov.tenant_configs", tapi tabel/resolver itu baru hadir di
-  PR-3.3.2 (tenant config ber-scope). PR-3.2.4 tidak bergantung pada 3.3.2, jadi pilihan
-  template + role binding disimpan di tabel khusus `gov.tenant_workflow_configs`
+- **[PR-3.3.2 — bagian INTI SELESAI] Tenant config ber-scope + resolver.** `gov.tenant_configs`
+  (KV ber-scope `tenant[/unit_kerja[/resource]]`) + `core/config.Resolver` "paling spesifik
+  menang" + `core/config.TenantConfigStore` (Memory + Postgres `infra/config`) + migration
+  `core/config/migrations/001`. `core/strategy` kini memakai `ConfigSelectionSource` di atas
+  resolver ini sebagai jalur produksi (MemorySelectionSource tinggal untuk test). DoD terpenuhi:
+  scope unit kerja meng-override tenant (unit-test + integration test). **SISA (belum dikerjakan):
+  rekonsiliasi penyimpanan template selection di bawah — retarget ke follow-up 3.3.2b/3.3.3.**
+
+- **[PR-3.3.2b / gabung 3.3.3] Rekonsiliasi penyimpanan template selection.** PRD workflow F4
+  menyebut pilihan template "disimpan di gov.tenant_configs", tapi tabel/resolver itu baru hadir di
+  PR-3.3.2 (tenant config ber-scope, kini SELESAI di atas). PR-3.2.4 tidak bergantung pada 3.3.2,
+  jadi pilihan template + role binding disimpan di tabel khusus `gov.tenant_workflow_configs`
   (`infra/workflow/template_store.go`, migration `core/workflow/migrations/002`), PK natural
   `(tenant_id, slot)` — flat, belum ber-scope unit kerja. Alasan tabel terpisah: binding peran
-  adalah data terstruktur (map), tidak pas di KV flat `tenant_configs`. Saat 3.3.2: putuskan
-  apakah template selection ikut resolver scoped `tenant[/unit/resource]` (agar pilihan
-  per-unit-kerja mungkin tanpa migrasi, sesuai titik ekstensi #2) atau tetap tabel khusus
-  dengan kolom scope tambahan. `TemplateStore` (port di `core/workflow/ports.go`) sudah jadi
-  seam — implementasi penyimpanan bisa diganti tanpa menyentuh engine/caller.
+  adalah data terstruktur (map), tidak pas di KV flat `tenant_configs`.
+  **KEPUTUSAN 3.3.2 (final):** template selection **TETAP di tabel khusus** `gov.tenant_workflow_configs`
+  secara **utuh** (`template_id` + `role_bindings` satu baris) — BUKAN dilebur ke KV `gov.tenant_configs`,
+  DAN BUKAN di-split (`template_id`→KV, `role_bindings`→tabel khusus).
+  Pertimbangan (ringkas):
+  - **Bentuk mengikuti data.** `tenant_configs` adalah KV **skalar** ber-scope (satu string per key,
+    resolusi paling-spesifik-menang) — cocok untuk strategy key/flag, tidak untuk `role_bindings` (map).
+    Presenden ERP menaruh config terstruktur di tabel sendiri: iDempiere `AD_WF_Responsible` (tanggung
+    jawab node terpisah dari KV `AD_Preference`), Odoo `tier.definition` (approval berlapis = record,
+    bukan `ir.property`), Frappe transisi workflow di child table (bukan `tabSingles`).
+  - **Ringan.** Satu pilihan logis = satu tulis atomik di satu tabel; tak ada konsistensi lintas-tabel,
+    tak ada kopling baru workflow↔config. Opsi split (à la Odoo: skalar→config, struktur→record) memberi
+    "template per-unit gratis" lewat resolver, tapi memecah satu pilihan ke dua tabel — ditolak karena
+    per-unit template BUKAN kebutuhan sekarang dan jalur menambahkannya nanti murah.
+  - **Adaptif.** Bila kelak butuh pilihan template per-unit-kerja: tambah kolom scope
+    (`unit_kerja_id`/`resource_id`) ke `tenant_workflow_configs` + resolusi paling-spesifik di
+    `TemplateStore` (pola yang sama dgn `tenant_configs`). Ini selaras arah **Odoo v17** yang justru
+    MENINGGALKAN tabel KV vertikal (`ir.property`) demi "nilai dekat baris + scope" — memindah ke KV
+    vertikal = langkah mundur. Dimensi scope tambahan (user/konteks, à la iDempiere `AD_Preference`)
+    bila perlu = perluas `ConfigScope`, bukan tabel baru.
+  `TemplateStore` (port di `core/workflow/ports.go`) sudah jadi seam — penyimpanan bisa diganti tanpa
+  menyentuh engine/caller.
 
-  **Utang yang ikut ditutup di 3.3.2 — riwayat & audit pilihan template.** `SetTenantTemplate`
+  **Utang yang masih terbuka — riwayat & audit pilihan template.** `SetTenantTemplate`
   sekarang UPSERT murni pada `(tenant_id, slot)`: pilihan lama HILANG, hanya `set_by`/`set_at`
   baris terakhir yang tersimpan. Ini menyimpang dari titik ekstensi #7 CLAUDE.md (versioned
   config + effective date + riwayat + rollback) dan dari `core/workflow/CLAUDE.md` ("perubahan
   definisi = aksi ber-permission + ter-audit") — padahal `workflow_definitions` (PR-3.2.3)
   sendiri sudah ber-versi. Sengaja ditunda agar 3.2.4 tidak melebar; gerbang permission untuk
-  aksi set juga belum ada (use case admin belum dibuat). Yang wajib ada di 3.3.2:
+  aksi set juga belum ada (use case admin belum dibuat). Yang wajib ada (retarget 3.3.2b/3.3.3):
   (a) `effective_from` + versi/riwayat sehingga pilihan lama bisa dibaca & di-rollback,
   (b) entri `gov.audit_logs` tiap perubahan pilihan, bukan sekadar kolom `set_by`,
   (c) permission check di use case admin yang memanggil `SetTenantTemplateAsActor`,
