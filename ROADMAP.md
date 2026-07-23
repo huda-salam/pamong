@@ -347,11 +347,18 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
   - DoD: config tenant terbaca; scope unit kerja meng-override tenant
   - SELESAI: `gov.tenant_configs` + `core/config.Resolver` + `infra/config` store +
     `strategy.ConfigSelectionSource` (ganti MemorySelectionSource). SISA: rekonsiliasi
-    audit/versi/permission template selection → retarget 3.3.2b/3.3.3 (lihat backlog).
+    audit/versi/permission template selection → retarget 3.3.2b — kini tinggal meniru pola versi/effective-date PR-3.3.3 (lihat backlog).
 
-- **PR-3.3.3** Strategy choice versioning + non-retroaktif ← 3.3.2, 1.3.1
+- **PR-3.3.3** Strategy choice versioning + non-retroaktif ← 3.3.2, 1.3.1 ✅
   - Pilihan ber-versi + effective date; periode terkunci tak berubah
   - DoD: ganti metode → periode lama tetap, periode baru pakai metode baru
+  - SELESAI: `tenant_configs` jadi append-only ber-versi (version + effective_from);
+    `Resolver.ResolveAsOf` (spesifisitas > kebaruan); `ChoiceManager.SetChoice` (set_by
+    sebagai jejak + gerbang periode via `port.FiscalChecker` seam). Versi append-only itu
+    sendiri = jejak "siapa-mengubah-apa" (pola workflow_definitions), bukan audit_logs terpisah.
+    Gerbang fiskal REAL menunggu impl `FiscalChecker` (DEFERRED modul keuangan); seam + baca
+    non-retroaktif sudah jalan. **Utang template selection a–d TIDAK ditutup di sini** (tabel
+    `tenant_workflow_configs` beda) → tetap di 3.3.2b, kini tinggal meniru pola ini.
 
 - **PR-3.3.4** Opsi = irisan developer ∩ rule tier ← 3.3.1, 4.1.3
   - Opsi tersedia ke tenant difilter rule tiered constraint
@@ -682,9 +689,9 @@ rule linter `markerref`).
   `core/config/migrations/001`. `core/strategy` kini memakai `ConfigSelectionSource` di atas
   resolver ini sebagai jalur produksi (MemorySelectionSource tinggal untuk test). DoD terpenuhi:
   scope unit kerja meng-override tenant (unit-test + integration test). **SISA (belum dikerjakan):
-  rekonsiliasi penyimpanan template selection di bawah — retarget ke follow-up 3.3.2b/3.3.3.**
+  rekonsiliasi penyimpanan template selection di bawah — retarget ke follow-up 3.3.2b (meniru pola PR-3.3.3 yang sudah jadi).**
 
-- **[PR-3.3.2b / gabung 3.3.3] Rekonsiliasi penyimpanan template selection.** PRD workflow F4
+- **[PR-3.3.2b] Rekonsiliasi penyimpanan template selection.** PRD workflow F4
   menyebut pilihan template "disimpan di gov.tenant_configs", tapi tabel/resolver itu baru hadir di
   PR-3.3.2 (tenant config ber-scope, kini SELESAI di atas). PR-3.2.4 tidak bergantung pada 3.3.2,
   jadi pilihan template + role binding disimpan di tabel khusus `gov.tenant_workflow_configs`
@@ -719,7 +726,7 @@ rule linter `markerref`).
   config + effective date + riwayat + rollback) dan dari `core/workflow/CLAUDE.md` ("perubahan
   definisi = aksi ber-permission + ter-audit") — padahal `workflow_definitions` (PR-3.2.3)
   sendiri sudah ber-versi. Sengaja ditunda agar 3.2.4 tidak melebar; gerbang permission untuk
-  aksi set juga belum ada (use case admin belum dibuat). Yang wajib ada (retarget 3.3.2b/3.3.3):
+  aksi set juga belum ada (use case admin belum dibuat). Yang wajib ada (retarget 3.3.2b, tiru pola PR-3.3.3):
   (a) `effective_from` + versi/riwayat sehingga pilihan lama bisa dibaca & di-rollback,
   (b) entri `gov.audit_logs` tiap perubahan pilihan, bukan sekadar kolom `set_by`,
   (c) permission check di use case admin yang memanggil `SetTenantTemplateAsActor`,

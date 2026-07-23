@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -87,9 +88,9 @@ func TestDBTenantConfig_UnitOverridesTenant(t *testing.T) {
 	}
 }
 
-// TestDBTenantConfig_Upsert memverifikasi UNIQUE NULLS NOT DISTINCT: set kedua pada scope
-// tenant-level yang sama menimpa nilai, tidak menggandakan baris.
-func TestDBTenantConfig_Upsert(t *testing.T) {
+// TestDBTenantConfig_AppendsVersions memverifikasi Set append-only: dua Set pada scope yang
+// sama menghasilkan dua versi (1 & 2), bukan menimpa; Resolve (now) ambil terbaru.
+func TestDBTenantConfig_AppendsVersions(t *testing.T) {
 	r, store, ctx := newTenantConfigEnv(t)
 	const tenant = "pemkot-malang"
 	scope := coreCfg.ConfigScope{TenantID: tenant}
@@ -105,11 +106,38 @@ func TestDBTenantConfig_Upsert(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cands) != 1 {
-		t.Fatalf("want 1 baris setelah upsert, got %d", len(cands))
+	if len(cands) != 2 {
+		t.Fatalf("want 2 versi (append-only), got %d", len(cands))
 	}
-	if cands[0].Value != "average" {
-		t.Fatalf("want average, got %q", cands[0].Value)
+	seen := map[int]bool{}
+	for _, c := range cands {
+		seen[c.Version] = true
+	}
+	if !seen[1] || !seen[2] {
+		t.Fatalf("want versi 1 & 2, got %v", seen)
+	}
+	if v, ok, err := r.Resolve(ctx, scope, "k"); err != nil || !ok || v != "average" {
+		t.Fatalf("resolve now: want average, got %q ok=%v err=%v", v, ok, err)
+	}
+}
+
+// TestDBTenantConfig_NonRetroactive — DoD PR-3.3.3 di Postgres nyata: ganti metode dgn
+// effective_from berbeda → tanggal lama tetap metode lama, tanggal baru metode baru.
+func TestDBTenantConfig_NonRetroactive(t *testing.T) {
+	r, _, ctx := newTenantConfigEnv(t)
+	const tenant = "pemkot-batu"
+	scope := coreCfg.ConfigScope{TenantID: tenant}
+
+	jan2025 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	jan2026 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	_ = r.Set(ctx, coreCfg.ConfigEntry{Scope: scope, Key: "m", Value: "fifo", EffectiveFrom: jan2025})
+	_ = r.Set(ctx, coreCfg.ConfigEntry{Scope: scope, Key: "m", Value: "average", EffectiveFrom: jan2026})
+
+	if v, ok, err := r.ResolveAsOf(ctx, scope, "m", time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)); err != nil || !ok || v != "fifo" {
+		t.Fatalf("2025: want fifo, got %q ok=%v err=%v", v, ok, err)
+	}
+	if v, ok, err := r.ResolveAsOf(ctx, scope, "m", time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)); err != nil || !ok || v != "average" {
+		t.Fatalf("2026: want average, got %q ok=%v err=%v", v, ok, err)
 	}
 }
 

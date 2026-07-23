@@ -3,6 +3,7 @@ package config_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/huda-salam/pamong/core/config"
@@ -132,7 +133,9 @@ func TestResolve_TenantIsolation(t *testing.T) {
 	}
 }
 
-func TestSet_UpsertSameScope(t *testing.T) {
+// Set bersifat append-only ber-versi (PR-3.3.3): dua Set pada scope yang sama menghasilkan
+// dua versi; Resolve (now) mengembalikan yang terbaru.
+func TestSet_AppendsVersions(t *testing.T) {
 	store := config.NewMemoryTenantConfigStore()
 	r := config.NewResolver(store)
 	scope := config.ConfigScope{TenantID: tenant}
@@ -144,12 +147,90 @@ func TestSet_UpsertSameScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	if v, ok := mustResolve(t, r, scope, "k"); !ok || v != "average" {
-		t.Fatalf("upsert: want average, got %q/%v", v, ok)
+		t.Fatalf("resolve now: want average (versi terbaru), got %q/%v", v, ok)
 	}
-	// Tidak boleh ada kandidat ganda pada scope yang sama.
+	// Kedua versi tersimpan (append-only), dengan nomor versi 1 & 2.
 	cands, _ := store.Candidates(context.Background(), tenant, "k")
-	if len(cands) != 1 {
-		t.Fatalf("want 1 kandidat setelah upsert, got %d", len(cands))
+	if len(cands) != 2 {
+		t.Fatalf("want 2 versi setelah 2 Set, got %d", len(cands))
+	}
+	seen := map[int]bool{}
+	for _, c := range cands {
+		seen[c.Version] = true
+	}
+	if !seen[1] || !seen[2] {
+		t.Fatalf("want versi 1 & 2, got %v", seen)
+	}
+}
+
+// DoD PR-3.3.3: ganti metode → periode lama tetap pakai metode lama, periode baru pakai baru.
+func TestResolveAsOf_NonRetroactive(t *testing.T) {
+	store := config.NewMemoryTenantConfigStore()
+	r := config.NewResolver(store)
+	scope := config.ConfigScope{TenantID: tenant}
+
+	jan2025 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	jan2026 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	if err := r.Set(context.Background(), config.ConfigEntry{
+		Scope: scope, Key: "keuangan.persediaan", Value: "fifo", EffectiveFrom: jan2025,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Set(context.Background(), config.ConfigEntry{
+		Scope: scope, Key: "keuangan.persediaan", Value: "average", EffectiveFrom: jan2026,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	asOf := func(ts time.Time) string {
+		v, ok, err := r.ResolveAsOf(context.Background(), scope, "keuangan.persediaan", ts)
+		if err != nil || !ok {
+			t.Fatalf("ResolveAsOf %v: ok=%v err=%v", ts, ok, err)
+		}
+		return v
+	}
+	// Periode 2025 (terkunci) tetap fifo meski pilihan sudah diganti.
+	if v := asOf(time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)); v != "fifo" {
+		t.Errorf("2025: want fifo, got %q", v)
+	}
+	// Periode 2026 pakai metode baru.
+	if v := asOf(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)); v != "average" {
+		t.Errorf("2026: want average, got %q", v)
+	}
+	// Sebelum versi pertama berlaku → tidak ada nilai.
+	if _, ok, _ := r.ResolveAsOf(context.Background(), scope, "keuangan.persediaan",
+		time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)); ok {
+		t.Error("2024: seharusnya belum ada pilihan yang berlaku")
+	}
+}
+
+// Spesifisitas scope mengalahkan kebaruan: override unit-kerja menang atas pilihan tenant
+// yang lebih baru.
+func TestResolveAsOf_SpecificityBeatsRecency(t *testing.T) {
+	store := config.NewMemoryTenantConfigStore()
+	r := config.NewResolver(store)
+	unit := uuid.New()
+
+	old := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Unit-level lama, tenant-level lebih baru.
+	_ = r.Set(context.Background(), config.ConfigEntry{
+		Scope: config.ConfigScope{TenantID: tenant, UnitKerjaID: uuidPtr(unit)},
+		Key:   "k", Value: "unit_pick", EffectiveFrom: old,
+	})
+	_ = r.Set(context.Background(), config.ConfigEntry{
+		Scope: config.ConfigScope{TenantID: tenant},
+		Key:   "k", Value: "tenant_pick", EffectiveFrom: newer,
+	})
+
+	// Query pada unit, asOf setelah keduanya berlaku → unit menang meski tenant lebih baru.
+	v, ok, err := r.ResolveAsOf(context.Background(),
+		config.ConfigScope{TenantID: tenant, UnitKerjaID: uuidPtr(unit)}, "k",
+		time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil || !ok || v != "unit_pick" {
+		t.Fatalf("want unit_pick, got %q ok=%v err=%v", v, ok, err)
 	}
 }
 

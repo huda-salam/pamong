@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -52,27 +53,35 @@ func (s ConfigScope) appliesTo(q ConfigScope) bool {
 	return true
 }
 
-// ConfigEntry adalah satu nilai config ter-scope. Value disimpan sebagai string; makna nilai
-// adalah tanggung jawab pemakai (mis. core/strategy menyimpan strategy key). SetBy nil bila
-// ditetapkan oleh seed/framework, bukan aktor manusia.
+// ConfigEntry adalah satu VERSI nilai config ter-scope. Value disimpan sebagai string; makna
+// nilai adalah tanggung jawab pemakai (mis. core/strategy menyimpan strategy key). SetBy nil
+// bila ditetapkan oleh seed/framework, bukan aktor manusia.
+//
+// Penyimpanan bersifat append-only & ber-versi (pola workflow_definitions / titik ekstensi #7):
+// tiap perubahan pilihan menambah versi baru dengan EffectiveFrom, tidak menimpa yang lama.
+// Version diisi oleh store saat Set (nomor urut per scope+key, 1-based); pemanggil boleh
+// mengosongkannya. EffectiveFrom nol → store memakai "sekarang".
 type ConfigEntry struct {
-	Scope ConfigScope
-	Key   string
-	Value string
-	SetBy *uuid.UUID
+	Scope         ConfigScope
+	Key           string
+	Value         string
+	Version       int       // diisi store (append: max+1 per scope+key)
+	EffectiveFrom time.Time // sejak kapan versi ini berlaku (nol = sekarang saat Set)
+	SetBy         *uuid.UUID
 }
 
 // TenantConfigStore adalah driven port penyimpanan tenant config ber-scope. Resolver
 // bergantung padanya; core/config menyediakan MemoryTenantConfigStore untuk test & bootstrap
 // awal, infra/config menyediakan implementasi Postgres (gov.tenant_configs).
 type TenantConfigStore interface {
-	// Candidates mengembalikan SEMUA entry untuk pasangan tenant+key lintas level scope,
-	// tanpa urutan tertentu. Resolver yang memilih mana paling spesifik. Slice kosong bila
-	// tidak ada; error hanya untuk kegagalan sumber (mis. DB).
+	// Candidates mengembalikan SEMUA versi entry untuk pasangan tenant+key lintas level scope,
+	// tanpa urutan tertentu. Resolver yang memilih mana paling spesifik & berlaku pada tanggal
+	// tertentu. Slice kosong bila tidak ada; error hanya untuk kegagalan sumber (mis. DB).
 	Candidates(ctx context.Context, tenantID, key string) ([]ConfigEntry, error)
 
-	// Set menyimpan (upsert) satu entry pada scope persisnya. Idempoten: entry dengan scope
-	// & key yang sama menimpa nilai sebelumnya.
+	// Set MENAMBAH satu versi baru untuk scope+key (append-only, bukan upsert): pilihan lama
+	// tetap tersimpan sehingga bisa dibaca ber-tanggal & di-rollback. Store mengisi Version
+	// (max+1 per scope+key) dan memakai "sekarang" bila EffectiveFrom nol.
 	Set(ctx context.Context, entry ConfigEntry) error
 }
 
@@ -103,7 +112,8 @@ func (m *MemoryTenantConfigStore) Candidates(_ context.Context, tenantID, key st
 	return out, nil
 }
 
-// Set mengimplementasi TenantConfigStore. Upsert berdasarkan scope penuh.
+// Set mengimplementasi TenantConfigStore: MENAMBAH versi baru untuk scope+key (append-only).
+// Version = versi tertinggi pada scope itu + 1; EffectiveFrom nol → sekarang.
 func (m *MemoryTenantConfigStore) Set(_ context.Context, entry ConfigEntry) error {
 	if err := ValidateEntry(entry); err != nil {
 		return err
@@ -112,12 +122,16 @@ func (m *MemoryTenantConfigStore) Set(_ context.Context, entry ConfigEntry) erro
 	defer m.mu.Unlock()
 	bk := bucketKey(entry.Scope.TenantID, entry.Key)
 	list := m.entries[bk]
-	for i, e := range list {
-		if sameScope(e.Scope, entry.Scope) {
-			list[i] = entry
-			m.entries[bk] = list
-			return nil
+
+	maxVer := 0
+	for _, e := range list {
+		if sameScope(e.Scope, entry.Scope) && e.Version > maxVer {
+			maxVer = e.Version
 		}
+	}
+	entry.Version = maxVer + 1
+	if entry.EffectiveFrom.IsZero() {
+		entry.EffectiveFrom = time.Now()
 	}
 	m.entries[bk] = append(list, entry)
 	return nil
