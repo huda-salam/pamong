@@ -365,9 +365,12 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
   - DoD: strategy yang dilarang rule nasional tak muncul sebagai opsi
   - Catatan: butuh rule engine (4.1.3) — bisa stub dulu, lengkapi setelah Phase 4
 
-- **PR-3.3.5** Hook validator koherensi kombinasi ← 3.3.1
+- **PR-3.3.5** Hook validator koherensi kombinasi ← 3.3.1 ✅
   - Titik daftar validator lintas-pilihan (belum tentu dipakai, titiknya disiapkan)
   - DoD: kombinasi tak koheren yang didaftarkan terdeteksi & ditolak
+  - SELESAI: `core/strategy/coherence.go` `CoherenceRegistry` (Register nama-unik + Validate
+    jalankan semua, urutan deterministik). Titik ekstensi #5 disiapkan; belum di-wire ke write
+    path (dipanggil use case admin saat tenant ubah pilihan — menyusul bersama 3.3.2b).
 
 ### Sub-phase 3.4 — Tenant customization layer
 
