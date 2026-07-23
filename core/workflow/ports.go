@@ -17,8 +17,8 @@ type ActionDispatcher interface {
 // tidak memutasi apapun (PRD workflow F5). Syntax error pada ekspresi harus
 // dideteksi saat compile (Load/Register), bukan saat Evaluate.
 //
-// PR-3.2.1: implementasi minimal untuk test. DSL penuh (aritmatika, field entity,
-// operator boolean) dibangun di PR-3.2.5.
+// Implementasi produksi: DSLGuardEvaluator (guard.go, PR-3.2.5) — DSL boolean sempit
+// dengan compile+cache. Test boleh memakai stub sederhana.
 type GuardEvaluator interface {
 	Evaluate(expr string, actor port.AuthContext, entity map[string]any) (bool, error)
 }

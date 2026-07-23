@@ -99,5 +99,11 @@ func Validate(def WorkflowDefinition) error {
 				fmt.Sprintf("transisi[%d]: to state %q tidak ada", i, tr.To))
 		}
 	}
+
+	// Compile semua guard di pintu masuk — syntax error / tipe non-boolean ditolak
+	// saat load, bukan runtime (PR-3.2.5, PRD F5).
+	if err := validateGuards(def); err != nil {
+		return err
+	}
 	return nil
 }

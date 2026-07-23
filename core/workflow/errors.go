@@ -39,6 +39,16 @@ func ErrGuardFailed(expr string) error {
 	return core.ErrPermissionDenied(fmt.Sprintf("workflow.guard(%s)", expr))
 }
 
+// ErrInvalidGuard dipublikasikan saat guard expression gagal compile (syntax error,
+// root/fungsi tak dikenal, tipe hasil non-boolean) saat load, atau saat runtime
+// menghasilkan nilai non-boolean (HTTP 422). expr boleh kosong bila belum diketahui.
+func ErrInvalidGuard(expr, reason string) error {
+	if expr == "" {
+		return core.ErrValidation("workflow_guard", reason)
+	}
+	return core.ErrValidation("workflow_guard", fmt.Sprintf("guard %q: %s", expr, reason))
+}
+
 // ErrActionUnknown dipublikasikan saat action name di transisi tidak dikenal
 // dispatcher — sinyal bahwa use case belum didaftarkan (HTTP 422).
 func ErrActionUnknown(action string) error {
