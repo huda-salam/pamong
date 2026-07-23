@@ -50,3 +50,10 @@ func ErrInvalidTemplate(reason string) error {
 func ErrInvalidPersonID(value string) error {
 	return core.ErrValidation("person_id", fmt.Sprintf("person_id %q bukan UUID valid", value))
 }
+
+// ErrNoRecipient dipublikasikan saat sebuah peran tak punya pemegang definitif MAUPUN PLT —
+// notifikasi ke peran tak bertuan tak boleh hilang diam-diam, itu salah konfigurasi (HTTP 404).
+func ErrNoRecipient(tenantID, role string) error {
+	return core.ErrNotFound("NotificationRecipient",
+		fmt.Sprintf("tenant=%s role=%s (pemegang & PLT kosong)", tenantID, role))
+}

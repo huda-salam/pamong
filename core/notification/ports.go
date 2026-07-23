@@ -32,3 +32,18 @@ type InAppInbox interface {
 type DeliveryRecorder interface {
 	Record(ctx context.Context, rec DeliveryRecord) error
 }
+
+// RecipientDirectory me-resolusi peran/jabatan → penerima konkret (F3 routing). Dipisah jadi
+// dua jalur agar KEBIJAKAN fallback ("jabatan kosong → PLT") tetap di core (Router), sementara
+// SUMBER data (siapa memegang role, siapa pelaksana) pluggable lewat adapter:
+//
+//   - HoldersOf  → penerima yang AKTIF memegang role pada scope target (jalur utama).
+//   - ActingFor  → penerima PLT/pelaksana (delegasi core/permission) — dipakai HANYA saat
+//     HoldersOf kosong. Memisahkannya (bukan menggabung di satu query) membuat urutan
+//     preferensi eksplisit & teruji, dan mencegah PLT ikut terkirim saat pejabat definitif ada.
+//
+// Notify berbasis PERAN, bukan person_id hardcoded, agar tak rusak saat mutasi/PLT (PRD F3).
+type RecipientDirectory interface {
+	HoldersOf(ctx context.Context, t RoleTarget) ([]Recipient, error)
+	ActingFor(ctx context.Context, t RoleTarget) ([]Recipient, error)
+}

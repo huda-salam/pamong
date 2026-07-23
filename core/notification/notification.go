@@ -5,11 +5,17 @@
 //
 // Batas tanggung jawab (PRD): hub MENYUSUN konten (template) & memilih channel; pengiriman
 // FISIK ada di infra/messaging (lewat port.MessagingPort). Resolusi peran→orang (routing by
-// role + fallback PLT) BUKAN di sini — itu PR-3.6.2 (core/permission yang me-resolve). Di
-// PR-3.6.1 penerima sudah konkret (Recipient hasil resolusi caller).
+// role + fallback PLT) hidup di Router (routing.go): KEBIJAKAN fallback ada di core, SUMBER
+// datanya pluggable lewat RecipientDirectory. Hub sendiri hanya tahu penerima konkret.
 //
 // PR-3.6.1: channel abstraction (F1) + template engine per-tenant/i18n (F2) + delivery
-// tracking dasar (F4). Routing by role/jabatan (F3) DEFERRED(PR-3.6.2).
+// tracking dasar (F4).
+// PR-3.6.2: routing by role/jabatan + fallback PLT (F3) — Router/RoleNotifier + RecipientDirectory.
+//
+// DEFERRED(PR-3.6.x): adapter tenant-DB untuk RecipientDirectory. Jalur in-app hanya butuh
+// PersonID (sudah cukup), tapi channel email/SMS butuh alamat kontak yang BELUM ter-ekspos:
+// gov.user_profiles & port.UserResolver tak memuat email/telepon (hidup di id.persons, identity
+// DB). Adapter DB menyusul bersama seam kontak (perluasan clone user_profiles + port resolver).
 package notification
 
 import "github.com/google/uuid"
