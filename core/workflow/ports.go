@@ -26,9 +26,15 @@ type GuardEvaluator interface {
 // DefinitionStore menyimpan dan mengambil WorkflowDefinition.
 // Register memvalidasi struktur definisi (semua state dirujuk ada, ada terminal state,
 // initial_state ada). Implementasi in-memory (PR-3.2.1); DB-backed di PR-3.2.3.
+//
+// Definisi ber-versi: Register menyimpan versi baru tanpa menghapus yang lama, Get
+// mengembalikan versi TERBARU, GetVersion mengembalikan versi spesifik. Engine memakai
+// GetVersion agar instance berjalan terkunci ke versi definisi saat Start — perubahan
+// definisi setelahnya tidak mengubah instance yang sedang berjalan (PRD F1/F7, PR-3.2.7).
 type DefinitionStore interface {
 	Register(def WorkflowDefinition) error
 	Get(id string) (WorkflowDefinition, error)
+	GetVersion(id string, version int) (WorkflowDefinition, error)
 }
 
 // TemplateStore mengelola pilihan template workflow per-tenant beserta parameter

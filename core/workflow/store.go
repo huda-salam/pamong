@@ -8,37 +8,75 @@ import (
 // MemoryStore adalah implementasi DefinitionStore berbasis in-memory map.
 // Dipakai untuk test unit dan bootstrap awal sebelum DB-backed store (PR-3.2.3)
 // siap. Thread-safe lewat RWMutex.
+//
+// Menyimpan SEMUA versi per ID (id → version → def) — Register versi baru tidak
+// menghapus yang lama, sehingga instance yang terkunci ke versi tertentu tetap bisa
+// mengambil definisinya lewat GetVersion (PR-3.2.7).
 type MemoryStore struct {
 	mu   sync.RWMutex
-	defs map[string]WorkflowDefinition
+	defs map[string]map[int]WorkflowDefinition
 }
 
 // NewMemoryStore membuat store kosong.
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{defs: make(map[string]WorkflowDefinition)}
+	return &MemoryStore{defs: make(map[string]map[int]WorkflowDefinition)}
 }
 
 var _ DefinitionStore = (*MemoryStore)(nil)
 
-// Register memvalidasi dan menyimpan definisi. Validasi dilakukan di sini (pintu masuk)
-// agar error struktur ketahuan saat load, bukan saat runtime eksekusi transisi.
+// Register memvalidasi dan menyimpan definisi sebagai versi tersendiri. Validasi
+// dilakukan di sini (pintu masuk) agar error struktur ketahuan saat load, bukan saat
+// runtime eksekusi transisi. Version ≤ 0 dinormalkan ke 1 (baseline). Register dengan
+// (id, version) yang sama menimpa entri versi tersebut; version berbeda menambah versi.
 func (s *MemoryStore) Register(def WorkflowDefinition) error {
 	if err := Validate(def); err != nil {
 		return err
 	}
+	if def.Version <= 0 {
+		def.Version = 1
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.defs[def.ID] = def
+	versions, ok := s.defs[def.ID]
+	if !ok {
+		versions = make(map[int]WorkflowDefinition)
+		s.defs[def.ID] = versions
+	}
+	versions[def.Version] = def
 	return nil
 }
 
-// Get mengembalikan definisi berdasarkan ID. Error bila tidak ada.
+// Get mengembalikan versi TERBARU (version tertinggi) dari definisi. Error bila ID
+// tidak ada sama sekali.
 func (s *MemoryStore) Get(id string) (WorkflowDefinition, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	def, ok := s.defs[id]
+	versions, ok := s.defs[id]
+	if !ok || len(versions) == 0 {
+		return WorkflowDefinition{}, ErrDefinitionNotFound(id)
+	}
+	maxVer := 0
+	for v := range versions {
+		if v > maxVer {
+			maxVer = v
+		}
+	}
+	return versions[maxVer], nil
+}
+
+// GetVersion mengembalikan versi spesifik dari definisi. Error bila ID atau versi
+// tersebut tidak ada — instance yang terkunci ke versi yang sudah dihapus akan gagal
+// eksplisit, bukan diam-diam memakai versi lain.
+func (s *MemoryStore) GetVersion(id string, version int) (WorkflowDefinition, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	versions, ok := s.defs[id]
 	if !ok {
 		return WorkflowDefinition{}, ErrDefinitionNotFound(id)
+	}
+	def, ok := versions[version]
+	if !ok {
+		return WorkflowDefinition{}, ErrDefinitionVersionNotFound(id, version)
 	}
 	return def, nil
 }

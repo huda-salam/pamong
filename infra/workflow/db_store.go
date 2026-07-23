@@ -130,10 +130,11 @@ func (s *DBStore) Get(id string) (coreWf.WorkflowDefinition, error) {
 }
 
 // GetVersion mengembalikan versi spesifik. Dipakai engine saat instance mengunci versi
-// tertentu (instance menyimpan DefinitionVersion saat dimulai — PRD F1).
-func (s *DBStore) GetVersion(ctx context.Context, id string, version int) (coreWf.WorkflowDefinition, error) {
+// tertentu (instance menyimpan DefinitionVersion saat dimulai — PRD F1/F7). Tanda tangan
+// tanpa ctx agar memenuhi port DefinitionStore, konsisten dengan Get (context.Background).
+func (s *DBStore) GetVersion(id string, version int) (coreWf.WorkflowDefinition, error) {
 	// gov:raw-ok reason=pinned-version-query query=workflow-definition-get-version
-	return s.queryOne(ctx,
+	return s.queryOne(context.Background(),
 		`SELECT workflow_id, version, entity, initial_state, authoring_source,
 		        states, transitions, effective_from
 		 FROM gov.workflow_definitions

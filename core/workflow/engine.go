@@ -45,8 +45,20 @@ func (e *Engine) Start(ctx port.AuthContext, defID string, entityID uuid.UUID) (
 	}, nil
 }
 
-// Execute menjalankan satu transisi pada instance yang diberikan.
+// Execute menjalankan satu transisi pada instance yang diberikan tanpa komentar.
+// Setara ExecuteWithComment(..., "").
+func (e *Engine) Execute(ctx port.AuthContext, instance *WorkflowInstance, action string, entity map[string]any) error {
+	return e.ExecuteWithComment(ctx, instance, action, entity, "")
+}
+
+// ExecuteWithComment menjalankan satu transisi dan menyimpan komentar aktor pada
+// TransitionRecord (mis. alasan disposisi/penolakan) — masuk ke riwayat immutable.
+//
 // Alur: cek terminal → cari transisi → evaluasi guard → dispatch action → update state.
+//
+// Instance memakai VERSI definisi yang dikunci saat Start (instance.DefinitionVersion),
+// bukan versi terbaru — perubahan definisi setelah instance dimulai tidak mengubah alur
+// yang sedang berjalan (PRD F1/F7, PR-3.2.7).
 //
 // Atomicity: bila salah satu langkah gagal, instance dikembalikan ke state semula
 // (state tidak berubah, history tidak ditambah). Caller bertanggung jawab persistensi
@@ -54,8 +66,8 @@ func (e *Engine) Start(ctx port.AuthContext, defID string, entityID uuid.UUID) (
 //
 // entity adalah snapshot data bisnis entity saat ini — dipakai guard evaluation
 // (mis. `entity.nilai > 100`). Boleh nil bila tidak ada guard yang mengakses entity.
-func (e *Engine) Execute(ctx port.AuthContext, instance *WorkflowInstance, action string, entity map[string]any) error {
-	def, err := e.store.Get(instance.DefinitionID)
+func (e *Engine) ExecuteWithComment(ctx port.AuthContext, instance *WorkflowInstance, action string, entity map[string]any, comment string) error {
+	def, err := e.store.GetVersion(instance.DefinitionID, instance.DefinitionVersion)
 	if err != nil {
 		return err
 	}
@@ -98,13 +110,14 @@ func (e *Engine) Execute(ctx port.AuthContext, instance *WorkflowInstance, actio
 		}
 	}
 
-	// Semua lolos: pindah state dan catat history.
+	// Semua lolos: pindah state dan catat history (immutable, append-only).
 	record := TransitionRecord{
 		From:      instance.CurrentState,
 		To:        tr.To,
 		Action:    tr.Action,
 		ActorID:   ctx.PersonID(),
 		Timestamp: time.Now(),
+		Comment:   comment,
 	}
 	instance.CurrentState = tr.To
 	instance.History = append(instance.History, record)

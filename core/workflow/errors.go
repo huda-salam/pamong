@@ -12,6 +12,12 @@ func ErrDefinitionNotFound(id string) error {
 	return core.ErrNotFound("WorkflowDefinition", id)
 }
 
+// ErrDefinitionVersionNotFound dipublikasikan saat versi spesifik dari sebuah
+// WorkflowDefinition tidak ada (mis. instance terkunci ke versi yang telah dihapus).
+func ErrDefinitionVersionNotFound(id string, version int) error {
+	return core.ErrNotFound("WorkflowDefinition", fmt.Sprintf("%s@v%d", id, version))
+}
+
 // ErrInvalidDefinition dipublikasikan saat WorkflowDefinition gagal validasi saat
 // Register ke store — mis. initial_state tidak ada, transisi merujuk state tak dikenal.
 func ErrInvalidDefinition(reason string) error {

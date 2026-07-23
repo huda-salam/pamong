@@ -151,7 +151,7 @@ func TestDBStore_IdempotentSeed(t *testing.T) {
 
 	// Periksa langsung di DB bahwa hanya ada satu baris.
 	// (dilakukan lewat GetVersion — versi 2 tidak boleh ada)
-	_, err = store.GetVersion(context.Background(), def.ID, 2)
+	_, err = store.GetVersion(def.ID, 2)
 	if err == nil {
 		t.Fatal("versi 2 tidak boleh ada setelah seed idempoten")
 	}
@@ -191,7 +191,7 @@ func TestDBStore_NewVersion(t *testing.T) {
 	}
 
 	// GetVersion(1) → harus versi 1 dengan 2 states.
-	v1, err := store.GetVersion(context.Background(), id, 1)
+	v1, err := store.GetVersion(id, 1)
 	if err != nil {
 		t.Fatalf("get version 1: %v", err)
 	}
