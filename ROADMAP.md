@@ -384,9 +384,13 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
 
 ### Sub-phase 3.5 — Scheduler
 
-- **PR-3.5.1** Cron & job queue ← 0.2.1
+- **PR-3.5.1** Cron & job queue ← 0.2.1 ✅
   - Penjadwalan, eksekusi, riwayat job
   - DoD: job terjadwal jalan tepat waktu di test
+  - Impl: parser cron 5-field murni (no lib), Registry handler ber-key (titik ekstensi #1),
+    Runner (RunDue/Trigger/Replay/Start), JobStore port + MemoryJobStore + Postgres
+    (gov.scheduled_jobs + gov.job_runs). One-shot (cron kosong) = seam deadline SLA (F2).
+    Anti double-run multi-instance DITUNDA ke 3.5.2 (lock).
 
 - **PR-3.5.2** Distributed lock ← 3.5.1, 3.1.x
   - Job tidak double-run di multi-instance
