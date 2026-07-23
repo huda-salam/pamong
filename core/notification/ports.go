@@ -43,6 +43,12 @@ type DeliveryRecorder interface {
 //     preferensi eksplisit & teruji, dan mencegah PLT ikut terkirim saat pejabat definitif ada.
 //
 // Notify berbasis PERAN, bukan person_id hardcoded, agar tak rusak saat mutasi/PLT (PRD F3).
+//
+// CATATAN untuk adapter tenant-DB (deferred): PJ/Plt LUAR-DAERAH (cross-tenant, mis. PJ Bupati
+// dari Pemprov) BUKAN delegasi intra-tenant — ia di-clone jadi gov.user_profiles
+// (is_cross_tenant=true) + diberi role tenant, sehingga jatuh ke HoldersOf (pemegang definitif),
+// bukan ActingFor. Karena itu HoldersOf JANGAN memfilter is_cross_tenant. Kejadian jarang tapi
+// tak boleh ditutup — bahas saat adapter DB dibangun.
 type RecipientDirectory interface {
 	HoldersOf(ctx context.Context, t RoleTarget) ([]Recipient, error)
 	ActingFor(ctx context.Context, t RoleTarget) ([]Recipient, error)
