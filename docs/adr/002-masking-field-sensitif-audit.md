@@ -1,7 +1,9 @@
 # ADR-002: Perlakuan field sensitif dalam audit trail
 
 ## Status
-Accepted
+Accepted — keputusan inti tetap berlaku; **rencana implementasi diperbarui oleh ADR-009**
+(penanda `Sensitive bool` digantikan sumbu `DataClass`; diff class `personal_id`+ ikut
+terenkripsi, nilai raw tetap ada sebagai bukti). Lihat ADR-009 §"Hubungan dengan ADR-002".
 
 ## Konteks
 PRD audit (F2) menyebut field sensitif (mis. NIK, NIP, nomor rekening) "di-mask bila

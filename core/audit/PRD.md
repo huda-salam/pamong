@@ -56,7 +56,14 @@ type FieldDiff struct {
 ### F2 — Field-level diff
 - Bandingkan before vs after, catat hanya field yang berubah.
 - Untuk create: semua field sebagai "after" (before kosong). Untuk delete: sebaliknya.
-- Field sensitif (ditandai di EntityDef) di-mask di audit bila perlu (mis. NIK).
+- **Perlakuan field ber-`Class` (ADR-002 diperbarui ADR-009):** strategi tetap **simpan raw
+  + kontrol akses saat baca** (bukan mask saat tulis — bukti before/after untuk BPK). Untuk
+  field class `personal_id`/`specific`, nilai raw before/after di kolom `diff` (JSONB)
+  **ikut terenkripsi** via `port.CryptoPort` — raw tetap ada sebagai bukti tapi tak terbaca
+  tanpa kunci + permission `audit:sensitive:baca`. Field `personal` disaring saat baca
+  (read-gated), tidak dienkripsi. Ini menutup lubang E2 (NIK mentah di diff) di REVIEW_BACKLOG.
+- Hash chain dihitung atas konten kanonik entry; enkripsi diff terjadi sebelum persist
+  namun bukti integritas tetap penuh (hash atas nilai yang tersimpan, konsisten saat verify).
 
 ### F3 — Hash chain
 - Setiap entry menyimpan hash entry sebelumnya (per tenant, atau per entity — diputuskan
@@ -85,8 +92,9 @@ type FieldDiff struct {
 - Audit log tidak boleh jadi bottleneck transaksi — pertimbangkan outbox bila perlu.
 
 ## Dependency
-- core/domain — Auditable policy & hook attachment
+- core/domain — Auditable policy & hook attachment; `FieldDef.Class` untuk perlakuan diff
 - port/auth.go — actor & IP dari AuthContext
+- port/crypto.go — enkripsi diff field class personal_id/specific (ADR-009)
 - port/eventbus.go — bila pakai outbox untuk penulisan audit
 
 ## Anti-pattern / yang harus dihindari

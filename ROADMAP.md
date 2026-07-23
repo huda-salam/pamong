@@ -399,6 +399,58 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
   - Counter, gauge, histogram; tracing OTEL
   - DoD: metric tereskpos di endpoint; trace muncul di collector
 
+### Sub-phase 3.8 — Klasifikasi data & enkripsi field (ADR-009/010)
+
+Tujuan: enkripsi field selektif (pengenal + data spesifik) at-rest dengan blind index,
+tanpa mematikan lookup/UNIQUE. WAJIB selesai sebelum tenant produksi pertama — biaya
+migrasi naik seiring data & entity. Lihat ADR-009 (klasifikasi/enkripsi) & ADR-010 (KMS
+pluggable + custody sebagai kebijakan per-tenant).
+
+- **PR-3.8.1** `DataClass` di `FieldDef` + validasi + DDL multi-kolom ← 1.1.x (core/domain)
+  - Tambah `Class`/`Searchable`; `Validate()` tolak kombinasi mustahil; `columnDef` → N kolom
+    (`_enc`+`_bidx`) untuk field terenkripsi. **Murah sekarang** (satu-satunya konsumen
+    EntityDef produksi = surat_masuk, tanpa pengenal).
+  - DoD: entity dengan field `personal_id` meng-generate dua kolom; validasi menolak
+    `Unique`+terenkripsi+`!Searchable`; entity lama tetap kompilasi & lulus test.
+
+- **PR-3.8.2** `port/crypto.go` + `infra/crypto` (AES-256-GCM + blind index) ← 3.8.1
+  - CryptoPort (Encrypt/Decrypt/BlindIndex); KeyProvider registry + envelope; DEK store
+    `id.data_keys`; driver `static` (KMS-alike bawaan, master KEK ber-versi — **default
+    produksi Tier 1/2**) + `local` (dev/test); format ciphertext self-describing. KMS eksternal
+    (vault/aws-kms/bssn) di-plug kelak tanpa ubah kode.
+  - DoD: roundtrip; ciphertext beda tiap panggilan; blind index deterministik; isolasi per
+    tenant; `static` menolak start tanpa master key valid + rotasi V1→V2 jalan.
+
+- **PR-3.8.3** Enkripsi transparan di lapis repository ← 3.8.2, 1.2.1
+  - infra/db enkripsi saat tulis + blind index + dekripsi saat baca; equality/UNIQUE → `_bidx`.
+    Otomatis dari `FieldDef.Class`, bukan use case.
+  - DoD: CRUD entity ber-`personal_id` bekerja; kolom `_enc` di DB bukan plaintext; lookup jalan.
+
+- **PR-3.8.4** Enkripsi diff audit sensitif (tutup E2) ← 3.8.2, core/audit
+  - Diff class `personal_id`/`specific` terenkripsi; raw tetap bukti; read-gated
+    `audit:sensitive:baca`. Hash chain tetap verify.
+  - DoD: dump `gov.audit_logs.diff` tak memuat NIK plaintext; verify integritas lulus.
+
+- **PR-3.8.5** Tutup jalur kebocoran samping ← 3.8.3 (ADR-009 §6)
+  - Payload event, `gov.idempotency_keys`, staging table migrasi, log/trace, clone
+    `gov.user_profiles`.
+  - DoD: tiap jalur tak membocorkan pengenal mentah (test per-jalur).
+
+- **PR-3.8.6** Migrasi identity UNIQUE→blind index ← 3.8.3
+  - `nik`/`nip`/`cred_value`/`no_hp`/`email` → `_enc`+`_bidx`; UNIQUE pindah; backfill (dev
+    kosong = gratis). SENSITIF (identity) — review ekstra.
+  - DoD: login & resolve by NIK/NIP/email tetap jalan lewat blind index; UNIQUE ditegakkan di `_bidx`.
+
+- **PR-3.8.7** Generator `docs/contracts/data-inventory.md` (pamongctl) ← 3.8.1
+  - Inventaris field ber-`Class` dari manifest — artefak kepatuhan UU PDP yang tak basi.
+  - DoD: `pamongctl` regenerate; diff PR menampilkan perubahan klasifikasi.
+
+> KMS = driver ber-registry (`GOV_CRYPTO_KMS_DRIVER`); custody = kebijakan per-tenant
+> (`key_custody`) — ADR-010. Enkripsi jalan penuh dengan driver `local` (dev/test); driver
+> produksi & nilai custody Tier 3 di-plug saat onboarding per-pemda, bukan blokir roadmap.
+> Sub-phase ini bisa menambah **PR-3.8.8** (driver KMS produksi + resolver custody) saat
+> pengadaan menentukan KMS.
+
 ---
 
 ## Phase 4 — Rule engine & governance

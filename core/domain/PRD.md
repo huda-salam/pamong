@@ -59,16 +59,23 @@ type EntityDef struct {
 }
 
 type FieldDef struct {
-    Name      string
-    Type      FieldType   // Text|Date|DateTime|Enum|Link|File|Decimal|Boolean|Integer|JSON
-    Required  bool
-    Unique    bool
-    Default   *string
-    Options   []string    // untuk Enum
-    LinkTo    string      // untuk Link: "modul.Entity"
-    MaxSizeMB int         // untuk File
-    Precision int         // untuk Decimal
+    Name       string
+    Type       FieldType   // Text|Date|DateTime|Enum|Link|File|Decimal|Boolean|Integer|JSON
+    Required   bool
+    Unique     bool
+    Default    *string
+    Options    []string    // untuk Enum
+    LinkTo     string      // untuk Link: "modul.Entity"
+    MaxSizeMB  int         // untuk File
+    Precision  int         // untuk Decimal
+    Class      DataClass   // klasifikasi data (ADR-009); zero value = public
+    Searchable bool        // izinkan partial/range search — hanya Text non-terenkripsi
 }
+
+// DataClass — sumbu klasifikasi tunggal (ADR-009). Semua perilaku (enkripsi, perlakuan
+// audit, log, export) diturunkan dari sini lewat tabel kebijakan framework, bukan flag
+// per-concern. personal_id & specific → enkripsi + blind index di lapis repository.
+type DataClass string // public | internal | personal | personal_id | specific
 
 type HookSet struct {
     BeforeSave   []HookFunc
@@ -101,6 +108,10 @@ type HookFunc func(ctx port.AuthContext, e *Entity) error
 - Dua entity beda modul tidak boleh klaim tabel sama (cek lintas-modul saat boot).
 - Edge: field bernama sama dalam satu entity → reject. Nama field reserved (id, version,
   created_at, updated_at, deleted_at) tidak boleh didefinisikan ulang.
+- **Klasifikasi data (ADR-009)**: `Class` menentukan perilaku enkripsi/audit/log/export
+  lewat tabel kebijakan framework. Validasi tambahan: `Searchable` hanya boleh pada `Text`
+  non-terenkripsi; `Unique` pada field terenkripsi (`personal_id`/`specific`) yang
+  `!Searchable` → reject (butuh blind index, lihat F5). Zero value `Class` = `public`.
 
 ### F3 — Lifecycle hooks
 - Hook: before_save, after_save, before_submit, after_submit, before_delete.
@@ -129,6 +140,10 @@ type HookFunc func(ctx port.AuthContext, e *Entity) error
 Dari EntityDef, framework (berkoordinasi dengan komponen lain via port) menyediakan:
 - Tabel DB: CREATE TABLE di schema modul + kolom standar (id, version, timestamps,
   deleted_at) + index untuk Searchable & Unique.
+- **Kolom terenkripsi (ADR-009)**: field class `personal_id`/`specific` menghasilkan **dua
+  kolom** — `{field}_enc` (BYTEA, AES-256-GCM) + `{field}_bidx` (BYTEA, HMAC untuk equality &
+  UNIQUE). `columnDef` menghasilkan N kolom, bukan 1. `Unique` pindah ke `_bidx`. Enkripsi/
+  dekripsi otomatis di lapis repository (infra/db) via `port.CryptoPort` — bukan use case.
 - Endpoint CRUD standar (didaftarkan ke gateway).
 - Permission default: `{modul}:{entity}:buat|baca|ubah|hapus`.
 - Audit attachment untuk entity Audited (hook otomatis ke audit engine).

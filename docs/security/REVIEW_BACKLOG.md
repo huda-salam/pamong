@@ -195,10 +195,13 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
 - Properti & cek: chain immutable; tamper terdeteksi (sudah ada test); satu chain sentinel
   `tenant_id="central"` tak bisa dipalsukan untuk menyisipkan entri.
 
-### E2. PII di audit (NIK mentah) — `DEFERRED(masking)` 
-- `identity/adapter/db/audit_store.go`, ADR-002
-- Status: NIK tercatat **mentah** di audit (masking ADR-002 ditunda). Saat masking dibangun,
-  review: field sensitif (NIK, no HP) ter-mask di trail; diff audit tak membocorkan PII penuh.
+### E2. PII di audit (NIK mentah) — `DEFERRED(kripto)` — mekanisme diputuskan (ADR-009)
+- `identity/adapter/db/audit_store.go`, ADR-002 (diperbarui ADR-009)
+- Status: NIK tercatat **mentah** di `diff` (JSONB). Mekanisme kini diputuskan: field class
+  `personal_id`/`specific` → diff **ikut terenkripsi** via `port.CryptoPort` (raw tetap ada
+  sebagai bukti BPK, tak terbaca tanpa kunci + `audit:sensitive:baca`); class `personal`
+  disaring saat baca. Prasyarat: sub-phase kripto (lihat §H). Cek saat dibangun: diff
+  `personal_id` tak terbaca plaintext dari dump; hash chain tetap verify.
 
 ---
 
@@ -209,6 +212,32 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
 - Properti & cek: `secret_hash` = bcrypt (tak pernah plaintext); tak pernah di-SELECT/return ke
   jalur yang tak butuh (mis. resolver login hanya membandingkan hash, tak mengembalikannya);
   `UNIQUE(cred_type, cred_value)`; tak di-log.
+
+---
+
+## H. Enkripsi field & key management — sub-phase kripto (ADR-009/010)
+
+### H1. Cakupan enkripsi selektif — `DEFERRED(kripto)`
+- `core/domain/field_types.go` (`FieldDef.Class`), `infra/db` (DDL + repo), `infra/crypto`
+- Cek: hanya `personal_id`/`specific` terenkripsi; `nama_lengkap` TIDAK; field terenkripsi
+  tak masuk sortable/filterable (kecuali equality); `Unique` di kolom `_bidx`, bukan `_enc`.
+
+### H2. Blind index & dictionary attack — `DEFERRED(kripto)`
+- `infra/crypto`, ADR-009
+- Cek: kunci bidx TERPISAH & di KMS (bukan DB); HMAC atas nilai ternormalisasi; ruang NIK
+  16 digit kecil → kunci bidx bocor = brute-force layak, jadi kunci wajib di luar dump DB.
+
+### H3. Jalur kebocoran samping — `DEFERRED(kripto)` (ADR-009 §6)
+- audit diff (E2), payload event (NATS stream), `gov.idempotency_keys`, staging table
+  migrasi, log/trace (OTEL, query log), clone `gov.user_profiles`
+- Cek: tiap jalur tak membocorkan pengenal mentah. Enkripsi kolom saja = teater keamanan.
+
+### H4. Key custody & rotasi — `DEFERRED(kripto)` (ADR-010)
+- `infra/crypto/envelope.go`, KeyProvider driver, KMS
+- Cek: DEK per-tenant per-purpose; DEK ter-wrap tak di tenant DB; `KeyProvider` di balik
+  registry (KEK tak pernah keluar KMS); custody per-tenant (`key_custody`) diresolusi benar
+  (platform vs tenant); driver `local` ditolak di production; format ciphertext self-describing
+  (rotasi jalan). Untuk tenant `key_custody=platform` di Tier 3: escrow/exit kunci tertulis (kontrak).
 
 ---
 

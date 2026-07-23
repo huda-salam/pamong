@@ -46,20 +46,21 @@ over config, constraint bertingkat, dan enforcement lewat tooling, bukan hanya d
 9. Entity tiers — progressive eject
 10. Modular monolith & module packaging
 11. Data integrity (idempotency, optimistic locking, bulk)
-12. Data lifecycle — annual cutoff vs continuous
-13. Tenant tier & portabilitas
-14. Migration strategy
-15. Data migration pipeline (legacy import)
-16. Aturan pengembangan wajib
-17. Testing
-18. Git & branching
-19. Pull Request
-20. CI/CD gates & linter rules
-21. Cara menambah modul baru
-22. Cara kerja dengan core framework
-23. Architecture Decision Records (ADR)
-24. Checklist sebelum commit
-25. Catatan khusus untuk Claude Code
+12. Klasifikasi data & enkripsi field
+13. Data lifecycle — annual cutoff vs continuous
+14. Tenant tier & portabilitas
+15. Migration strategy
+16. Data migration pipeline (legacy import)
+17. Aturan pengembangan wajib
+18. Testing
+19. Git & branching
+20. Pull Request
+21. CI/CD gates & linter rules
+22. Cara menambah modul baru
+23. Cara kerja dengan core framework
+24. Architecture Decision Records (ADR)
+25. Checklist sebelum commit
+26. Catatan khusus untuk Claude Code
 
 ---
 
@@ -309,6 +310,17 @@ GOV_STORAGE_ENDPOINT=http://minio:9000
 GOV_STORAGE_BUCKET=pamong
 GOV_STORAGE_ACCESS_KEY=...
 GOV_STORAGE_SECRET_KEY=...
+
+# Crypto / KMS (ADR-009/010) — enkripsi field selektif. Driver ber-registry (pluggable).
+GOV_CRYPTO_KMS_DRIVER=static         # static (default, KMS-alike bawaan) | local (dev/test) |
+                                     # vault | aws-kms | gcp-kms | bssn ...
+GOV_CRYPTO_KMS_ENDPOINT=...          # untuk driver eksternal (vault/aws-kms/...)
+# Driver `static`: master KEK dari secret (JANGAN commit; JANGAN di default.yaml). Ber-versi
+# untuk rotasi. DEK ter-wrap disimpan sentral di id.data_keys.
+GOV_CRYPTO_MASTER_KEY=...            # base64 32-byte; atau via file/secret manager
+# GOV_CRYPTO_MASTER_KEY_V2=...       # versi berikutnya saat rotasi (V1 tetap utk unwrap lama)
+# Custody KEK ditetapkan per-tenant (key_custody: platform|tenant) di tenant config/registry,
+# BUKAN env global — lihat ADR-010.
 
 # Cache
 GOV_CACHE_DRIVER=redis               # redis | memory
@@ -1232,6 +1244,46 @@ dalam satu DB transaction dengan partial-success reporting.
 
 ---
 
+## Klasifikasi data & enkripsi field (ADR-009/010)
+
+Setiap `FieldDef` mendeklarasikan **`Class DataClass`** — satu sumbu klasifikasi yang
+menurunkan perilaku enkripsi, audit, log, dan export lewat tabel kebijakan framework.
+Bukan flag per-concern (`Encrypted`/`Sensitive`/`NoLog`) yang mudah salah dikombinasikan.
+
+| Class | Contoh | Enkripsi at-rest |
+|---|---|---|
+| `public` (default) | nomor surat, status | – |
+| `internal` | catatan internal | – |
+| `personal` | nama, alamat, jabatan | – (harus dapat dicari) |
+| `personal_id` | NIK, NIP, no HP, email, no rekening | **enc + blind index** |
+| `specific` | data kesehatan/keuangan pribadi, biometrik | **enc, DEK terpisah** |
+
+Aturan yang mengikat semua modul:
+
+- **Enkripsi selektif, bukan "semua PII".** Hanya `personal_id` & `specific` dienkripsi.
+  Nama/alamat tidak — kolom terenkripsi kehilangan `LIKE`/`ORDER BY`/range.
+- **Enkripsi otomatis di lapis repository**, digerakkan `FieldDef.Class` — persis seperti
+  audit & optimistic locking. **Bukan** dipanggil use case (developer pasti lupa).
+- **Equality & `Unique` lewat blind index** (`{field}_bidx`, HMAC). Satu field terenkripsi
+  → dua kolom fisik (`_enc` + `_bidx`). Field yang butuh partial/range search tak boleh
+  diklasifikasi terenkripsi.
+- **Jalur samping wajib ikut ditutup** (ADR-009 §6): audit diff, payload event, cache
+  idempotency, staging migrasi, log/trace, clone `gov.user_profiles`. Enkripsi satu kolom
+  sambil membocorkan lewat jalur lain = teater keamanan.
+- **Custom field tenant** wajib menyatakan class (default aman `internal`).
+- Kripto masuk domain hanya lewat `port.CryptoPort` — domain/usecase nol-dependency kripto.
+- **KMS pluggable, custody per-tenant (ADR-010).** KMS = driver ber-registry
+  (`GOV_CRYPTO_KMS_DRIVER`); siapa pegang KEK = kebijakan per-tenant (`key_custody`).
+  Pilihan KMS/custody konkret adalah konfigurasi saat onboarding, bukan keputusan arsitektur —
+  driver produksi di-plug tanpa mengubah kode kripto.
+
+Lapisan enkripsi lain (TLS in-transit, LUKS at-rest fisik, backup terenkripsi) adalah
+tanggung jawab **ops**, bukan kode — bukan subjek konvensi ini. Status implementasi:
+DEFERRED ke sub-phase kripto (ROADMAP 3.8), tapi `DataClass` di `FieldDef` masuk lebih
+dulu karena biayanya nyaris nol sekarang dan naik tiap entity ber-pengenal baru.
+
+---
+
 ## Data lifecycle — annual cutoff vs continuous
 
 Modul mendeklarasikan lifecycle datanya di manifest. Framework menyediakan mekanisme
@@ -1739,6 +1791,7 @@ stages:
 | `workflow-action-no-logic` | Action workflow berisi business logic / akses DB (harus panggil use case) |
 | `tenant-branch-must-be-strategy` | Percabangan `if tenant.x == ...` untuk pilihan algoritma (harus strategy registry) |
 | `strategy-key-must-be-registered` | Strategy key dirujuk tanpa terdaftar di registry |
+| `encrypted-field-no-raw-query` | Repo Tier 3 menyentuh kolom `_enc` mentah tanpa helper framework (ADR-009) |
 
 ---
 

@@ -29,7 +29,10 @@ id.central_roles        (id, name, scope_type[global|scoped])
 id.central_role_assignments (id, person_id, role_id, tenant_scope[], valid_from/until)
 id.tenant_assignments   (id, employment_id, tenant_id, is_home_tenant, assigned_by,
                          valid_from/until)
-id.tenant_registry      (tenant_id, tier, db_host, db_name, db_schema, migration_version)
+id.tenant_registry      (tenant_id, tier, db_host, db_name, db_schema, migration_version,
+                         key_custody[platform|tenant])
+id.data_keys            (tenant_id, purpose, key_version, wrapped_dek, created_at)
+                         -- DEK ter-wrap (envelope, ADR-009/010); sentral, BUKAN tenant DB
 
 Tenant clone: gov.user_profiles (read-only, di-sync via event)
 ```
@@ -41,6 +44,13 @@ Tenant clone: gov.user_profiles (read-only, di-sync via event)
   tanpa NIP. Constraint: status=asn ⇒ nip not null; status=non_asn ⇒ nip null.
 - Banyak credential per person; semua resolve ke person yang sama.
 - Resolve by NIK / NIP / email / no_hp.
+- **Enkripsi pengenal (ADR-009, diimplementasi pasca-Phase 3).** `nik`, `no_hp`, `email`
+  (persons), `nip` (employments), `cred_value` (credentials) berkelas `personal_id` →
+  disimpan terenkripsi + blind index. `UNIQUE` pindah ke kolom `_bidx`; semua lookup di F1
+  adalah **equality** (`WHERE nik=$1` dst) sehingga tertangani blind index tanpa kehilangan
+  fungsi. `nama_lengkap` **tidak** dienkripsi (class `personal`, harus dapat dicari).
+  Clone `gov.user_profiles` (nik/nip) ikut terenkripsi. Enkripsi transparan di lapis
+  repository (infra/db) — use case identity tak menyentuh kripto.
 
 ### F2 — Persona (konteks login)
 - citizen: tersedia untuk SEMUA person (setiap orang adalah masyarakat). Tidak butuh
@@ -104,6 +114,9 @@ Tenant clone: gov.user_profiles (read-only, di-sync via event)
   ditunda; sementara identity sentral, koneksi wajib.
 - Integrasi SSO/SPBE & SIASN sebagai sumber credential/employment — adapter terpisah,
   Phase lanjut.
+- **Enkripsi pengenal (ADR-009) + migrasi UNIQUE→blind index** — diimplementasi pasca-Phase 3,
+  **sebelum tenant produksi pertama**. Gratis selama belum ada data; setelahnya butuh
+  dual-write + backfill. Custody kunci Tier 3 menunggu ADR-010.
 
 ## Acceptance criteria
 - [ ] Person dibuat + employment ASN + credential → resolve by NIK & NIP benar.
