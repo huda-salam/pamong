@@ -143,6 +143,56 @@ func (r *MockUserResolver) HasCentralRole(_ context.Context, _ uuid.UUID, _ stri
 	return false, nil
 }
 
+// --- MockMessaging ---
+
+// SentSMS & SentEmail merekam satu pesan terkirim untuk diassert di test.
+type SentSMS struct{ To, Message string }
+type SentEmail struct{ To, Subject, Body string }
+
+// MockMessaging mengimplementasi port.MessagingPort di memori. Merekam semua pengiriman;
+// FailEmail/FailSMS bila diset membuat pengiriman mengembalikan *port.MessagingError agar
+// jalur kegagalan bisa diuji tanpa provider nyata.
+type MockMessaging struct {
+	mu        sync.Mutex
+	SMS       []SentSMS
+	Emails    []SentEmail
+	FailEmail *port.MessagingError
+	FailSMS   *port.MessagingError
+}
+
+func NewMockMessaging() *MockMessaging { return &MockMessaging{} }
+
+var _ port.MessagingPort = (*MockMessaging)(nil)
+
+func (m *MockMessaging) SendSMS(_ context.Context, phoneNumber, message string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.FailSMS != nil {
+		return m.FailSMS
+	}
+	m.SMS = append(m.SMS, SentSMS{To: phoneNumber, Message: message})
+	return nil
+}
+
+func (m *MockMessaging) SendEmail(_ context.Context, email, subject, body string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.FailEmail != nil {
+		return m.FailEmail
+	}
+	m.Emails = append(m.Emails, SentEmail{To: email, Subject: subject, Body: body})
+	return nil
+}
+
+// SentEmails mengembalikan salinan email terkirim untuk assertion.
+func (m *MockMessaging) SentEmails() []SentEmail {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]SentEmail, len(m.Emails))
+	copy(out, m.Emails)
+	return out
+}
+
 // --- Assertion helpers ---
 
 // IsPermissionDenied mengembalikan true jika err adalah ErrPermissionDenied framework.
