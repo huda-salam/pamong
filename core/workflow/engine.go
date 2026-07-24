@@ -16,15 +16,34 @@ import (
 //
 // Action di transisi = nama use case (string). Engine memanggilnya lewat
 // ActionDispatcher; tidak pernah ada business logic inline di engine.
+//
+// deadlines (opsional, PR-3.2.6) mendaftarkan/membatalkan timer SLA saat instance masuk/keluar
+// state ber-SLA. nil = SLA nonaktif (engine berperilaku persis seperti sebelum PR-3.2.6).
 type Engine struct {
-	store    DefinitionStore
-	dispatch ActionDispatcher
-	guard    GuardEvaluator
+	store     DefinitionStore
+	dispatch  ActionDispatcher
+	guard     GuardEvaluator
+	deadlines DeadlineScheduler
 }
 
-// New membuat Engine. Semua dependency wajib non-nil.
-func New(store DefinitionStore, dispatch ActionDispatcher, guard GuardEvaluator) *Engine {
-	return &Engine{store: store, dispatch: dispatch, guard: guard}
+// Option mengkonfigurasi Engine saat konstruksi (pola functional option — menambah
+// kemampuan opsional tanpa mengubah signature New yang sudah dipakai pemanggil lama).
+type Option func(*Engine)
+
+// WithDeadlines memasang DeadlineScheduler agar engine menjadwalkan eskalasi SLA (PRD F6).
+// Tanpa opsi ini, state ber-SLAHours>0 tidak menjadwalkan apa pun (engine tenant-agnostik
+// tetap; penjadwalan adalah driven port, bukan kewajiban engine inti).
+func WithDeadlines(sched DeadlineScheduler) Option {
+	return func(e *Engine) { e.deadlines = sched }
+}
+
+// New membuat Engine. store, dispatch, guard wajib non-nil; opsi menambah kemampuan opsional.
+func New(store DefinitionStore, dispatch ActionDispatcher, guard GuardEvaluator, opts ...Option) *Engine {
+	e := &Engine{store: store, dispatch: dispatch, guard: guard}
+	for _, o := range opts {
+		o(e)
+	}
+	return e
 }
 
 // Start membuat WorkflowInstance baru untuk entitas tertentu. Instance di-set ke
@@ -35,14 +54,20 @@ func (e *Engine) Start(ctx port.AuthContext, defID string, entityID uuid.UUID) (
 	if err != nil {
 		return nil, err
 	}
-	return &WorkflowInstance{
+	inst := &WorkflowInstance{
 		ID:                uuid.New(),
+		TenantID:          ctx.TenantID(),
 		DefinitionID:      def.ID,
 		DefinitionVersion: def.Version,
 		EntityID:          entityID,
 		CurrentState:      def.InitialState,
 		StartedAt:         time.Now(),
-	}, nil
+	}
+	// Instance MASUK initial_state → jadwalkan deadline SLA bila state itu ber-SLA (PRD F6).
+	if err := e.scheduleSLA(ctx, inst, def.stateMap()[def.InitialState]); err != nil {
+		return nil, err
+	}
+	return inst, nil
 }
 
 // Execute menjalankan satu transisi pada instance yang diberikan tanpa komentar.
@@ -60,9 +85,11 @@ func (e *Engine) Execute(ctx port.AuthContext, instance *WorkflowInstance, actio
 // bukan versi terbaru — perubahan definisi setelah instance dimulai tidak mengubah alur
 // yang sedang berjalan (PRD F1/F7, PR-3.2.7).
 //
-// Atomicity: bila salah satu langkah gagal, instance dikembalikan ke state semula
-// (state tidak berubah, history tidak ditambah). Caller bertanggung jawab persistensi
-// setelah Execute sukses.
+// Atomicity: bila guard/action gagal, instance dikembalikan ke state semula (state tidak
+// berubah, history tidak ditambah). Caller bertanggung jawab persistensi setelah Execute
+// sukses. Penjadwalan/pembatalan timer SLA terjadi SETELAH transisi tercatat (PR-3.2.6):
+// transisi domain sudah otoritatif, sehingga kegagalan scheduler dipropagasi tanpa membatalkan
+// transisi — guard race di fire-time menjadi backstop kebenaran.
 //
 // entity adalah snapshot data bisnis entity saat ini — dipakai guard evaluation
 // (mis. `entity.nilai > 100`). Boleh nil bila tidak ada guard yang mengakses entity.
@@ -111,8 +138,9 @@ func (e *Engine) ExecuteWithComment(ctx port.AuthContext, instance *WorkflowInst
 	}
 
 	// Semua lolos: pindah state dan catat history (immutable, append-only).
+	leftState := instance.CurrentState
 	record := TransitionRecord{
-		From:      instance.CurrentState,
+		From:      leftState,
 		To:        tr.To,
 		Action:    tr.Action,
 		ActorID:   ctx.PersonID(),
@@ -121,7 +149,50 @@ func (e *Engine) ExecuteWithComment(ctx port.AuthContext, instance *WorkflowInst
 	}
 	instance.CurrentState = tr.To
 	instance.History = append(instance.History, record)
+
+	// SLA (PRD F6): transisi = instance keluar leftState & masuk tr.To. Batalkan timer state
+	// yang ditinggalkan, lalu jadwalkan timer state baru bila ber-SLA. Urutan cancel→schedule
+	// menjaga self-loop (From==To) tetap benar: timer lama dibatalkan sebelum yang baru dibuat.
+	// Transisi domain sudah OTORITATIF di titik ini; kegagalan penjadwalan SLA dikembalikan
+	// sebagai error (agar wiring rusak terlihat) — backstop-nya guard race di fire-time yang
+	// meng-no-op-kan deadline basi maupun menutup deadline yang gagal dibatalkan.
+	if err := e.cancelSLA(ctx, instance, leftState); err != nil {
+		return err
+	}
+	if err := e.scheduleSLA(ctx, instance, stateMap[tr.To]); err != nil {
+		return err
+	}
 	return nil
+}
+
+// scheduleSLA mendaftarkan deadline bila DeadlineScheduler terpasang DAN state ber-SLA
+// (SLAHours>0). No-op selain itu. Deadline membawa PERAN eskalasi apa adanya dari definisi —
+// engine tak meresolusi peran→orang (itu adapter Escalator, tenant-agnostik).
+func (e *Engine) scheduleSLA(ctx port.AuthContext, inst *WorkflowInstance, st State) error {
+	if e.deadlines == nil || st.SLAHours <= 0 {
+		return nil
+	}
+	d := Deadline{
+		Key:    DeadlineKey(inst.ID, st.Name),
+		FireAt: time.Now().Add(time.Duration(st.SLAHours) * time.Hour),
+		Escalation: Escalation{
+			TenantID:       ctx.TenantID(),
+			InstanceID:     inst.ID,
+			State:          st.Name,
+			EscalateToRole: st.EscalateToRole,
+		},
+	}
+	return e.deadlines.ScheduleDeadline(ctx, d)
+}
+
+// cancelSLA membatalkan deadline state yang ditinggalkan. No-op bila scheduler tak terpasang.
+// CancelDeadline idempoten — membatalkan key yang tak pernah dijadwalkan (state tanpa SLA)
+// bukan error, sehingga pemanggil tak perlu tahu apakah state punya SLA.
+func (e *Engine) cancelSLA(ctx port.AuthContext, inst *WorkflowInstance, stateName string) error {
+	if e.deadlines == nil {
+		return nil
+	}
+	return e.deadlines.CancelDeadline(ctx, DeadlineKey(inst.ID, stateName))
 }
 
 // findTransition mencari transisi yang cocok: from = fromState, on = action.

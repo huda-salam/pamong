@@ -328,9 +328,22 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
   - Evaluator ekspresi boolean, di-compile saat load, tanpa side-effect
   - DoD: guard mengevaluasi konteks actor & entity; syntax error ketahuan saat load
 
-- **PR-3.2.6** SLA, deadline & eskalasi ← 3.2.1, 3.6.1
+- **PR-3.2.6** SLA, deadline & eskalasi ← 3.2.1, 3.6.1 ✅
   - Batas waktu per state, eskalasi otomatis saat lewat
-  - DoD: state lewat SLA memicu eskalasi & notifikasi
+  - DoD: state lewat SLA memicu eskalasi & notifikasi ✅
+  - SELESAI (ADR-011): tiga port baru di `core/workflow` (`DeadlineScheduler`,
+    `InstanceStateReader`, `Escalator`) + `Deadline`/`Escalation` + `DeadlineKey` +
+    `EscalationCoordinator` (guard race fire-time) di `core/workflow/sla.go`. Engine
+    menjadwalkan deadline saat MASUK state ber-SLA (Start + ExecuteWithComment) &
+    membatalkan saat KELUAR; opsi fungsional `WithDeadlines` (nil = SLA nonaktif,
+    backward-compatible). Engine tetap tenant-agnostik (bawa PERAN generik). Adapter
+    di luar core: `infra/workflow.SchedulerDeadlines` (job one-shot atas core/scheduler),
+    `EscalationJob` (JobFunc pembungkus coordinator), `NotifierEscalator` (atas
+    core/notification.RoleNotifier). Guard race = backstop: deadline basi / cancel luput →
+    no-op karena instance sudah pindah. Mock `MockDeadlineScheduler`/`MockInstanceStateReader`/
+    `MockEscalator` di testkit; 15 unit test (core/workflow + infra/workflow), build+vet+lint
+    clean. **Binding tenant pada peran eskalasi DITUNDA ke [PR-3.6.x] Konsumsi role binding**
+    — seam sudah di `NotifierEscalator` (via GetForTenant, bukan DefinitionStore.Get mentah).
 
 - **PR-3.2.7** Workflow history & instance versioning ← 3.2.3, 1.3.1
   - Riwayat transisi immutable; instance berjalan pakai versi definisi saat mulai

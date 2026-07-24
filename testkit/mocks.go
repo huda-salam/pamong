@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/huda-salam/pamong/core"
+	"github.com/huda-salam/pamong/core/workflow"
 	"github.com/huda-salam/pamong/port"
 )
 
@@ -191,6 +192,134 @@ func (m *MockMessaging) SentEmails() []SentEmail {
 	out := make([]SentEmail, len(m.Emails))
 	copy(out, m.Emails)
 	return out
+}
+
+// --- MockDeadlineScheduler ---
+
+// MockDeadlineScheduler merekam deadline SLA yang dijadwalkan/dibatalkan engine (PR-3.2.6).
+// FailNext bila diset membuat panggilan BERIKUTNYA gagal (uji propagasi error wiring SLA).
+type MockDeadlineScheduler struct {
+	mu        sync.Mutex
+	Scheduled []workflow.Deadline
+	Cancelled []string
+	FailNext  error
+}
+
+var _ workflow.DeadlineScheduler = (*MockDeadlineScheduler)(nil)
+
+func NewMockDeadlineScheduler() *MockDeadlineScheduler { return &MockDeadlineScheduler{} }
+
+func (m *MockDeadlineScheduler) ScheduleDeadline(_ context.Context, d workflow.Deadline) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.FailNext != nil {
+		err := m.FailNext
+		m.FailNext = nil
+		return err
+	}
+	m.Scheduled = append(m.Scheduled, d)
+	return nil
+}
+
+func (m *MockDeadlineScheduler) CancelDeadline(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.FailNext != nil {
+		err := m.FailNext
+		m.FailNext = nil
+		return err
+	}
+	m.Cancelled = append(m.Cancelled, key)
+	return nil
+}
+
+// ScheduledFor mengembalikan deadline terjadwal dengan key tertentu (dan true), atau false.
+func (m *MockDeadlineScheduler) ScheduledFor(key string) (workflow.Deadline, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, d := range m.Scheduled {
+		if d.Key == key {
+			return d, true
+		}
+	}
+	return workflow.Deadline{}, false
+}
+
+// WasCancelled melaporkan apakah key tertentu telah dibatalkan.
+func (m *MockDeadlineScheduler) WasCancelled(key string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, k := range m.Cancelled {
+		if k == key {
+			return true
+		}
+	}
+	return false
+}
+
+// --- MockInstanceStateReader ---
+
+// MockInstanceStateReader mengembalikan state instance yang diset lewat Set — dipakai menguji
+// guard race eskalasi (instance masih di state vs sudah pindah). ErrNotFound bila belum diset.
+type MockInstanceStateReader struct {
+	mu     sync.Mutex
+	states map[uuid.UUID]string
+}
+
+var _ workflow.InstanceStateReader = (*MockInstanceStateReader)(nil)
+
+func NewMockInstanceStateReader() *MockInstanceStateReader {
+	return &MockInstanceStateReader{states: make(map[uuid.UUID]string)}
+}
+
+// Set menetapkan state terkini satu instance.
+func (m *MockInstanceStateReader) Set(id uuid.UUID, state string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.states[id] = state
+}
+
+func (m *MockInstanceStateReader) CurrentState(_ context.Context, id uuid.UUID) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.states[id]
+	if !ok {
+		return "", core.ErrNotFound("workflow instance", id.String())
+	}
+	return s, nil
+}
+
+// --- MockEscalator ---
+
+// MockEscalator merekam eskalasi yang dipicu EscalationCoordinator (PR-3.2.6). FailNext bila
+// diset membuat panggilan berikutnya gagal.
+type MockEscalator struct {
+	mu        sync.Mutex
+	Escalated []workflow.Escalation
+	FailNext  error
+}
+
+var _ workflow.Escalator = (*MockEscalator)(nil)
+
+func NewMockEscalator() *MockEscalator { return &MockEscalator{} }
+
+func (m *MockEscalator) Escalate(_ context.Context, e workflow.Escalation) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.FailNext != nil {
+		err := m.FailNext
+		m.FailNext = nil
+		return err
+	}
+	m.Escalated = append(m.Escalated, e)
+	return nil
+}
+
+// Count mengembalikan jumlah eskalasi yang terekam.
+func (m *MockEscalator) Count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.Escalated)
 }
 
 // --- Assertion helpers ---

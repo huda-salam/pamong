@@ -106,10 +106,16 @@ type WorkflowInstance struct {
   tidak bisa loop tak terbatas. Deterministik.
 - TIDAK ada fungsi custom yang didefinisikan tenant (konservatif untuk auditabilitas).
 
-### F6 — SLA & eskalasi
-- State dengan sla_hours > 0: daftarkan deadline ke scheduler saat masuk state.
-- Saat lewat SLA: jalankan eskalasi (notify escalate_to_role) via core/notification.
-- Transisi keluar state membatalkan timer SLA-nya.
+### F6 — SLA & eskalasi ✅ (PR-3.2.6, ADR-011)
+- State dengan sla_hours > 0: daftarkan deadline ke scheduler saat masuk state. ✅
+  (engine `scheduleSLA` di Start + ExecuteWithComment lewat port `DeadlineScheduler`)
+- Saat lewat SLA: jalankan eskalasi (notify escalate_to_role) via core/notification. ✅
+  (`EscalationCoordinator` + port `Escalator`; adapter `infra/workflow.NotifierEscalator`)
+- Transisi keluar state membatalkan timer SLA-nya. ✅ (engine `cancelSLA` saat keluar state)
+- Guard race fire-time: bila deadline lewat tapi instance sudah pindah state → no-op
+  (via port `InstanceStateReader`). Backstop bila pembatalan timer luput.
+- Engine tetap tenant-agnostik: deadline membawa PERAN generik; resolusi peran→orang
+  (binding + PLT) di adapter Escalator. Binding tenant DITUNDA ke PR-3.6.x (seam siap).
 
 ### F7 — History
 - Setiap transisi dicatat immutable: from, to, action, actor, timestamp, komentar.
@@ -150,5 +156,5 @@ type WorkflowInstance struct {
 - [ ] Guard dengan output non-boolean → ditolak saat compile.
 - [ ] Dua tenant dengan template berbeda jalan; use case identik dipanggil keduanya.
 - [ ] Perubahan definisi (versi baru) tidak mengubah instance yang sedang berjalan.
-- [ ] SLA lewat → eskalasi terkirim ke role yang benar.
+- [x] SLA lewat → eskalasi terkirim ke role yang benar. (PR-3.2.6)
 - [ ] History transisi immutable & dapat di-query per instance.

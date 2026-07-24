@@ -14,6 +14,7 @@ import (
 // Engine stateless terhadap instance — caller menyimpan dan meneruskan saat Execute.
 type WorkflowInstance struct {
 	ID                uuid.UUID
+	TenantID          string // tenant pemilik instance (dari AuthContext saat Start) — dipakai routing eskalasi SLA
 	DefinitionID      string
 	DefinitionVersion int
 	EntityID          uuid.UUID
