@@ -9,6 +9,13 @@ import (
 )
 
 // All mengembalikan instance semua modul terdaftar. Tambahkan modul baru di sini.
+//
+// CATATAN: `surat_masuk` di sini adalah modul REFERENSI/CONTOH (sample project), bukan
+// modul produksi. Selama framework dibangun ia sengaja terdaftar sebagai target dev &
+// harness validasi end-to-end (ROADMAP Phase 7). Deployment nyata untuk pemda MENGGANTI
+// daftar ini dengan modul bisnis riil — pemisahan "modul contoh" dari "modul yang
+// di-register deployment" dijadwalkan di Phase 5.1/7 (lihat ROADMAP backlog). Sampai itu,
+// jangan asumsikan isi All() = modul yang layak dikirim ke produksi.
 func All() []domain.Module {
 	return []domain.Module{
 		&surat_masuk.Module{},

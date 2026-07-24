@@ -8,10 +8,13 @@ Baca seluruh file ini sebelum melakukan perubahan apapun.
 - `docs/CODE_CONVENTION.md` — standar konkret penulisan kode Go (banyak ditegakkan linter).
 - `docs/DOCUMENTATION_CONVENTION.md` — cara menulis PRD, ADR, komentar, CLAUDE.md lokal.
 
-**Tiap komponen punya `CLAUDE.md` (panduan kerja ringkas) + `PRD.md` (spesifikasi).**
-Saat bekerja di satu komponen, baca CLAUDE.md lokalnya + PRD-nya + port terkait —
-tidak perlu membaca seluruh file ini lagi setelah sesi pertama. Modul referensi resmi:
-`modules/surat_masuk/` — tiru polanya saat membuat modul baru.
+**Tiap komponen punya `CLAUDE.md` (panduan kerja ringkas); umumnya juga `PRD.md`
+(spesifikasi).** Pengecualian: sub-komponen yang mengimplementasi PRD komponen induk
+merujuk PRD itu alih-alih menduplikasi — mis. `tenantrole/` & `delegation/` merujuk
+`core/permission/PRD.md`, dan modul referensi `modules/surat_masuk/` sengaja tanpa PRD.
+Saat bekerja di satu komponen, baca CLAUDE.md lokalnya + PRD-nya (atau PRD induk yang
+dirujuk) + port terkait — tidak perlu membaca seluruh file ini lagi setelah sesi pertama.
+Modul referensi resmi: `modules/surat_masuk/` — tiru polanya saat membuat modul baru.
 
 ---
 
@@ -197,7 +200,8 @@ pamong/
 │   ├── customization/             # Tenant customization layer (custom field, label, override)
 │   ├── audit/                     # Immutable trail, hash chain, diff
 │   ├── scheduler/                 # Cron, job queue, deadline-aware
-│   └── notification/              # Channel abstraction
+│   ├── notification/              # Channel abstraction
+│   └── fiscal/                    # Periode fiskal, status open/soft/hard-closed, enforcement Lockable
 │
 ├── port/                          # Port (interface) lintas modul — READ-ONLY dari modul
 │   ├── eventbus.go                # EventPublisher, EventSubscriber
@@ -225,8 +229,14 @@ pamong/
 │   ├── adapter/
 │   └── sync/                      # Sinkronisasi user ke tenant (clone engine)
 │
+├── tenantrole/                    # Role tenant (Lapisan 2) — master data + resolusi, di tenant DB
+├── delegation/                    # Delegasi/PLT intra-tenant (Lapisan 3) — subset permission berwaktu
+│
 ├── modules/                       # Modul bisnis pluggable
 │   └── surat_masuk/               # Modul referensi — baca sebelum buat modul baru
+│
+├── cmd/                           # Entry point binary
+│   └── server/main.go             # Satu-satunya tempat modul dipasang (app.Register)
 │
 ├── ui/                            # Admin web (Frappe UI + Go adapter)
 │   ├── src/

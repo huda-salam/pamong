@@ -942,3 +942,15 @@ rule linter `markerref`).
   tak punya grep-gate). Tambah analyzer `tools/linter/rules/markerref` (scan komentar, cek
   format ref) + daftarkan di `registry.go` (pola sama dgn placeholder yang sudah dicatat di
   sana). §9 sudah jadi spesifikasinya. Setelah ada, wording "via review" di §9 jadi "via CI".
+
+- **[Phase-5.1/7] Pisahkan modul contoh `surat_masuk` dari registry produksi.** `surat_masuk`
+  adalah modul REFERENSI (sample project) — panduan menggunakan framework, dirujuk di seluruh
+  docs sebagai pola yang ditiru. Saat ini ia terdaftar di `modules.All()` (`modules/registry.go`)
+  sehingga ikut ter-register ke binary produksi `cmd/server` DAN toolchain `pamongctl`. Selama
+  framework dibangun ini disengaja (satu-satunya modul yang menguji wiring end-to-end; jadi
+  harness validasi Phase 7). Yang perlu dilakukan saat registrasi modul solid (Phase 5.1) atau
+  saat ia formal jadi test harness (Phase 7): `All()` produksi kosong/berisi modul riil saja;
+  `surat_masuk` di-register HANYA dari jalur dev/test (integration test + dev-main atau build
+  tag), atau dipindah ke `examples/`. Tujuan: contoh tetap in-repo (tak boleh rot — break CI
+  saat core API berubah) tapi tak ikut terkirim sebagai default produksi. JANGAN keluarkan dari
+  repo — nilai utamanya justru sebagai canary yang terkompilasi bersama framework.

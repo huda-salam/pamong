@@ -4,6 +4,11 @@ Mengelola periode fiskal dan penguncian. Status periode (open -> soft_closed ->
 hard_closed) dan enforcement OTOMATIS pada setiap mutasi entity Lockable. Juga annual
 cutoff (schema per tahun) dan carry-forward. Modul TIDAK mengecek fiscal sendiri.
 
+**Status: DESAIN — belum diimplementasi.** Baru `port/fiscal.go` (`FiscalChecker`) yang ada
+sebagai seam (dipakai `core/strategy` untuk gerbang non-retroaktif). Impl konkret (file kunci
+di bawah) DEFERRED sampai modul keuangan hadir — ROADMAP belum punya PR tersendiri untuk ini;
+lihat ROADMAP backlog "Gerbang fiskal REAL menunggu impl FiscalChecker".
+
 ## Bergantung pada
 - port/fiscal.go
 - core/domain (entity Lockable + FiscalDateField)
