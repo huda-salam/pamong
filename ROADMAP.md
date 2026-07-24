@@ -391,9 +391,18 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
   - Layer terpisah dari definisi modul; upgrade-safe
   - DoD: tenant menambah field tanpa mengubah modul; upgrade tak menimpa
 
-- **PR-3.4.2** Capability flags per-tenant ← 2.2.1
+- **PR-3.4.2** Capability flags per-tenant ← 2.2.1 ✅
   - Gate fitur dormant tanpa percabangan kode menyebar
-  - DoD: fitur ber-flag aktif/nonaktif per-tenant tanpa rilis terpisah
+  - DoD: fitur ber-flag aktif/nonaktif per-tenant tanpa rilis terpisah ✅
+  - SELESAI (core-only): `core/customization/capability.go` — `Capability` (Name
+    {modul}.{fitur}, DefaultEnabled) DIDEKLARASIKAN di kode (titik ekstensi #6/#1);
+    `CapabilityRegistry` (Register nama-unik + List terurut); port `TenantCapabilityStore`
+    (Override/Set — hanya override eksplisit; ketiadaan = pakai default) + `MemoryTenantCapabilityStore`;
+    `CapabilityResolver.IsEnabled` (override tenant menang → else DefaultEnabled; capability
+    tak terdaftar → error FAIL-CLOSED). 8 unit test, coverage 98%. **Adapter DB
+    (`gov.tenant_customizations` / tabel flag) + use case admin ber-permission DITUNDA** —
+    mekanisme gate sudah lengkap & teruji via Memory store; persistensi + write-path menyusul
+    bersama PR-3.4.1 (custom field) yang berbagi tabel/permission kustomisasi.
 
 ### Sub-phase 3.5 — Scheduler
 

@@ -40,4 +40,4 @@ memerlukan perubahan kode modul.
       form & tersimpan.
 - [ ] Upgrade modul tidak menimpa custom field/label tenant.
 - [ ] Label override per-tenant berlaku.
-- [ ] Capability flag mengaktifkan/menonaktifkan fitur per-tenant tanpa rilis terpisah.
+- [x] Capability flag mengaktifkan/menonaktifkan fitur per-tenant tanpa rilis terpisah. (PR-3.4.2)
