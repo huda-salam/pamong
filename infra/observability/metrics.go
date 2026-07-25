@@ -1,8 +1,10 @@
 // metrics.go implementasi port.MetricsPort di atas Prometheus client. Setiap
 // nama metric membangun *Vec Prometheus secara lazy pada observasi pertama;
-// nama label dikunci dari kunci tags saat itu (lihat labelSetFor). Konvensi
-// tags (CLAUDE.md §metrics): module/tenant/endpoint — hindari label
-// high-cardinality (id entitas dsb).
+// nama label dikunci dari kunci tags saat itu (lihat sortedLabelNames/values).
+// Konvensi tags (CLAUDE.md §metrics): module/tenant/endpoint — hindari label
+// high-cardinality (id entitas dsb), dan jaga set kunci tags konsisten untuk
+// satu nama metric (keterbatasan Prometheus: satu metric family = satu set
+// label tetap; lihat komentar getOrRegister untuk perilaku saat dilanggar).
 package observability
 
 import (
@@ -31,7 +33,7 @@ type PrometheusMetrics struct {
 
 // labeledVec mengingat nama label yang dikunci saat *Vec dibuat, sehingga
 // observasi berikutnya dengan set tag berbeda tetap bisa dipetakan (lihat values).
-type labeledVec[V any] struct {
+type labeledVec[V prometheus.Collector] struct {
 	labelNames []string
 	vec        V
 }
@@ -70,7 +72,8 @@ func sortedLabelNames(tags map[string]string) []string {
 // values memetakan tags ke slice value sesuai labelNames yang sudah dikunci.
 // Tag yang tidak ada di labelNames (set pertama) diabaikan; label yang tak
 // disertakan di panggilan ini mendapat "" — dijamin tidak panic meski
-// pemanggil kelak mengirim kombinasi tag key yang tidak identik.
+// pemanggil kelak mengirim kombinasi tag key yang tidak identik dengan
+// observasi pertama untuk nama metric yang sama.
 func values(labelNames []string, tags map[string]string) []string {
 	vals := make([]string, len(labelNames))
 	for i, name := range labelNames {
@@ -79,63 +82,83 @@ func values(labelNames []string, tags map[string]string) []string {
 	return vals
 }
 
-func (p *PrometheusMetrics) IncrCounter(name string, tags map[string]string) {
+// getOrRegister mengembalikan *Vec yang sudah terdaftar untuk name, atau
+// membuat & mendaftarkannya (via newVec) pada observasi pertama. Memakai
+// Register (bukan MustRegister): bila name sebelumnya sudah dipakai untuk
+// JENIS metric lain (mis. IncrCounter lalu RecordDuration dengan name yang
+// sama — kesalahan pemanggil, Prometheus tak mengizinkan satu nama untuk dua
+// jenis kolektor), Register gagal. Metrics adalah concern lintas-potong yang
+// tidak boleh menjatuhkan transaksi bisnis pemanggil, jadi observasi tersebut
+// (dan seterusnya untuk name yang sama) di-skip lewat entri nil, bukan panic
+// (lihat TestPrometheusMetrics_NamaSamaJenisBerbeda_TidakPanic).
+func getOrRegister[V prometheus.Collector](
+	p *PrometheusMetrics,
+	m map[string]*labeledVec[V],
+	name string,
+	tags map[string]string,
+	newVec func(labelNames []string) V,
+) *labeledVec[V] {
 	p.mu.Lock()
-	lv, ok := p.counters[name]
-	if !ok {
-		labelNames := sortedLabelNames(tags)
-		lv = &labeledVec[*prometheus.CounterVec]{
-			labelNames: labelNames,
-			vec: prometheus.NewCounterVec(prometheus.CounterOpts{
-				Name: name,
-				Help: name,
-			}, labelNames),
-		}
-		p.reg.MustRegister(lv.vec)
-		p.counters[name] = lv
-	}
-	p.mu.Unlock()
+	defer p.mu.Unlock()
 
+	if lv, ok := m[name]; ok {
+		return lv // termasuk kasus lv == nil: percobaan sebelumnya gagal, jangan ulangi
+	}
+
+	labelNames := sortedLabelNames(tags)
+	vec := newVec(labelNames)
+	if err := p.reg.Register(vec); err != nil {
+		if are, isAlready := err.(prometheus.AlreadyRegisteredError); isAlready {
+			if existing, sameType := are.ExistingCollector.(V); sameType {
+				lv := &labeledVec[V]{labelNames: labelNames, vec: existing}
+				m[name] = lv
+				return lv
+			}
+		}
+		m[name] = nil
+		return nil
+	}
+
+	lv := &labeledVec[V]{labelNames: labelNames, vec: vec}
+	m[name] = lv
+	return lv
+}
+
+// IncrCounter menaikkan counter Prometheus bernama name sebesar satu.
+func (p *PrometheusMetrics) IncrCounter(name string, tags map[string]string) {
+	lv := getOrRegister(p, p.counters, name, tags, func(labelNames []string) *prometheus.CounterVec {
+		return prometheus.NewCounterVec(prometheus.CounterOpts{Name: name, Help: name}, labelNames)
+	})
+	if lv == nil {
+		return
+	}
 	lv.vec.WithLabelValues(values(lv.labelNames, tags)...).Inc()
 }
 
+// SetGauge menetapkan nilai gauge Prometheus bernama name ke v (menimpa nilai
+// sebelumnya, bukan mengakumulasi).
 func (p *PrometheusMetrics) SetGauge(name string, v float64, tags map[string]string) {
-	p.mu.Lock()
-	lv, ok := p.gauges[name]
-	if !ok {
-		labelNames := sortedLabelNames(tags)
-		lv = &labeledVec[*prometheus.GaugeVec]{
-			labelNames: labelNames,
-			vec: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-				Name: name,
-				Help: name,
-			}, labelNames),
-		}
-		p.reg.MustRegister(lv.vec)
-		p.gauges[name] = lv
+	lv := getOrRegister(p, p.gauges, name, tags, func(labelNames []string) *prometheus.GaugeVec {
+		return prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: name, Help: name}, labelNames)
+	})
+	if lv == nil {
+		return
 	}
-	p.mu.Unlock()
-
 	lv.vec.WithLabelValues(values(lv.labelNames, tags)...).Set(v)
 }
 
+// RecordDuration mencatat durasi d (dalam detik) ke histogram Prometheus
+// bernama name, memakai bucket default Prometheus (prometheus.DefBuckets).
 func (p *PrometheusMetrics) RecordDuration(name string, d time.Duration, tags map[string]string) {
-	p.mu.Lock()
-	lv, ok := p.histograms[name]
-	if !ok {
-		labelNames := sortedLabelNames(tags)
-		lv = &labeledVec[*prometheus.HistogramVec]{
-			labelNames: labelNames,
-			vec: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-				Name:    name,
-				Help:    name,
-				Buckets: prometheus.DefBuckets, // detik; sesuai satuan Observe di bawah
-			}, labelNames),
-		}
-		p.reg.MustRegister(lv.vec)
-		p.histograms[name] = lv
+	lv := getOrRegister(p, p.histograms, name, tags, func(labelNames []string) *prometheus.HistogramVec {
+		return prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    name,
+			Help:    name,
+			Buckets: prometheus.DefBuckets, // detik; sesuai satuan Observe di bawah
+		}, labelNames)
+	})
+	if lv == nil {
+		return
 	}
-	p.mu.Unlock()
-
 	lv.vec.WithLabelValues(values(lv.labelNames, tags)...).Observe(d.Seconds())
 }

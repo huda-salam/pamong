@@ -37,8 +37,8 @@ func main() {
 		nil, // Publisher — Phase 3.1.1
 		nil, // Subscriber — Phase 3.1.1
 		nil, // Sequence — Phase 1
-		nil, // Metrics — Phase 3.7.2
-		nil, // Storage — Phase 3.7.1
+		nil, // Metrics — adapter siap (infra/observability), live wiring DEFERRED(Phase-5.1.1)
+		nil, // Storage — adapter siap (infra/storage), live wiring DEFERRED(Phase-5.1.1)
 		nil, // UserResolver — Phase 2.1
 		nil, // WorkflowRegistry — Phase 3.2
 		nil, // Router — Phase 5.1.1

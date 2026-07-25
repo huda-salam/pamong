@@ -75,6 +75,22 @@ func TestPrometheusMetrics_TagKeyBerbeda_TidakPanic(t *testing.T) {
 	_ = scrape(t, m)
 }
 
+// TestPrometheusMetrics_NamaSamaJenisBerbeda_TidakPanic membuktikan memakai
+// nama metric yang sama untuk dua JENIS berbeda (counter lalu histogram) —
+// kesalahan pemanggil yang membuat Prometheus menolak registrasi kedua —
+// di-skip dengan aman, bukan meng-crash proses (metrics tak boleh
+// menjatuhkan transaksi bisnis pemanggil).
+func TestPrometheusMetrics_NamaSamaJenisBerbeda_TidakPanic(t *testing.T) {
+	m := observability.NewPrometheusMetrics()
+	m.IncrCounter("dup_name", nil)
+	m.RecordDuration("dup_name", time.Millisecond, nil) // jenis beda, nama sama — dulu panic
+
+	body := scrape(t, m)
+	if !strings.Contains(body, "dup_name") {
+		t.Fatalf("counter pertama harus tetap tereskpos, dapat:\n%s", body)
+	}
+}
+
 // TestPrometheusMetrics_RegistryTerisolasi membuktikan dua instance tidak
 // bentrok (registry privat, bukan prometheus.DefaultRegisterer global).
 func TestPrometheusMetrics_RegistryTerisolasi(t *testing.T) {

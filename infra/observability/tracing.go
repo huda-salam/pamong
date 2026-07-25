@@ -1,9 +1,14 @@
 // tracing.go menyiapkan distributed tracing OTEL: TracerProvider yang
 // mengekspor span ke collector via OTLP/gRPC. Tidak ada port domain untuk
-// tracing (beda dengan MetricsPort) karena propagasi span berjalan lewat
-// context.Context standar Go — use case/adapter cukup panggil
-// observability.Tracer(name) dan tak perlu injeksi interface baru
-// (PRD F3: span gateway -> use case -> adapter).
+// tracing (beda dengan MetricsPort) karena span mengalir lewat
+// context.Context Go standar tanpa perlu injeksi interface: gateway
+// (driving adapter) membuka span request lalu meneruskan ctx apa adanya ke
+// use case; use case TIDAK memanggil observability.Tracer() atau
+// mengimport paket ini (akan melanggar domain-no-infra-import) — ia hanya
+// meneruskan ctx yang diterima ke port yang dipanggilnya; driven adapter
+// (infra/db, infra/eventbus, dst) yang melanjutkan span dari ctx tersebut
+// saat membungkus I/O (PRD F3: span gateway -> use case -> adapter, di mana
+// "use case" berarti span IKUT LEWAT use case via ctx, bukan DIBUAT di sana).
 package observability
 
 import (
@@ -79,9 +84,10 @@ func serviceNameOrDefault(name string) string {
 }
 
 // Tracer mengembalikan trace.Tracer bernama name dari TracerProvider global
-// (yang didaftarkan NewTracerProvider). Span mengalir lewat context.Context
-// standar: gateway membuka span request, use case & adapter melanjutkannya
-// lewat ctx yang sama — tidak ada port baru untuk ini.
+// (yang didaftarkan NewTracerProvider). Dipanggil HANYA dari driving/driven
+// adapter (gateway middleware, infra/db, infra/eventbus, infra/storage, dst)
+// untuk membuka/melanjutkan span — bukan dari domain/usecase (lihat komentar
+// paket).
 func Tracer(name string) trace.Tracer {
 	return otel.Tracer(name)
 }
