@@ -1004,3 +1004,15 @@ rule linter `markerref`).
   masuk `reservedFieldNames` (system-managed, non-assignable UI) — kolom actor-nya sendiri BELUM
   di-generate DDL (menyusul saat generation pipeline punya konteks aktor; nama dilindungi lebih
   dulu agar tak bentrok field modul — lihat catatan di `infra/db/ddl.go`).
+
+- **[Phase-5.1.1] Live wiring metrics endpoint + tracing lifecycle.** `infra/observability`
+  kini punya `PrometheusMetrics` (port.MetricsPort, registry privat, `Handler()` exposition
+  Prometheus) dan `NewTracerProvider`/`Tracer()` (OTEL, OTLP/gRPC ke `GOV_OTEL_ENDPOINT`) —
+  keduanya diuji (termasuk span benar-benar diterima "collector" lewat fake gRPC server, tanpa
+  Docker). Belum di-wire ke `cmd/server/main.go` (preseden storage/token/login: adapter
+  di-test dulu, live wiring menyusul saat ada konsumen nyata — lihat ROADMAP §"Live wiring
+  HTTP/messaging/ratelimit konkret → Phase 5.1.1"). Saat wiring: (a) `domain.NewApp(...,
+  observability.NewPrometheusMetrics(), ...)` untuk `Metrics`; (b) mount `GET /metrics` via
+  `app.Router()` begitu router (PR-5.1.1) ada; (c) panggil `observability.NewTracerProvider`
+  sekali di boot dari `cfg.Observ` (Enabled/Endpoint/ServiceName), `defer tp.Shutdown(ctx)` di
+  shutdown server agar batch span ter-flush.
