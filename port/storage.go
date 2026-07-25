@@ -2,8 +2,14 @@ package port
 
 import (
 	"context"
+	"errors"
 	"io"
 )
+
+// ErrObjectNotFound dikembalikan driver storage saat objek dengan key tertentu
+// tidak ada (Download). Seragam lintas driver (local/minio) sehingga pemanggil
+// bisa membedakan "tidak ada" dari kegagalan transport lewat errors.Is.
+var ErrObjectNotFound = errors.New("storage: objek tidak ditemukan")
 
 type StorageMeta struct {
 	ContentType string
