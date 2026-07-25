@@ -63,6 +63,10 @@ func createTable(table string, e domain.EntityDef) (string, error) {
 		cols = append(cols, "    "+col)
 	}
 
+	// Kolom sistem framework. created_by/updated_by SUDAH direserve di domain
+	// (reservedFieldNames) tapi BELUM di-generate di sini — actor-tracking menyusul saat
+	// generation pipeline punya konteks aktor. Nama dilindungi lebih dulu agar penambahan
+	// nanti tidak bentrok dengan field modul.
 	cols = append(cols,
 		"    version        INT NOT NULL DEFAULT 1",
 		"    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()",

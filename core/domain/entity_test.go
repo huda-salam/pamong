@@ -51,6 +51,8 @@ func TestEntity_AturanValidasi(t *testing.T) {
 		}, "Link"},
 		{"decimal tanpa precision", func(e *domain.EntityDef) { e.Fields[2].Precision = 0 }, "Decimal"},
 		{"field reserved", func(e *domain.EntityDef) { e.Fields[0].Name = "version" }, "reserved"},
+		{"field reserved created_by", func(e *domain.EntityDef) { e.Fields[0].Name = "created_by" }, "reserved"},
+		{"field reserved updated_by", func(e *domain.EntityDef) { e.Fields[0].Name = "updated_by" }, "reserved"},
 		{"field duplikat", func(e *domain.EntityDef) { e.Fields[1].Name = "nomor" }, "duplikat"},
 		{"fiscalfield bukan field", func(e *domain.EntityDef) { e.Lockable = domain.Lockable{FiscalField: "xx"} }, "FiscalField"},
 		{"searchable bukan field", func(e *domain.EntityDef) { e.Searchable = []string{"xx"} }, "Searchable"},

@@ -26,9 +26,13 @@ var validFieldTypes = map[FieldType]bool{
 }
 
 // reservedFieldNames adalah kolom standar yang dikelola framework — modul tidak boleh
-// mendefinisikannya ulang (PRD F2). Framework menambahkannya otomatis saat generation.
+// mendefinisikannya ulang (PRD F2). Framework mengisinya otomatis (system-managed): tidak
+// pernah assignable dari UI/modul, hanya diset dari state sistem. created_by/updated_by
+// direserve lebih dulu meski kolom actor-nya belum di-generate DDL — mencegah modul memakai
+// nama itu sebagai field bisnis sebelum framework menambah actor-tracking (lihat DDL note).
 var reservedFieldNames = map[string]bool{
 	"id": true, "version": true, "created_at": true, "updated_at": true, "deleted_at": true,
+	"created_by": true, "updated_by": true,
 }
 
 // FieldDef adalah definisi satu field entity.

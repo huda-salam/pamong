@@ -974,3 +974,33 @@ rule linter `markerref`).
   tag), atau dipindah ke `examples/`. Tujuan: contoh tetap in-repo (tak boleh rot — break CI
   saat core API berubah) tapi tak ikut terkirim sebagai default produksi. JANGAN keluarkan dari
   repo — nilai utamanya justru sebagai canary yang terkompilasi bersama framework.
+
+- **[Phase-6.2 / gabung studi ERP] Metadata presentasi field → auto-form (UI autoflow).**
+  `FieldDef` (core/domain) sekarang murni lapisan-data (Name/Type/Required/Unique/Default/
+  Options/LinkTo/MaxSizeMB/Precision) — nol atribut presentasi. Niat Tier 1 = "generated penuh
+  incl. form UI", tapi form-generator baru hidup di Phase 6 (`ui/` Frappe + adapter Go) dan
+  endpoint CRUD di PR-5.1.3 — keduanya belum ada. **Keputusan bentuk (final, belum diimplementasi
+  agar `FieldDef` tak churn sebelum ada konsumen):** ikuti model **Odoo** (pisah storage vs
+  presentasi), BUKAN Frappe (lebur `fieldtype`):
+  1. **Type → widget default** (tabel milik framework): Date→datepicker, DateTime→datetime,
+     Boolean→checkbox, Enum→select, Link→autocomplete, File→upload, Text→input 1-baris,
+     Decimal→numeric. Nol-config untuk mayoritas = "autoflow" tanpa buat+configure view.
+  2. **Hint presentasi opsional** `UI *FieldUI` di `FieldDef` (nil = pakai default Type):
+     `Widget` (override dari REGISTRY tertutup — mis. `"textarea"`,`"richtext"` — konsisten
+     pola registry & "rails not freedom", BUKAN free-form), `Rows int` (mis. textarea N baris),
+     `MaxLength int` (menyetir lebar input teks), `Placeholder`,`HelpText`,`ReadOnly`,`Hidden`,
+     `InListView bool`, `DependsOn string` (tampil-bila-kondisi — **pakai ulang DSL guard yang
+     sudah ada**, bukan mesin baru). "Sekian baris textinput" = `Widget:"textarea",Rows:N` di
+     atas tipe `Text` yang sama (storage tak berubah).
+  3. **Hexagonal aman:** `FieldUI` = data deklaratif (string/enum/bool), nol-dep infra → boleh
+     di `core/domain`. Domain deklarasi "widget apa"; adapter `ui/` yang memutuskan "digambar
+     bagaimana" (sejalan split "domain deklarasi endpoint, gateway routing").
+  4. **Override per-tenant** → jatuh ke **customization layer (titik ekstensi #4)** +
+     `gov.tenant_customizations` (custom field/label/tampilan) — jalur yang sama dengan write-path
+     kustomisasi yang sedang di-park. Karena referensinya identik (DocField Frappe / view Odoo /
+     `AD_Field` iDempiere), **gabungkan ke studi ERP open-source yang di-park bersama keputusan
+     permission-namespace** — satu studi, dua keputusan (permission + UI-metadata).
+  Sudah dikerjakan sekarang (biaya nyaris nol, benar apa pun desain UI): `created_by`/`updated_by`
+  masuk `reservedFieldNames` (system-managed, non-assignable UI) — kolom actor-nya sendiri BELUM
+  di-generate DDL (menyusul saat generation pipeline punya konteks aktor; nama dilindungi lebih
+  dulu agar tak bentrok field modul — lihat catatan di `infra/db/ddl.go`).
