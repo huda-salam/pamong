@@ -7,6 +7,7 @@ import (
 
 	"github.com/huda-salam/pamong/core/config"
 	"github.com/huda-salam/pamong/infra/db"
+	"github.com/huda-salam/pamong/infra/schema"
 	"github.com/spf13/cobra"
 )
 
@@ -51,6 +52,12 @@ func openMigrator(ctx context.Context, modulesDir string) (*db.Pool, *db.Migrato
 	if err != nil {
 		return nil, nil, fmt.Errorf("muat migrasi dari %s: %w", modulesDir, err)
 	}
+	// Migrasi komponen framework (core/*) di-embed — tanpa ini hanya modules/* yang jalan.
+	core, err := schema.CoreMigrations()
+	if err != nil {
+		return nil, nil, err
+	}
+	migs = append(migs, core...)
 	pool, err := db.New(ctx, cfg.DB)
 	if err != nil {
 		return nil, nil, fmt.Errorf("koneksi DB: %w", err)

@@ -28,9 +28,8 @@ func newNotifEnv(t *testing.T) (*db.Pool, context.Context) {
 	}
 	pool := db.NewPool(pgpool)
 
-	drop := `DROP TABLE IF EXISTS gov.notification_deliveries;
-	         DROP TABLE IF EXISTS gov.notification_inapp;
-	         DROP TABLE IF EXISTS gov.notification_templates`
+	// Reset penuh: EnsureSchema melacak gov.migration_history, jadi drop skema penuh (bukan tabel saja).
+	drop := `DROP SCHEMA IF EXISTS gov CASCADE`
 	_, _ = pool.Exec(ctx, drop)
 	if err := infraNotif.EnsureSchema(ctx, pool); err != nil {
 		t.Fatalf("ensure schema: %v", err)

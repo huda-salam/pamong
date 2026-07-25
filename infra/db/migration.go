@@ -195,11 +195,29 @@ var migFileRe = regexp.MustCompile(`^(\d+)_(.+)\.(up|down)\.sql$`)
 // LoadMigrations memindai modulesFS untuk file migrasi pada
 // {modul}/migrations/{version}_{name}.(up|down).sql dan memasangkannya.
 // File up tanpa pasangan down (atau sebaliknya) -> error (sejalan linter migration-needs-down).
+// Nama modul diturunkan dari path (dua tingkat di atas file) — dipakai untuk dir modules/.
 func LoadMigrations(modulesFS fs.FS) ([]Migration, error) {
+	// p = {modul}/migrations/{file}; modul = dua tingkat di atas file.
+	return loadMigrationsWalk(modulesFS, func(p string) string {
+		return path.Base(path.Dir(path.Dir(p)))
+	})
+}
+
+// LoadEmbedded memuat migrasi dari satu komponen yang FS-nya ber-root migrations/*.sql (mis.
+// embed.FS core/config), dengan nama modul EKSPLISIT. Dipakai untuk menyatukan migrasi core &
+// identity ke migrator, yang selama ini terkunci ke dir "modules" sehingga migrasi non-modul
+// tak pernah masuk gov.migration_history.
+func LoadEmbedded(module string, fsys fs.FS) ([]Migration, error) {
+	return loadMigrationsWalk(fsys, func(string) string { return module })
+}
+
+// loadMigrationsWalk memindai fsys untuk pasangan up/down; moduleOf menentukan nama modul tiap
+// file (dari path untuk dir modules/, atau konstan untuk FS ter-embed satu komponen).
+func loadMigrationsWalk(fsys fs.FS, moduleOf func(p string) string) ([]Migration, error) {
 	type half struct{ up, down, name string }
 	collected := map[string]*half{} // "module:version" -> half
 
-	err := fs.WalkDir(modulesFS, ".", func(p string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -210,10 +228,9 @@ func LoadMigrations(modulesFS fs.FS) ([]Migration, error) {
 		if match == nil {
 			return nil
 		}
-		// p = {modul}/migrations/{file}; modul = dua tingkat di atas file.
-		module := path.Base(path.Dir(path.Dir(p)))
+		module := moduleOf(p)
 		version, name, dir := match[1], match[2], match[3]
-		content, err := fs.ReadFile(modulesFS, p)
+		content, err := fs.ReadFile(fsys, p)
 		if err != nil {
 			return err
 		}

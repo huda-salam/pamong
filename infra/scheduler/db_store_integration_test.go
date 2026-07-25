@@ -28,7 +28,8 @@ func newJobStoreEnv(t *testing.T) (*infraSched.DBJobStore, context.Context) {
 	}
 	pool := db.NewPool(pgpool)
 
-	drop := `DROP TABLE IF EXISTS gov.job_runs; DROP TABLE IF EXISTS gov.scheduled_jobs;`
+	// Reset penuh: EnsureSchema melacak gov.migration_history, jadi drop skema penuh (bukan tabel saja).
+	drop := `DROP SCHEMA IF EXISTS gov CASCADE`
 	_, _ = pool.Exec(ctx, drop)
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), drop)

@@ -11,34 +11,6 @@ import (
 	"github.com/huda-salam/pamong/infra/db"
 )
 
-// templateConfigDDL membuat tabel gov.tenant_workflow_configs dalam bentuk FINAL ber-versi
-// (PR-3.3.2b). Menggabungkan migration 002 + 003 — dipakai EnsureSchema untuk bootstrap
-// langsung (pola AuditRepo/DBStore). ALTER idempoten menutup deployment lama yang sempat
-// memakai skema non-versi PK (tenant_id, slot) (pola PR-3.1.4 outbox).
-//
-// Append-only ber-versi: tiap perubahan pilihan menambah baris (version = max+1 per
-// tenant+slot) dengan effective_from — pilihan lama tetap terbaca untuk audit/rollback.
-const templateConfigDDL = `
-CREATE SCHEMA IF NOT EXISTS gov;
-CREATE TABLE IF NOT EXISTS gov.tenant_workflow_configs (
-    tenant_id      TEXT        NOT NULL,
-    slot           TEXT        NOT NULL,
-    template_id    TEXT        NOT NULL,
-    role_bindings  JSONB       NOT NULL DEFAULT '{}',
-    version        INT         NOT NULL DEFAULT 1,
-    effective_from TIMESTAMPTZ NOT NULL DEFAULT now(),
-    set_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    set_by         UUID
-);
-ALTER TABLE gov.tenant_workflow_configs ADD COLUMN IF NOT EXISTS version INT NOT NULL DEFAULT 1;
-ALTER TABLE gov.tenant_workflow_configs ADD COLUMN IF NOT EXISTS effective_from TIMESTAMPTZ NOT NULL DEFAULT now();
-ALTER TABLE gov.tenant_workflow_configs DROP CONSTRAINT IF EXISTS tenant_workflow_configs_pkey;
-ALTER TABLE gov.tenant_workflow_configs DROP CONSTRAINT IF EXISTS uq_twc_version;
-ALTER TABLE gov.tenant_workflow_configs ADD CONSTRAINT uq_twc_version
-    UNIQUE (tenant_id, slot, version);
-CREATE INDEX IF NOT EXISTS idx_twc_lookup
-    ON gov.tenant_workflow_configs (tenant_id, slot);`
-
 // DBTemplateStore mengimplementasi coreWf.TemplateStore di atas Postgres.
 // UPSERT pada (tenant_id, slot) agar SetTenantTemplate idempoten — panggilan
 // berulang untuk slot yang sama menimpa pilihan sebelumnya.
@@ -62,10 +34,11 @@ func NewDBTemplateStore(pool *db.Pool, defs coreWf.DefinitionStore) *DBTemplateS
 
 var _ coreWf.TemplateStore = (*DBTemplateStore)(nil)
 
-// EnsureSchema membuat schema gov & tabel tenant_workflow_configs bila belum ada.
+// EnsureSchema membuat schema gov & seluruh tabel workflow bila belum ada, dari SQL migrasi
+// ter-embed (sumber tunggal) dengan pelacakan gov.migration_history di bawah advisory lock.
+// Idempoten. Jalur produksi otoritatif = `pamongctl migrate`.
 func (s *DBTemplateStore) EnsureSchema(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, templateConfigDDL)
-	return err
+	return db.ApplyEmbeddedSchema(ctx, s.pool, coreWf.MigrationModule, coreWf.MigrationsFS)
 }
 
 // SetTenantTemplate MENAMBAH satu versi pilihan template (append-only). set_by diambil

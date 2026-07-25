@@ -27,16 +27,13 @@ func newTestStore(t *testing.T) (*infraWf.DBStore, context.Context) {
 		t.Fatalf("buka pool: %v", err)
 	}
 	pool := db.NewPool(pgpool)
+	// Reset penuh: EnsureSchema melacak gov.migration_history, jadi drop skema penuh (bukan tabel saja).
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(),
-			`DROP TABLE IF EXISTS gov.workflow_definitions;
-			 DROP INDEX IF EXISTS gov.idx_wfdef_lookup`)
+		_, _ = pool.Exec(context.Background(), `DROP SCHEMA IF EXISTS gov CASCADE`)
 		pgpool.Close()
 	})
 	// Bersihkan state sebelumnya agar test deterministik.
-	if _, err := pool.Exec(ctx,
-		`DROP TABLE IF EXISTS gov.workflow_definitions;
-		 DROP INDEX IF EXISTS gov.idx_wfdef_lookup`); err != nil {
+	if _, err := pool.Exec(ctx, `DROP SCHEMA IF EXISTS gov CASCADE`); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 	store := infraWf.NewDBStore(pool)

@@ -14,28 +14,6 @@ import (
 	"github.com/huda-salam/pamong/infra/db"
 )
 
-// workflowDefDDL membuat schema gov & tabel workflow_definitions bila belum ada.
-// Identik dengan migration 001_create_workflow_definitions.up.sql — dipakai EnsureSchema
-// untuk bootstrap langsung tanpa migration runner (mengikuti pola AuditRepo).
-const workflowDefDDL = `
-CREATE SCHEMA IF NOT EXISTS gov;
-CREATE TABLE IF NOT EXISTS gov.workflow_definitions (
-    workflow_id      TEXT        NOT NULL,
-    version          INT         NOT NULL,
-    entity           TEXT        NOT NULL DEFAULT '',
-    initial_state    TEXT        NOT NULL,
-    authoring_source TEXT        NOT NULL DEFAULT 'developer',
-    states           JSONB       NOT NULL,
-    transitions      JSONB       NOT NULL,
-    effective_from   TIMESTAMPTZ NOT NULL,
-    created_by       UUID,
-    prev_version     INT,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (workflow_id, version)
-);
-CREATE INDEX IF NOT EXISTS idx_wfdef_lookup
-    ON gov.workflow_definitions (workflow_id, version DESC);`
-
 // DBStore mengimplementasi coreWf.DefinitionStore di atas Postgres.
 // Setiap Register menciptakan versi baru — versi lama tetap tersimpan (append-only per
 // workflow_id) sehingga instance yang sedang berjalan tetap mengacu ke versi saat mulai.
@@ -50,11 +28,11 @@ func NewDBStore(pool *db.Pool) *DBStore { return &DBStore{pool: pool} }
 
 var _ coreWf.DefinitionStore = (*DBStore)(nil)
 
-// EnsureSchema membuat schema gov & tabel workflow_definitions bila belum ada.
-// Dipanggil saat bootstrap — idempoten, aman dijalankan ulang.
+// EnsureSchema membuat schema gov & seluruh tabel workflow bila belum ada, dari SQL migrasi
+// ter-embed (sumber tunggal) dengan pelacakan gov.migration_history di bawah advisory lock.
+// Idempoten, aman dijalankan ulang. Jalur produksi otoritatif = `pamongctl migrate`.
 func (s *DBStore) EnsureSchema(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, workflowDefDDL)
-	return err
+	return db.ApplyEmbeddedSchema(ctx, s.pool, coreWf.MigrationModule, coreWf.MigrationsFS)
 }
 
 // Register memvalidasi dan menyimpan definisi sebagai versi baru.

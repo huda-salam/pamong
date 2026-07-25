@@ -13,39 +13,6 @@ import (
 	"github.com/huda-salam/pamong/infra/db"
 )
 
-// tenantConfigDDL membuat schema gov & tabel tenant_configs bila belum ada, dalam bentuk
-// FINAL ber-versi (PR-3.3.3). Identik dengan migration 001+002 digabung — dipakai EnsureSchema
-// untuk bootstrap langsung (pola AuditRepo/DBStore). ALTER idempoten menutup deployment lama
-// yang sempat memakai skema non-versi 3.3.2 (pola PR-3.1.4 outbox).
-//
-// Append-only ber-versi: tiap perubahan pilihan menambah baris (version = max+1 per scope+key)
-// dengan effective_from — pilihan lama tetap tersimpan (non-retroaktif, titik ekstensi #7).
-// Keunikan memakai UNIQUE NULLS NOT DISTINCT (Postgres 15+) agar scope tenant-level (unit &
-// resource NULL) tetap dibandingkan benar per versi.
-const tenantConfigDDL = `
-CREATE SCHEMA IF NOT EXISTS gov;
-CREATE TABLE IF NOT EXISTS gov.tenant_configs (
-    tenant_id      TEXT        NOT NULL,
-    unit_kerja_id  UUID,
-    resource_id    UUID,
-    config_key     TEXT        NOT NULL,
-    value          TEXT        NOT NULL,
-    version        INT         NOT NULL DEFAULT 1,
-    effective_from TIMESTAMPTZ NOT NULL DEFAULT now(),
-    set_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    set_by         UUID,
-    CONSTRAINT ck_tenant_config_scope
-        CHECK (resource_id IS NULL OR unit_kerja_id IS NOT NULL)
-);
-ALTER TABLE gov.tenant_configs ADD COLUMN IF NOT EXISTS version INT NOT NULL DEFAULT 1;
-ALTER TABLE gov.tenant_configs ADD COLUMN IF NOT EXISTS effective_from TIMESTAMPTZ NOT NULL DEFAULT now();
-ALTER TABLE gov.tenant_configs DROP CONSTRAINT IF EXISTS uq_tenant_config_scope;
-ALTER TABLE gov.tenant_configs DROP CONSTRAINT IF EXISTS uq_tenant_config_version;
-ALTER TABLE gov.tenant_configs ADD CONSTRAINT uq_tenant_config_version
-    UNIQUE NULLS NOT DISTINCT (tenant_id, config_key, unit_kerja_id, resource_id, version);
-CREATE INDEX IF NOT EXISTS idx_tenant_config_lookup
-    ON gov.tenant_configs (tenant_id, config_key);`
-
 // DBTenantConfigStore mengimplementasi coreCfg.TenantConfigStore di atas Postgres.
 // Resolusi "paling spesifik menang" tetap di core/config.Resolver — store ini hanya
 // mengambil seluruh kandidat untuk (tenant, key) dan meng-upsert per scope.
@@ -60,10 +27,11 @@ func NewDBTenantConfigStore(pool *db.Pool) *DBTenantConfigStore {
 
 var _ coreCfg.TenantConfigStore = (*DBTenantConfigStore)(nil)
 
-// EnsureSchema membuat schema gov & tabel tenant_configs bila belum ada. Idempoten.
+// EnsureSchema membuat schema gov & tabel tenant_configs bila belum ada, dari SQL migrasi
+// ter-embed (sumber tunggal) di bawah advisory lock. Idempoten. Jalur produksi otoritatif =
+// `pamongctl migrate`; ini untuk bootstrap dev/test.
 func (s *DBTenantConfigStore) EnsureSchema(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, tenantConfigDDL)
-	return err
+	return db.ApplyEmbeddedSchema(ctx, s.pool, coreCfg.MigrationModule, coreCfg.MigrationsFS)
 }
 
 // Candidates mengembalikan semua VERSI entry untuk (tenant, key) lintas level scope.

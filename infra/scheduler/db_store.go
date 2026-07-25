@@ -17,43 +17,6 @@ import (
 	"github.com/huda-salam/pamong/infra/db"
 )
 
-// schedulerDDL membuat schema gov & tabel jadwal + riwayat bila belum ada. Idempoten
-// (pola AuditRepo/DBStore/outbox). Yang disimpan hanya PILIHAN (job_key + cron + payload),
-// bukan logika — handler ada di scheduler.Registry (kode Go).
-const schedulerDDL = `
-CREATE SCHEMA IF NOT EXISTS gov;
-CREATE TABLE IF NOT EXISTS gov.scheduled_jobs (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id    TEXT        NOT NULL DEFAULT '',
-    name         TEXT        NOT NULL,
-    job_key      TEXT        NOT NULL,
-    cron_expr    TEXT        NOT NULL DEFAULT '',
-    payload      BYTEA,
-    enabled      BOOLEAN     NOT NULL DEFAULT true,
-    next_run_at  TIMESTAMPTZ NOT NULL,
-    last_run_at  TIMESTAMPTZ,
-    created_by   UUID,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
-);
--- Index menutup filter due-scan (hanya baris aktif yang jatuh tempo yang di-scan).
-CREATE INDEX IF NOT EXISTS idx_scheduled_jobs_due
-    ON gov.scheduled_jobs (next_run_at)
-    WHERE enabled;
-CREATE TABLE IF NOT EXISTS gov.job_runs (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    schedule_id  UUID REFERENCES gov.scheduled_jobs(id) ON DELETE SET NULL,
-    tenant_id    TEXT        NOT NULL DEFAULT '',
-    job_key      TEXT        NOT NULL,
-    payload      BYTEA,
-    status       TEXT        NOT NULL,
-    started_at   TIMESTAMPTZ NOT NULL,
-    finished_at  TIMESTAMPTZ NOT NULL,
-    error        TEXT        NOT NULL DEFAULT '',
-    attempt      INT         NOT NULL DEFAULT 1
-);
-CREATE INDEX IF NOT EXISTS idx_job_runs_schedule
-    ON gov.job_runs (schedule_id, started_at DESC);`
-
 // DBJobStore mengimplementasi coreSched.JobStore di atas Postgres.
 type DBJobStore struct {
 	pool *db.Pool
@@ -64,10 +27,11 @@ var _ coreSched.JobStore = (*DBJobStore)(nil)
 // NewDBJobStore membuat store. Panggil EnsureSchema sebelum dipakai.
 func NewDBJobStore(pool *db.Pool) *DBJobStore { return &DBJobStore{pool: pool} }
 
-// EnsureSchema membuat schema & tabel bila belum ada. Idempoten.
+// EnsureSchema membuat schema & tabel scheduler bila belum ada, dari SQL migrasi ter-embed
+// (sumber tunggal, mencakup jadwal + lock) di bawah advisory lock. Idempoten. Jalur produksi
+// otoritatif = `pamongctl migrate`.
 func (s *DBJobStore) EnsureSchema(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, schedulerDDL)
-	return err
+	return db.ApplyEmbeddedSchema(ctx, s.pool, coreSched.MigrationModule, coreSched.MigrationsFS)
 }
 
 // SaveSchedule meng-upsert jadwal by ID.

@@ -32,19 +32,11 @@ func newTemplateStoreEnv(t *testing.T) (*infraWf.DBTemplateStore, *infraWf.DBSto
 	}
 	pool := db.NewPool(pgpool)
 
-	// Bersihkan state sebelumnya agar deterministik.
-	_, _ = pool.Exec(ctx,
-		`DROP TABLE IF EXISTS gov.tenant_workflow_configs;
-		 DROP INDEX  IF EXISTS gov.idx_twc_tenant_slot;
-		 DROP TABLE  IF EXISTS gov.workflow_definitions;
-		 DROP INDEX  IF EXISTS gov.idx_wfdef_lookup`)
+	// Reset penuh: EnsureSchema melacak gov.migration_history, jadi drop skema penuh (bukan tabel saja).
+	_, _ = pool.Exec(ctx, `DROP SCHEMA IF EXISTS gov CASCADE`)
 
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(),
-			`DROP TABLE IF EXISTS gov.tenant_workflow_configs;
-			 DROP INDEX  IF EXISTS gov.idx_twc_tenant_slot;
-			 DROP TABLE  IF EXISTS gov.workflow_definitions;
-			 DROP INDEX  IF EXISTS gov.idx_wfdef_lookup`)
+		_, _ = pool.Exec(context.Background(), `DROP SCHEMA IF EXISTS gov CASCADE`)
 		pgpool.Close()
 	})
 

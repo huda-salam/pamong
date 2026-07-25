@@ -29,13 +29,11 @@ func newTenantConfigEnv(t *testing.T) (*coreCfg.Resolver, *infraCfg.DBTenantConf
 	}
 	pool := db.NewPool(pgpool)
 
-	_, _ = pool.Exec(ctx,
-		`DROP TABLE IF EXISTS gov.tenant_configs;
-		 DROP INDEX IF EXISTS gov.idx_tenant_config_lookup`)
+	// Reset penuh: EnsureSchema kini melacak gov.migration_history, jadi drop tabel saja tak
+	// cukup (history akan bilang "applied" → tabel tak dibuat ulang). Drop skema penuh = slate bersih.
+	_, _ = pool.Exec(ctx, `DROP SCHEMA IF EXISTS gov CASCADE`)
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(),
-			`DROP TABLE IF EXISTS gov.tenant_configs;
-			 DROP INDEX IF EXISTS gov.idx_tenant_config_lookup`)
+		_, _ = pool.Exec(context.Background(), `DROP SCHEMA IF EXISTS gov CASCADE`)
 		pgpool.Close()
 	})
 

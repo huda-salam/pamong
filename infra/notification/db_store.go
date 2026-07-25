@@ -13,54 +13,11 @@ import (
 	"github.com/huda-salam/pamong/infra/db"
 )
 
-// notificationDDL membuat schema gov + tabel template/inbox/jejak bila belum ada. Identik
-// dengan migration 001 — dipakai EnsureSchema untuk bootstrap langsung (pola AuditRepo/DBStore).
-const notificationDDL = `
-CREATE SCHEMA IF NOT EXISTS gov;
-
-CREATE TABLE IF NOT EXISTS gov.notification_templates (
-    tenant_id  TEXT        NOT NULL DEFAULT '',
-    key        TEXT        NOT NULL,
-    locale     TEXT        NOT NULL DEFAULT 'id',
-    subject    TEXT        NOT NULL DEFAULT '',
-    body       TEXT        NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT uq_notif_template UNIQUE (tenant_id, key, locale)
-);
-CREATE INDEX IF NOT EXISTS idx_notif_template_lookup
-    ON gov.notification_templates (tenant_id, key);
-
-CREATE TABLE IF NOT EXISTS gov.notification_inapp (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id    TEXT        NOT NULL DEFAULT '',
-    person_id    UUID        NOT NULL,
-    template_key TEXT        NOT NULL DEFAULT '',
-    subject      TEXT        NOT NULL DEFAULT '',
-    body         TEXT        NOT NULL,
-    is_read      BOOLEAN     NOT NULL DEFAULT false,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_notif_inapp_recipient
-    ON gov.notification_inapp (tenant_id, person_id, created_at DESC);
-
-CREATE TABLE IF NOT EXISTS gov.notification_deliveries (
-    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id    TEXT        NOT NULL DEFAULT '',
-    person_id    UUID        NOT NULL,
-    channel      TEXT        NOT NULL,
-    template_key TEXT        NOT NULL DEFAULT '',
-    status       TEXT        NOT NULL,
-    error        TEXT        NOT NULL DEFAULT '',
-    delivered_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_notif_delivery_recipient
-    ON gov.notification_deliveries (tenant_id, person_id, delivered_at DESC);`
-
-// EnsureSchema membuat schema gov & seluruh tabel notifikasi bila belum ada. Idempoten.
-// Dipanggil sekali dari satu store cukup untuk ketiga store (tabel dibuat bersama).
+// EnsureSchema membuat schema gov & seluruh tabel notifikasi bila belum ada, dari SQL migrasi
+// ter-embed (sumber tunggal) di bawah advisory lock. Idempoten; sekali dari satu store cukup
+// untuk ketiga store (tabel dibuat bersama). Jalur produksi otoritatif = `pamongctl migrate`.
 func EnsureSchema(ctx context.Context, pool *db.Pool) error {
-	_, err := pool.Exec(ctx, notificationDDL)
-	return err
+	return db.ApplyEmbeddedSchema(ctx, pool, coreNotif.MigrationModule, coreNotif.MigrationsFS)
 }
 
 // --- DBTemplateStore ---

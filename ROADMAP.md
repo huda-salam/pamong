@@ -769,6 +769,12 @@ rule linter `markerref`).
     sengaja store-level; permission dibahas saat write path di-wire ke gateway). Sampai (c) ada,
     **jangan buka pilihan template ke UI admin tenant.** Slot validasi "template sah UNTUK slot itu"
     (cegah arahkan slot ke definisi modul lain) juga milik use case ini.
+  - **[doc-stale] Komentar `DBTemplateStore` usang.** Doc struct di `infra/workflow/template_store.go`
+    masih menyebut "UPSERT pada (tenant_id, slot) … menimpa pilihan sebelumnya" dan "set_by BUKAN
+    audit trail … Audit & versioning penuh menyusul di PR-3.3.2" — padahal PR-3.3.2b sudah menjadikan
+    tabel append-only ber-versi (versi lama tersimpan, `GetTenantConfigVersions`). Perbaiki komentar
+    saat menyentuh file ini berikutnya (mis. use case admin butir (c)); TIDAK dikoreksi di PR go:embed
+    migrations agar commit fokus.
 
 - **[PR-3.6.x] Konsumsi role binding saat notifikasi/eskalasi.** `ApplyBindings` (PR-3.2.4)
   mengganti peran generik → role konkret tenant pada `State.EscalateToRole` & `NotifySpec.ToRole`,
@@ -802,37 +808,42 @@ rule linter `markerref`).
   schema bernama acak per-run, sehingga tidak ada state bersama sama sekali. Setelah itu
   `-p 1` dicabut.
 
-  Kaitannya dengan butir `go:embed` di bawah: race `CREATE SCHEMA IF NOT EXISTS` yang sama
-  akan muncul DI PRODUKSI begitu `EnsureSchema` dipanggil saat bootstrap aplikasi — dua replika
-  server yang boot berbarengan terhadap satu tenant DB adalah persis kondisi yang meledak di
-  test tadi. Saat ini belum terjadi karena `EnsureSchema` TIDAK punya pemanggil non-test
-  (hanya setup test), tapi komentar di kodenya menyatakan niat memakainya untuk bootstrap.
-  Karena itu DDL sebaiknya dipindah ke migrator (dijalankan sekali, sengaja) alih-alih
-  dijalankan tiap proses saat boot. Bila `EnsureSchema` tetap dipertahankan untuk dev/test,
-  bungkus dengan `pg_advisory_xact_lock` — idiom yang sudah dipakai `infra/db/audit.go:84`
-  untuk melindungi hash chain audit.
+  Kaitannya dengan butir `go:embed` di atas: race `CREATE SCHEMA IF NOT EXISTS` yang sama akan
+  muncul DI PRODUKSI begitu `EnsureSchema` dipanggil saat bootstrap aplikasi. **Untuk 4 komponen
+  core race ini SUDAH DITUTUP** — `db.ApplyEmbeddedSchema` (jalur baru `EnsureSchema` core)
+  membungkus seluruh bootstrap dalam satu tx ber-`pg_advisory_xact_lock` (kunci tunggal
+  `pamong.schema.bootstrap`). Yang MASIH rawan: `EnsureSchema` yang belum dimigrasikan ke pola ini
+  (`infra/db/audit.go`, `infra/eventbus/outbox.go`, identity/tenantrole/delegation) — pindahkan
+  saat komponen identity dikerjakan (butir `go:embed` di atas). Catatan: race test lintas-paket
+  di atas TETAP terpisah dari race produksi ini — advisory lock menutup CREATE SCHEMA konkuren,
+  bukan DROP-saat-paket-lain-pakai; obat test = DB/skema per-paket lalu cabut `-p 1`.
 
-- **[belum terjadwal] Migrasi core & identity tidak dijalankan migrator — satukan lewat
-  `go:embed`.** `db.LoadMigrations(fs.FS)` (`infra/db/migration.go`) generik: ia mencari pola
-  `*/migrations/*.sql` pada FS apa pun. Tapi `tools/pamongctl/migrate.go` mengunci akarnya ke
-  flag `--modules` yang default-nya `"modules"`, sehingga HANYA `modules/*/migrations/` yang
-  dimuat. Akibatnya `core/workflow/migrations/001-002` dan `identity/migrations/001-006` tidak
-  pernah tersentuh `pamongctl migrate up`: tidak masuk `gov.migration_history`, tak punya
-  status, tak bisa di-`down`. Yang benar-benar membuat tabelnya adalah `EnsureSchema` dengan
-  DDL inline sebagai const Go — 9 file memakai pola ini (`infra/db/audit.go`,
-  `infra/eventbus/outbox.go`, `infra/workflow/db_store.go`, `infra/workflow/template_store.go`,
-  `identity/sync/writer_tenantdb.go`, `tenantrole/adapter/db/*`, `delegation/adapter/db/schema.go`).
-  Jadi tiap komponen punya DDL ganda: const Go yang AKTIF + file `.sql` yang DEKORATIF.
+- **[core SELESAI; identity TERSISA] Migrasi core & identity tidak dijalankan migrator —
+  satukan lewat `go:embed`.** Dulu `tools/pamongctl/migrate.go` mengunci akar ke flag `--modules`
+  (`"modules"`) sehingga HANYA `modules/*/migrations/` dimuat; `core/*` & `identity/*` tak pernah
+  masuk `gov.migration_history`, tak bisa di-`down`. Yang membuat tabel = `EnsureSchema` dgn const
+  DDL inline (DDL ganda: const AKTIF + `.sql` DEKORATIF).
 
-  Arah perbaikan (PR tersendiri — menyentuh core + identity + CLI + urutan bootstrap, sengaja
-  tidak digabung ke 3.2.4): tiap komponen mengekspor `//go:embed migrations/*.sql` sebagai
-  `embed.FS`; `pamongctl migrate` menggabungkan FS `modules/` + core + identity; `EnsureSchema`
-  mengeksekusi SQL embedded yang sama alih-alih const paralel. `LoadMigrations` sudah menerima
-  `fs.FS` jadi migrator tidak perlu berubah, dan DDL yang ada sudah `CREATE ... IF NOT EXISTS`
-  sehingga bisa dipakai ulang apa adanya. Keputusan yang perlu diambil saat itu: `EnsureSchema`
-  tetap ada (dipakai test integrasi & bootstrap dev, tapi bersumber SQL embedded) atau dihapus
-  agar migrator jadi satu-satunya jalur — condong ke opsi pertama karena test integrasi
-  workflow/outbox/audit sekarang bergantung padanya.
+  **SELESAI untuk 4 komponen core (config/notification/scheduler/workflow):** tiap komponen kini
+  mengekspor `//go:embed migrations/*.sql` + `MigrationModule` (`core/{comp}/migrations.go`);
+  `infra/db.LoadEmbedded(module, fs)` memuat dgn nama modul EKSPLISIT (buang penurunan-dari-path
+  yg rapuh utk kasus embed); `infra/schema.CoreMigrations()` merakit → `pamongctl migrate`
+  menggabungkan `modules/` + core (terbukti: `migrate status/up/down` menampilkan config/
+  notification/scheduler/workflow, `down` me-rollback workflow:003). `EnsureSchema` di-collapse ke
+  `db.ApplyEmbeddedSchema(module, fs)` — **sumber tunggal `.sql`, const DDL paralel DIHAPUS**
+  (net −161 baris). ApplyEmbeddedSchema melacak `gov.migration_history` (skip yg sudah apply →
+  idempoten walau dipanggil berulang & saat dua store berbagi satu komponen) DALAM SATU tx
+  ber-`pg_advisory_xact_lock` (kunci tunggal `pamong.schema.bootstrap`) → **race boot produksi
+  CREATE SCHEMA gov untuk komponen core: DITUTUP**. Test reset diseragamkan ke
+  `DROP SCHEMA IF EXISTS gov CASCADE` (drop-tabel-saja tak cukup krn history bertahan).
+
+  **TERSISA (PR terpisah — identity sensitif, review ekstra CLAUDE.md):** terapkan pola yang sama
+  ke `identity/migrations/*` (6 migrasi) + `EnsureSchema` di `identity/sync/writer_tenantdb.go`,
+  `tenantrole/adapter/db/*`, `delegation/adapter/db/schema.go`. Juga `infra/db/audit.go` &
+  `infra/eventbus/outbox.go` masih const DDL (audit & outbox punya EnsureSchema sendiri; outbox
+  bahkan tanpa dir `migrations/`) — pindahkan bila dirasa perlu. `LoadEmbedded`+`ApplyEmbeddedSchema`
+  sudah jadi seam siap-pakai; tinggal tambah embed + `MigrationModule` di komponen identity dan
+  daftarkan ke assembler (identity punya assembler/DSN sendiri — lihat wiring migrate).
 
 - **[PR-2.4.5] Validasi bisnis penugasan tenant.** `usecase.AssignEmploymentToTenant`
   punya stub kosong `validateAssignment` (PR-2.2.4). Isi di 2.4.5: tenant tujuan ada &

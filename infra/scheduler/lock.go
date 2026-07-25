@@ -13,17 +13,6 @@ import (
 	"github.com/huda-salam/pamong/infra/db"
 )
 
-// jobLockDDL membuat tabel sewa lock. Satu baris per key; locked_until adalah batas sewa.
-// Baris kedaluwarsa (locked_until < now) dianggap bebas dan bisa diambil alih — ini yang
-// mencegah deadlock permanen bila instance pemegang mati (PRD F3, non-fungsional TTL).
-const jobLockDDL = `
-CREATE SCHEMA IF NOT EXISTS gov;
-CREATE TABLE IF NOT EXISTS gov.job_locks (
-    lock_key     TEXT PRIMARY KEY,
-    token        TEXT        NOT NULL,
-    locked_until TIMESTAMPTZ NOT NULL
-);`
-
 // DBLocker mengimplementasi coreSched.Locker di atas Postgres — lock terdistribusi ber-sewa
 // untuk lingkungan multi-instance. Acquire bersifat atomik lewat INSERT .. ON CONFLICT dengan
 // guard kedaluwarsa, sehingga tepat satu instance menang saat balapan.
@@ -37,10 +26,10 @@ var _ coreSched.Locker = (*DBLocker)(nil)
 // NewDBLocker membuat locker. Panggil EnsureSchema sebelum dipakai.
 func NewDBLocker(pool *db.Pool) *DBLocker { return &DBLocker{pool: pool, now: time.Now} }
 
-// EnsureSchema membuat tabel gov.job_locks bila belum ada. Idempoten.
+// EnsureSchema membuat tabel scheduler (termasuk gov.job_locks) bila belum ada, dari SQL migrasi
+// ter-embed (sumber tunggal) di bawah advisory lock. Idempoten. Jalur produksi = `pamongctl migrate`.
 func (l *DBLocker) EnsureSchema(ctx context.Context) error {
-	_, err := l.pool.Exec(ctx, jobLockDDL)
-	return err
+	return db.ApplyEmbeddedSchema(ctx, l.pool, coreSched.MigrationModule, coreSched.MigrationsFS)
 }
 
 // Acquire mengambil lock secara atomik. Menang bila belum ada baris (INSERT) atau baris
