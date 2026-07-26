@@ -495,6 +495,17 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
     template ter-binding → transisi ber-Notify sampai inbox holder role konkret → SLA lewat →
     eskalasi sampai inbox holder role konkret lain), semua `-p 1`, lint/vet/gofmt bersih.
 
+- **PR-N3a** Driver messaging pluggable (log + smtp) ← N1 ✅
+  - `infra/messaging` mengimplementasi `port.MessagingPort` dengan registry driver (pola sama
+    `infra/storage`): `NewFromConfig` switch `log|smtp`. `config.MessagingConfig` +
+    `GOV_MESSAGING_*`.
+  - `log`: driver dev/test (catat ke slog, selalu sukses, nol dependency) — DILARANG di
+    production via `config.Validate` (body OTP bocor ke log, fail-fast). `smtp`: email nyata
+    stdlib `net/smtp` (subject RFC 2047); SMS tak didukung driver ini (`PERMANENT`) — provider
+    SMS = driver onboarding terpisah.
+  - Membuat jalur transport OTP citizen (2.4.4) nyata (tinggal `driver=smtp`). DoD: unit test
+    (factory, log, komposisi/mapping-error SMTP), lint/vet/gofmt bersih.
+
 ### Sub-phase 3.7 — Storage & metrics ports
 
 - **PR-3.7.1** Storage port + MinIO/S3 adapter ← 0.2.1

@@ -127,3 +127,38 @@ func TestLoad_ProductionWajibKredensial(t *testing.T) {
 		t.Fatal("production tanpa kredensial identity_db & db harus ditolak")
 	}
 }
+
+// TestLoad_ProductionMessagingLogDitolak memastikan driver messaging "log" (yang mencatat
+// body OTP ke log) ditolak di production — kredensial lain diisi agar hanya aturan ini yang gagal.
+func TestLoad_ProductionMessagingLogDitolak(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "production.yaml", `env: production
+identity_db:
+  host: db
+  user: app
+db:
+  host: db
+  user: app
+auth:
+  token_secret: "0123456789012345678901234567890123"
+messaging:
+  driver: log
+`)
+
+	_, err := config.Load(config.WithDir(dir), config.WithEnv("production"))
+	if err == nil {
+		t.Fatal("messaging.driver=log di production harus ditolak Validate()")
+	}
+}
+
+// TestLoad_StagingMessagingLogDitolak memastikan driver "log" juga ditolak di staging (bukan
+// hanya production) — staging memakai data mirip-nyata, OTP tak boleh bocor ke log di sana.
+func TestLoad_StagingMessagingLogDitolak(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "staging.yaml", "env: staging\nmessaging:\n  driver: log\n")
+
+	_, err := config.Load(config.WithDir(dir), config.WithEnv("staging"))
+	if err == nil {
+		t.Fatal("messaging.driver=log di staging harus ditolak Validate()")
+	}
+}

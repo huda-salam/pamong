@@ -59,6 +59,16 @@ storage:
   access_key: ""
   secret_key: ""
 
+# messaging: pengiriman SMS/email keluar (OTP & notifikasi). Driver "log" (dev) mencatat
+# pesan ke log & selalu sukses — DILARANG di production (pakai smtp/provider nyata di sana).
+messaging:
+  driver: log
+  smtp_host: ""
+  smtp_port: 587
+  smtp_user: ""
+  smtp_password: ""
+  from_email: no-reply@pamong.local
+
 cache:
   driver: memory
   url: ""

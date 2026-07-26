@@ -28,6 +28,7 @@ type AppConfig struct {
 	ProvisionDB ProvisionDBConfig   `yaml:"provision_db"`
 	EventBus    EventBusConfig      `yaml:"eventbus"`
 	Storage     StorageConfig       `yaml:"storage"`
+	Messaging   MessagingConfig     `yaml:"messaging"`
 	Cache       CacheConfig         `yaml:"cache"`
 	Observ      ObservabilityConfig `yaml:"observability"`
 	Auth        AuthConfig          `yaml:"auth"`
@@ -129,6 +130,23 @@ type StorageConfig struct {
 	SecretKey string `yaml:"secret_key" env:"GOV_STORAGE_SECRET_KEY"`
 }
 
+// MessagingConfig — driver pengiriman pesan keluar (SMS/email) untuk OTP & notifikasi.
+// Driver ber-registry seperti storage (titik ekstensi #1): pemanggil tetap bergantung
+// pada port.MessagingPort sehingga mengganti driver tidak mengubah kode pemanggil.
+//   - "log"  — driver dev/test: mencatat pesan ke log, selalu sukses, nol dependency
+//     eksternal. DILARANG di production (body OTP bocor ke log) — ditolak Validate().
+//   - "smtp" — email nyata via stdlib net/smtp. SMS tidak didukung driver ini (onboarding).
+//
+// Field SMTP* hanya relevan bila Driver == "smtp".
+type MessagingConfig struct {
+	Driver       string `yaml:"driver" env:"GOV_MESSAGING_DRIVER"` // log | smtp
+	SMTPHost     string `yaml:"smtp_host" env:"GOV_MESSAGING_SMTP_HOST"`
+	SMTPPort     int    `yaml:"smtp_port" env:"GOV_MESSAGING_SMTP_PORT"`
+	SMTPUser     string `yaml:"smtp_user" env:"GOV_MESSAGING_SMTP_USER"`
+	SMTPPassword string `yaml:"smtp_password" env:"GOV_MESSAGING_SMTP_PASSWORD"`
+	FromEmail    string `yaml:"from_email" env:"GOV_MESSAGING_FROM_EMAIL"` // alamat pengirim (header From)
+}
+
 // CacheConfig — driver cache.
 type CacheConfig struct {
 	Driver     string `yaml:"driver" env:"GOV_CACHE_DRIVER"` // redis | memory
@@ -201,6 +219,12 @@ func (c *AppConfig) Validate() error {
 	}
 	if c.Observ.LogFormat != "" && !validLogFormats[c.Observ.LogFormat] {
 		errs = append(errs, fmt.Sprintf("observability.log_format %q tidak valid (harus: json|text)", c.Observ.LogFormat))
+	}
+	// Driver messaging "log" mencatat body pesan (termasuk kode OTP) ke log — HANYA boleh di
+	// development. Staging & production memakai data mirip-nyata; paksa transport nyata (smtp/dst).
+	if c.Messaging.Driver == "log" && c.Env != "development" {
+		errs = append(errs, fmt.Sprintf(
+			"messaging.driver=log hanya untuk development (body OTP bocor ke log; env=%q butuh smtp/provider nyata)", c.Env))
 	}
 
 	// Di production, koneksi sentral wajib terisi — tidak boleh jalan dengan default kosong.
