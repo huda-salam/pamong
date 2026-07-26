@@ -36,8 +36,12 @@ memerlukan perubahan kode modul.
 - Capability via percabangan kode tersebar (gunakan flag terpusat).
 
 ## Acceptance criteria
-- [ ] Tenant menambah custom field tanpa mengubah definisi modul; field muncul di
-      form & tersimpan.
-- [ ] Upgrade modul tidak menimpa custom field/label tenant.
-- [ ] Label override per-tenant berlaku.
+- [x] Tenant menambah custom field tanpa mengubah definisi modul; field tersimpan &
+      di-merge ke EntityDef saat runtime (MergeEntity/EffectiveEntity). (PR-3.4.1)
+      Penerapan ke form dirender lapis UI saat FieldUI hadir — DEFERRED(Phase-3.8/UI).
+- [x] Upgrade modul tidak menimpa custom field/label tenant (layer terpisah:
+      gov.tenant_custom_fields + tenant config). (PR-3.4.1)
+- [x] Label override per-tenant tersimpan & ter-resolve (LabelResolver di atas config
+      ber-scope). Penerapan ke field render menyusul FieldUI — DEFERRED. (PR-3.4.1)
 - [x] Capability flag mengaktifkan/menonaktifkan fitur per-tenant tanpa rilis terpisah. (PR-3.4.2)
+      Persistensi (gov.tenant_capability_overrides) + jalur tulis ber-permission. (PR-3.4.1)

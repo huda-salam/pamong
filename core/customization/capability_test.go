@@ -82,10 +82,10 @@ func TestIsEnabled_OverrideMenang(t *testing.T) {
 		customization.Capability{Name: "surat.disposisi_massal", DefaultEnabled: true},
 	)
 
-	if err := store.Set(ctx(), "pemkot-surabaya", "keuangan.approval_paralel", true); err != nil {
+	if err := store.Set(ctx(), "pemkot-surabaya", "keuangan.approval_paralel", true, nil); err != nil {
 		t.Fatalf("Set aktifkan dormant: %v", err)
 	}
-	if err := store.Set(ctx(), "pemkot-surabaya", "surat.disposisi_massal", false); err != nil {
+	if err := store.Set(ctx(), "pemkot-surabaya", "surat.disposisi_massal", false, nil); err != nil {
 		t.Fatalf("Set nonaktifkan default-on: %v", err)
 	}
 
@@ -104,7 +104,7 @@ func TestIsEnabled_IsolasiTenant(t *testing.T) {
 	res, store := newResolver(t,
 		customization.Capability{Name: "keuangan.approval_paralel", DefaultEnabled: false},
 	)
-	if err := store.Set(ctx(), "pemkot-surabaya", "keuangan.approval_paralel", true); err != nil {
+	if err := store.Set(ctx(), "pemkot-surabaya", "keuangan.approval_paralel", true, nil); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 
@@ -156,8 +156,8 @@ func TestSet_MenimpaOverride(t *testing.T) {
 	res, store := newResolver(t,
 		customization.Capability{Name: "keuangan.approval_paralel", DefaultEnabled: false},
 	)
-	_ = store.Set(ctx(), "t", "keuangan.approval_paralel", true)
-	_ = store.Set(ctx(), "t", "keuangan.approval_paralel", false)
+	_ = store.Set(ctx(), "t", "keuangan.approval_paralel", true, nil)
+	_ = store.Set(ctx(), "t", "keuangan.approval_paralel", false, nil)
 	on, err := res.IsEnabled(ctx(), "t", "keuangan.approval_paralel")
 	if err != nil {
 		t.Fatalf("IsEnabled: %v", err)

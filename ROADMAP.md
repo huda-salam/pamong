@@ -387,9 +387,20 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
 
 ### Sub-phase 3.4 — Tenant customization layer
 
-- **PR-3.4.1** Custom field & label override ← 1.1.2, 2.2.1
+- **PR-3.4.1** Custom field & label override ← 1.1.2, 2.2.1 ✅
   - Layer terpisah dari definisi modul; upgrade-safe
-  - DoD: tenant menambah field tanpa mengubah modul; upgrade tak menimpa
+  - DoD: tenant menambah field tanpa mengubah modul; upgrade tak menimpa ✅
+  - Impl: `core/customization/` — `CustomFieldDef` (bungkus domain.FieldDef, reuse aturan
+    tipe) + `DataClass` (default aman `internal`; enkripsi DEFERRED Phase-3.8/ADR-009);
+    `CustomFieldStore` (List/Save/Deactivate) + Memory; `MergeEntity` (murni, InsertAfter
+    ordering + deferred anchor, base tak dimutasi) + `ValidateAgainstBase` + `EntityLookup`
+    (adapter atas domain.Registry, fail-closed entity tak dikenal); label override NUMPANG di
+    config ber-scope (key `customization.label.{modul}.{entity}.{field}`, `LabelResolver`) —
+    hemat tabel/adapter; `Manager` jalur tulis ber-permission + event (invalidasi cache merge).
+    Migrasi `gov.tenant_custom_fields` + `gov.tenant_capability_overrides` (embed) + adapter
+    Postgres `infra/customization/`. **Carry-over 3.4.2 tuntas**: persistensi capability +
+    write-path ber-permission. Penerapan label/field ke FORM dirender lapis UI — DEFERRED
+    (FieldUI belum ada). Unit test penuh + integration (Postgres) lulus.
 
 - **PR-3.4.2** Capability flags per-tenant ← 2.2.1 ✅
   - Gate fitur dormant tanpa percabangan kode menyebar
@@ -1016,3 +1027,24 @@ rule linter `markerref`).
   `app.Router()` begitu router (PR-5.1.1) ada; (c) panggil `observability.NewTracerProvider`
   sekali di boot dari `cfg.Observ` (Enabled/Endpoint/ServiceName), `defer tp.Shutdown(ctx)` di
   shutdown server agar batch span ter-flush.
+
+- **[Phase-5.1.1] Live wiring customization write-path (PR-3.4.1).** `core/customization.Manager`
+  + store Postgres (`infra/customization`) siap & teruji tapi BELUM di-construct di produksi
+  (`cmd/server/main.go` masih stub `nil` semua; Router = Phase 5.1.1). Saat wiring, WAJIB urut:
+  (a) construct DB pool → `NewDBCustomFieldStore`/`NewDBTenantCapabilityStore` + `EnsureSchema`
+  (atau `pamongctl migrate` modul `customization`), config store untuk label; (b) rakit
+  `CapabilityRegistry` dari deklarasi modul + `CapabilityResolver`; (c) **`customization.
+  RegisterEventSchemas(bus.Schema())` SEBELUM `Manager` dipakai** — tanpa ini `eventbus.Bus.
+  Publish` menolak keempat event `customization.*` dan tiap write gagal di langkah publish
+  (dijaga wiring_test tapi tak bisa dijalankan otomatis di boot); (d) `NewManager(...)` dengan
+  publisher = bus; (e) expose HTTP admin (driving adapter) yang panggil `Manager.CreateCustomField/
+  DeactivateCustomField/SetLabel/SetCapability` — butuh Router (PR-5.1.1) + permission
+  `customization:*` sudah terdaftar (`docs/contracts/permissions.md`). Marker kode:
+  `DEFERRED(Phase-5.1.1)` di `core/customization/admin.go` (doc `Manager`) & `events.go`
+  (`RegisterEventSchemas`). **Saat itu juga tutup butir berikut:**
+  - **Atomicity store-write + publish.** Manager kini `Save`/`Set` lalu `Publish` sebagai dua
+    langkah terpisah — publish gagal = data tertulis, caller dapat error, cache merge tak
+    ter-invalidasi. Alihkan ke OUTBOX (PR-3.1.2) agar event ikut transaksi tulis. Selama
+    publisher nil (belum di-wire) tak ada dampak. Marker `DEFERRED(Phase-5.1.x)` di `admin.go`.
+  - Penerapan custom field & label override ke FORM/generator = butuh metadata UI field
+    (`FieldUI`, studi ERP) — DEFERRED lebih jauh (~Phase 6), bukan bagian wiring backend ini.

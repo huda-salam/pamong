@@ -45,3 +45,21 @@ Catatan: assignment role tenant bisa dibatasi ke unit kerja (ABAC data-level, PR
 `core/permission.ScopedEngine`. Delegasi selalu berbatas waktu (kedaluwarsa otomatis) dan
 tak boleh memuat permission yang ditandai non-delegable. Mutasi role/delegasi tenant
 ter-audit ke `gov.audit_logs` (ADR-003).
+
+## customization (lintas-modul)
+
+Tata-kelola kustomisasi tenant (custom field, label override, capability flag) yang dikelola
+admin tenant, disimpan di tenant DB (schema `gov`). Konstanta di
+`core/customization/permissions.go`; ditegakkan di `Manager` (jalur tulis).
+
+| Permission | Use case | Keterangan |
+|---|---|---|
+| `customization:custom_field:buat` | Manager.CreateCustomField | Tambah custom field ke entity modul (PR-3.4.1) |
+| `customization:custom_field:hapus` | Manager.DeactivateCustomField | Nonaktifkan custom field (soft) (PR-3.4.1) |
+| `customization:label:ubah` | Manager.SetLabel | Override label field per-tenant (PR-3.4.1) |
+| `customization:capability:ubah` | Manager.SetCapability | Aktif/nonaktifkan capability flag per-tenant (PR-3.4.1) |
+
+Catatan: `tenant_id` selalu diambil dari AuthContext (token tersigning), bukan parameter —
+aktor tak bisa menulis kustomisasi tenant lain. Custom field ber-class data (default aman
+`internal`); enkripsi field ber-pengenal DEFERRED(Phase-3.8/ADR-009). Custom field yang bentrok
+nama dengan field inti atau menargetkan entity tak terdaftar ditolak fail-closed.

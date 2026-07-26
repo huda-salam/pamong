@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/google/uuid"
 )
 
 // Capability adalah fitur ber-gate yang dapat diaktif/dinonaktifkan per-tenant tanpa rilis
@@ -82,8 +84,9 @@ type TenantCapabilityStore interface {
 	// Override mengembalikan (enabled, ok, err). ok=false bila tenant tak menetapkan override
 	// untuk capability tsb (caller memakai DefaultEnabled).
 	Override(ctx context.Context, tenantID, capability string) (enabled, ok bool, err error)
-	// Set menetapkan/menimpa override per-tenant.
-	Set(ctx context.Context, tenantID, capability string, enabled bool) error
+	// Set menetapkan/menimpa override per-tenant. setBy = aktor yang menetapkan (untuk atribusi/
+	// audit di adapter yang mendukung); nil = ditetapkan seed/framework (selaras config SetBy).
+	Set(ctx context.Context, tenantID, capability string, enabled bool, setBy *uuid.UUID) error
 }
 
 // CapabilityResolver menjawab "apakah fitur X aktif untuk tenant T": override tenant menang;
@@ -134,8 +137,9 @@ func (s *MemoryTenantCapabilityStore) Override(_ context.Context, tenantID, capa
 	return v, ok, nil
 }
 
-// Set menetapkan override per-tenant.
-func (s *MemoryTenantCapabilityStore) Set(_ context.Context, tenantID, capability string, enabled bool) error {
+// Set menetapkan override per-tenant. setBy diabaikan (store in-memory tak menyimpan atribusi);
+// adapter Postgres yang mencatat set_by.
+func (s *MemoryTenantCapabilityStore) Set(_ context.Context, tenantID, capability string, enabled bool, _ *uuid.UUID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.overrides[capKey(tenantID, capability)] = enabled

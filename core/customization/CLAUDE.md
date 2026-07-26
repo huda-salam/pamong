@@ -14,10 +14,14 @@ kustomisasi tenant tidak mengotori modul inti. Dipelajari dari Custom Field ERPN
 - Penyimpanan terpisah (gov.tenant_customizations), upgrade-safe
 
 ## File kunci
-- customfield.go — definisi & penyimpanan custom field
-- override.go — label/tampilan override
-- capability.go — capability flags
-- merge.go — gabungkan definisi inti + kustomisasi tenant saat runtime
+- customfield.go — CustomFieldDef, DataClass, CustomFieldStore + Memory impl
+- merge.go — MergeEntity (inti + custom aktif) + ValidateAgainstBase + EntityLookup
+- label.go — label override numpang di config ber-scope (LabelKey + LabelResolver)
+- capability.go — capability flags (registry + resolver + store)
+- admin.go — Manager: jalur tulis ber-permission + event (custom field, label, capability)
+- events.go / permissions.go — konstanta event & permission kustomisasi
+- migrations/ — gov.tenant_custom_fields, gov.tenant_capability_overrides (label pakai gov.tenant_configs)
+- (infra) infra/customization/ — adapter Postgres CustomFieldStore & TenantCapabilityStore
 
 ## Konvensi khusus
 - Kustomisasi hidup di layer terpisah, di-merge dengan definisi modul saat runtime.
