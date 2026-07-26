@@ -1,12 +1,22 @@
 package workflow
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/huda-salam/pamong/port"
 )
+
+// RoleChecker adalah seam validasi (PR-N2 bagian C): memastikan setiap NILAI RoleBindings
+// yang ditulis lewat SetChoice benar-benar merujuk role tenant yang terdaftar (gov.tenant_roles
+// milik tenant tsb), bukan salah ketik atau role tenant lain. Diimplementasikan di luar core
+// (adapter atas tenantrole/, mis. infra/workflow.TenantRoleChecker) — core/workflow tidak
+// pernah mengimport tenantrole secara langsung.
+type RoleChecker interface {
+	RoleExists(ctx context.Context, tenantID, roleName string) (bool, error)
+}
 
 // TemplateChoiceManager adalah jalur TULIS ber-tata-kelola untuk pilihan template tenant
 // (PR-3.3.2b), menutup utang PR-3.2.4 butir (a)/(d) dengan pola yang sama seperti
@@ -27,12 +37,16 @@ import (
 type TemplateChoiceManager struct {
 	store TemplateStore
 	defs  DefinitionStore
+	roles RoleChecker
 	now   func() time.Time
 }
 
-// NewTemplateChoiceManager membuat manager di atas store pilihan + store definisi.
-func NewTemplateChoiceManager(store TemplateStore, defs DefinitionStore) *TemplateChoiceManager {
-	return &TemplateChoiceManager{store: store, defs: defs, now: time.Now}
+// NewTemplateChoiceManager membuat manager di atas store pilihan + store definisi + RoleChecker
+// (PR-N2 bagian C). roles wajib non-nil di produksi — SetChoice memakainya untuk menolak
+// RoleBindings yang menunjuk role tak dikenal tenant SEBELUM notifikasi hidup mengirim ke peran
+// salah. Test yang tidak menguji RoleBindings boleh memasang RoleChecker yang selalu true.
+func NewTemplateChoiceManager(store TemplateStore, defs DefinitionStore, roles RoleChecker) *TemplateChoiceManager {
+	return &TemplateChoiceManager{store: store, defs: defs, roles: roles, now: time.Now}
 }
 
 // SetChoice menetapkan pilihan template tenant untuk aktor tertentu, berlaku sejak
@@ -59,6 +73,26 @@ func (m *TemplateChoiceManager) SetChoice(ctx port.AuthContext, cfg TenantWorkfl
 	// Validasi template_id merujuk definisi yang ADA (cegah slot menunjuk ID sembarang).
 	if _, err := m.defs.Get(cfg.TemplateID); err != nil {
 		return err
+	}
+	// Validasi tiap NILAI RoleBindings merujuk role tenant yang benar-benar terdaftar
+	// (PR-N2 bagian C, backlog ROADMAP §819-827): sekali notifikasi hidup, RoleBindings
+	// menentukan SIAPA menerima dokumen — binding ke role salah ketik / role tenant lain
+	// tak boleh lolos tersimpan. RoleChecker tak terpasang (wiring salah) TIDAK dianggap
+	// "tak ada binding untuk divalidasi" — ditolak eksplisit, bukan panic nil-interface atau
+	// lolos diam-diam melewati gerbang keamanan ini.
+	if len(cfg.RoleBindings) > 0 && m.roles == nil {
+		return ErrInvalidTemplateConfig(
+			"RoleChecker tidak terpasang di TemplateChoiceManager — tidak bisa validasi role_bindings")
+	}
+	for peran, roleName := range cfg.RoleBindings {
+		ok, err := m.roles.RoleExists(ctx, cfg.TenantID, roleName)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrInvalidTemplateConfig(fmt.Sprintf(
+				"role_bindings[%q]=%q bukan role terdaftar di tenant %q", peran, roleName, cfg.TenantID))
+		}
 	}
 	if effectiveFrom.IsZero() {
 		effectiveFrom = m.now()

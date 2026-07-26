@@ -12,7 +12,8 @@ import (
 func TestTemplateChoiceManager_SetChoice_ValidatesAndStampsActor(t *testing.T) {
 	defStore := newDefStore(t) // berisi defStandar & defTigaTahap
 	tplStore := workflow.NewMemoryTemplateStore(defStore)
-	mgr := workflow.NewTemplateChoiceManager(tplStore, defStore)
+	roles := testkit.NewMockRoleChecker("ppk_opd")
+	mgr := workflow.NewTemplateChoiceManager(tplStore, defStore, roles)
 
 	actor := uuid.New()
 	ctx := testkit.Ctx(t, testkit.WithTenant("tenant-a"), testkit.WithPersonID(actor),
@@ -48,7 +49,7 @@ func TestTemplateChoiceManager_SetChoice_ValidatesAndStampsActor(t *testing.T) {
 func TestTemplateChoiceManager_SetChoice_RejectsUnknownTemplate(t *testing.T) {
 	defStore := newDefStore(t)
 	tplStore := workflow.NewMemoryTemplateStore(defStore)
-	mgr := workflow.NewTemplateChoiceManager(tplStore, defStore)
+	mgr := workflow.NewTemplateChoiceManager(tplStore, defStore, testkit.NewMockRoleChecker())
 
 	ctx := testkit.Ctx(t, testkit.WithTenant("tenant-a"), testkit.WithPersonID(uuid.New()),
 		testkit.WithPermission(workflow.PermTemplatePilih))
@@ -67,9 +68,75 @@ func TestTemplateChoiceManager_SetChoice_RejectsUnknownTemplate(t *testing.T) {
 	}
 }
 
+// PR-N2 bagian C: RoleBindings yang menunjuk role tak terdaftar di tenant harus ditolak
+// SAAT TULIS — sebelum notifikasi hidup sempat mengirim ke peran yang salah.
+// PR-N2 code review: RoleChecker tak terpasang (nil) TIDAK BOLEH panic saat RoleBindings
+// non-kosong — harus ditolak eksplisit sebagai kesalahan wiring.
+func TestTemplateChoiceManager_SetChoice_RoleCheckerNil_RoleBindingsNonKosong_Ditolak(t *testing.T) {
+	defStore := newDefStore(t)
+	tplStore := workflow.NewMemoryTemplateStore(defStore)
+	mgr := workflow.NewTemplateChoiceManager(tplStore, defStore, nil)
+
+	ctx := testkit.Ctx(t, testkit.WithTenant("tenant-a"), testkit.WithPersonID(uuid.New()),
+		testkit.WithPermission(workflow.PermTemplatePilih))
+	cfg := workflow.TenantWorkflowConfig{
+		TenantID:     "tenant-a",
+		Slot:         "surat_masuk.disposisi",
+		TemplateID:   defStandar.ID,
+		RoleBindings: map[string]string{"validator_tahap_1": "ppk_opd"},
+	}
+	if err := mgr.SetChoice(ctx, cfg, time.Time{}); err == nil {
+		t.Fatal("RoleChecker nil + RoleBindings non-kosong harus ditolak, bukan panic atau lolos")
+	}
+}
+
+// RoleChecker nil TAPI RoleBindings kosong tetap harus jalan — tak ada yang perlu divalidasi.
+func TestTemplateChoiceManager_SetChoice_RoleCheckerNil_RoleBindingsKosong_TetapJalan(t *testing.T) {
+	defStore := newDefStore(t)
+	tplStore := workflow.NewMemoryTemplateStore(defStore)
+	mgr := workflow.NewTemplateChoiceManager(tplStore, defStore, nil)
+
+	ctx := testkit.Ctx(t, testkit.WithTenant("tenant-a"), testkit.WithPersonID(uuid.New()),
+		testkit.WithPermission(workflow.PermTemplatePilih))
+	cfg := workflow.TenantWorkflowConfig{
+		TenantID:   "tenant-a",
+		Slot:       "surat_masuk.disposisi",
+		TemplateID: defStandar.ID,
+	}
+	if err := mgr.SetChoice(ctx, cfg, time.Time{}); err != nil {
+		t.Fatalf("RoleChecker nil tanpa RoleBindings harus tetap sukses: %v", err)
+	}
+}
+
+func TestTemplateChoiceManager_SetChoice_RejectsUnknownRoleBinding(t *testing.T) {
+	defStore := newDefStore(t)
+	tplStore := workflow.NewMemoryTemplateStore(defStore)
+	roles := testkit.NewMockRoleChecker("ppk_opd") // "role_siluman" TIDAK dikenal
+	mgr := workflow.NewTemplateChoiceManager(tplStore, defStore, roles)
+
+	ctx := testkit.Ctx(t, testkit.WithTenant("tenant-a"), testkit.WithPersonID(uuid.New()),
+		testkit.WithPermission(workflow.PermTemplatePilih))
+	cfg := workflow.TenantWorkflowConfig{
+		TenantID:   "tenant-a",
+		Slot:       "surat_masuk.disposisi",
+		TemplateID: defStandar.ID,
+		RoleBindings: map[string]string{
+			"validator_tahap_1": "ppk_opd",      // dikenal
+			"validator_sla":     "role_siluman", // TIDAK dikenal
+		},
+	}
+	if err := mgr.SetChoice(ctx, cfg, time.Time{}); err == nil {
+		t.Fatal("RoleBindings yang menunjuk role tak terdaftar harus ditolak")
+	}
+	versions, _ := tplStore.GetTenantConfigVersions("tenant-a", "surat_masuk.disposisi")
+	if len(versions) != 0 {
+		t.Fatalf("tak boleh ada versi tertulis saat validasi RoleBindings gagal, got %d", len(versions))
+	}
+}
+
 func TestTemplateChoiceManager_SetChoice_RejectsMissingFields(t *testing.T) {
 	defStore := newDefStore(t)
-	mgr := workflow.NewTemplateChoiceManager(workflow.NewMemoryTemplateStore(defStore), defStore)
+	mgr := workflow.NewTemplateChoiceManager(workflow.NewMemoryTemplateStore(defStore), defStore, testkit.NewMockRoleChecker())
 	ctx := testkit.Ctx(t, testkit.WithTenant("tenant-a"), testkit.WithPersonID(uuid.New()),
 		testkit.WithPermission(workflow.PermTemplatePilih))
 
@@ -84,7 +151,7 @@ func TestTemplateChoiceManager_SetChoice_RejectsMissingFields(t *testing.T) {
 
 func TestTemplateChoiceManager_SetChoice_PermissionDenied(t *testing.T) {
 	defStore := newDefStore(t)
-	mgr := workflow.NewTemplateChoiceManager(workflow.NewMemoryTemplateStore(defStore), defStore)
+	mgr := workflow.NewTemplateChoiceManager(workflow.NewMemoryTemplateStore(defStore), defStore, testkit.NewMockRoleChecker())
 	// Tanpa WithPermission(PermTemplatePilih).
 	ctx := testkit.Ctx(t, testkit.WithTenant("tenant-a"), testkit.WithPersonID(uuid.New()))
 
@@ -101,7 +168,7 @@ func TestTemplateChoiceManager_SetChoice_PermissionDenied(t *testing.T) {
 func TestTemplateChoiceManager_SetChoice_TenantDipaksaDariToken(t *testing.T) {
 	defStore := newDefStore(t)
 	tplStore := workflow.NewMemoryTemplateStore(defStore)
-	mgr := workflow.NewTemplateChoiceManager(tplStore, defStore)
+	mgr := workflow.NewTemplateChoiceManager(tplStore, defStore, testkit.NewMockRoleChecker())
 	ctx := testkit.Ctx(t, testkit.WithTenant("tenant-token"), testkit.WithPersonID(uuid.New()),
 		testkit.WithPermission(workflow.PermTemplatePilih))
 
@@ -129,7 +196,7 @@ func TestTemplateChoiceManager_SetChoice_TenantDipaksaDariToken(t *testing.T) {
 
 func TestTemplateChoiceManager_SetChoice_SlotMismatch(t *testing.T) {
 	defStore := newDefStore(t)
-	mgr := workflow.NewTemplateChoiceManager(workflow.NewMemoryTemplateStore(defStore), defStore)
+	mgr := workflow.NewTemplateChoiceManager(workflow.NewMemoryTemplateStore(defStore), defStore, testkit.NewMockRoleChecker())
 	ctx := testkit.Ctx(t, testkit.WithTenant("tenant-a"), testkit.WithPersonID(uuid.New()),
 		testkit.WithPermission(workflow.PermTemplatePilih))
 
@@ -150,7 +217,7 @@ func TestTemplateChoiceManager_SetChoice_SlotMismatch(t *testing.T) {
 // karena kebetulan string-prefix cocok).
 func TestTemplateChoiceManager_SetChoice_SlotBertingkat_Ditolak(t *testing.T) {
 	defStore := newDefStore(t)
-	mgr := workflow.NewTemplateChoiceManager(workflow.NewMemoryTemplateStore(defStore), defStore)
+	mgr := workflow.NewTemplateChoiceManager(workflow.NewMemoryTemplateStore(defStore), defStore, testkit.NewMockRoleChecker())
 	ctx := testkit.Ctx(t, testkit.WithTenant("tenant-a"), testkit.WithPersonID(uuid.New()),
 		testkit.WithPermission(workflow.PermTemplatePilih))
 

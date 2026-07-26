@@ -74,3 +74,10 @@ func ErrTemplateNotConfigured(tenantID, slot string) error {
 func ErrInvalidTemplateConfig(reason string) error {
 	return core.ErrValidation("tenant_workflow_config", reason)
 }
+
+// ErrEngineTemplatesNotWired dipublikasikan saat StartFromTemplate dipanggil tapi Engine
+// dirakit tanpa WithTemplates — kesalahan wiring, bukan kesalahan data tenant.
+func ErrEngineTemplatesNotWired() error {
+	return core.ErrValidation("workflow_engine",
+		"TemplateStore tidak terpasang (WithTemplates) — tidak bisa StartFromTemplate")
+}

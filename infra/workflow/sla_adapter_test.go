@@ -204,3 +204,30 @@ func TestNotifierEscalator_MemetakanEscalationKeRoleTarget(t *testing.T) {
 		t.Errorf("channels salah: %v", fake.channels)
 	}
 }
+
+// --- NotifierTransition mapping (PR-N2) ---
+
+func TestNotifierTransition_MemetakanNotifySpecKeRoleTarget(t *testing.T) {
+	fake := &fakeRoleNotify{}
+	notif := infraWf.NewNotifierTransition(fake, "in_app")
+
+	instID := uuid.New()
+	err := notif.NotifyTransition(context.Background(), "pemkot-surabaya",
+		coreWf.NotifySpec{ToRole: "ppk_opd", Template: "notif_disposisi"},
+		coreWf.WorkflowInstance{ID: instID, CurrentState: "didisposisi"})
+	if err != nil {
+		t.Fatalf("NotifyTransition: %v", err)
+	}
+	if fake.called != 1 {
+		t.Fatalf("NotifyRole harus dipanggil sekali, dapat %d", fake.called)
+	}
+	if fake.target.TenantID != "pemkot-surabaya" || fake.target.Role != "ppk_opd" {
+		t.Errorf("RoleTarget tidak tepat: %+v", fake.target)
+	}
+	if fake.templateKey != "notif_disposisi" {
+		t.Errorf("template key salah: %q", fake.templateKey)
+	}
+	if len(fake.channels) != 1 || fake.channels[0] != "in_app" {
+		t.Errorf("channels salah: %v", fake.channels)
+	}
+}

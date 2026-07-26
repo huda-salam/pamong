@@ -14,16 +14,22 @@ import (
 //
 // Semua ketergantungan ke luar (scheduler, notification, storage instance) lewat PORT yang
 // didefinisikan di sini — engine tidak pernah menyentuh core/scheduler atau core/notification
-// secara konkret. Engine tetap TENANT-AGNOSTIK: ia hanya bicara (instance, state, PERAN);
-// resolusi peran→orang (binding tenant + fallback PLT) terjadi di adapter Escalator di luar.
+// secara konkret. Engine bicara PERAN, tapi (PR-N2) untuk instance yang dimulai lewat
+// StartFromTemplate, peran itu SUDAH konkret tenant sebelum Escalation dibuat — lihat catatan
+// di bawah. Resolusi role→ORANG (fallback PLT) tetap sepenuhnya di luar core, di adapter
+// Escalator (core/notification.RoleNotifier).
 //
 // Eskalasi = NOTIFIKASI, bukan business logic: tidak ada mutasi data / pemanggilan use case
 // di jalur ini.
 
 // Escalation adalah muatan satu eskalasi: cukup untuk (a) guard race di fire-time dan
 // (b) merutekan notifikasi ke peran yang tepat. EscalateToRole adalah PERAN sebagaimana
-// tertulis di definisi (tenant-agnostik); pemetaan peran→role konkret tenant (RoleBindings)
-// dan role→orang (PLT) dilakukan adapter Escalator, bukan di sini.
+// tertulis di definisi (tenant-agnostik) HANYA bila instance dimulai lewat Start mentah. Untuk
+// instance dari StartFromTemplate (PR-N2), Engine SUDAH menerapkan RoleBindings tenant sebelum
+// membangun Escalation ini (lihat engine.go: scheduleSLA dipanggil dengan State hasil
+// ApplyBindings) — EscalateToRole yang tiba di Escalator adalah role KONKRET tenant, bukan lagi
+// peran generik. Adapter Escalator TIDAK melakukan pemetaan peran→role konkret; ia hanya
+// meresolusi role→ORANG (termasuk fallback PLT).
 type Escalation struct {
 	TenantID       string    // tenant pemilik instance (dari AuthContext saat penjadwalan)
 	InstanceID     uuid.UUID // instance yang di-SLA-kan — kunci guard race

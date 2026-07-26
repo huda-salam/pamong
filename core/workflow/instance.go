@@ -21,6 +21,15 @@ type WorkflowInstance struct {
 	CurrentState      string
 	StartedAt         time.Time
 	History           []TransitionRecord
+
+	// RoleBindings diisi HANYA oleh StartFromTemplate (PR-N2) — instance yang dimulai via Start
+	// (defID langsung, unbound) membiarkannya nil. Ini SALINAN beku dari
+	// TenantWorkflowConfig.RoleBindings pada saat Start: dipakai ulang di setiap Execute (lewat
+	// ApplyBindings) agar EscalateToRole & NotifySpec.ToRole tetap peran KONKRET tenant
+	// sepanjang hidup instance, konsisten dengan DefinitionVersion yang juga dikunci saat Start
+	// — bukan dibaca ulang dari TemplateStore (yang bisa saja sudah direkonfigurasi tenant)
+	// setiap transisi.
+	RoleBindings map[string]string
 }
 
 // TransitionRecord adalah entri immutable dalam riwayat instance.

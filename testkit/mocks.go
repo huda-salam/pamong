@@ -322,6 +322,70 @@ func (m *MockEscalator) Count() int {
 	return len(m.Escalated)
 }
 
+// --- MockTransitionNotifier ---
+
+// notifyCall merekam satu panggilan NotifyTransition.
+type notifyCall struct {
+	TenantID string
+	Spec     workflow.NotifySpec
+	Instance workflow.WorkflowInstance
+}
+
+// MockTransitionNotifier merekam notifikasi transisi yang dipicu Engine (PR-N2). FailNext bila
+// diset membuat panggilan berikutnya gagal (tapi tetap terekam — mencerminkan kegagalan
+// transport, bukan kegagalan pra-dispatch).
+type MockTransitionNotifier struct {
+	mu       sync.Mutex
+	Notified []notifyCall
+	FailNext error
+}
+
+var _ workflow.TransitionNotifier = (*MockTransitionNotifier)(nil)
+
+func NewMockTransitionNotifier() *MockTransitionNotifier { return &MockTransitionNotifier{} }
+
+func (m *MockTransitionNotifier) NotifyTransition(_ context.Context, tenantID string, spec workflow.NotifySpec, inst workflow.WorkflowInstance) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Notified = append(m.Notified, notifyCall{TenantID: tenantID, Spec: spec, Instance: inst})
+	if m.FailNext != nil {
+		err := m.FailNext
+		m.FailNext = nil
+		return err
+	}
+	return nil
+}
+
+// Count mengembalikan jumlah notifikasi transisi yang terekam.
+func (m *MockTransitionNotifier) Count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.Notified)
+}
+
+// --- MockRoleChecker ---
+
+// MockRoleChecker adalah RoleChecker in-memory (PR-N2 bagian C): role dianggap ada bila
+// namanya ada di set Known (diabaikan per-tenant — cukup untuk unit test).
+type MockRoleChecker struct {
+	Known map[string]bool
+}
+
+var _ workflow.RoleChecker = (*MockRoleChecker)(nil)
+
+// NewMockRoleChecker membuat checker dengan set role yang dikenal (variadic, boleh kosong).
+func NewMockRoleChecker(known ...string) *MockRoleChecker {
+	m := &MockRoleChecker{Known: make(map[string]bool, len(known))}
+	for _, k := range known {
+		m.Known[k] = true
+	}
+	return m
+}
+
+func (m *MockRoleChecker) RoleExists(_ context.Context, _, roleName string) (bool, error) {
+	return m.Known[roleName], nil
+}
+
 // --- Assertion helpers ---
 
 // IsPermissionDenied mengembalikan true jika err adalah ErrPermissionDenied framework.

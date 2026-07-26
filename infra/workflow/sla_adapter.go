@@ -106,10 +106,11 @@ type RoleNotify interface {
 // memetakan Escalation → RoleTarget lalu mengirim template eskalasi ke channel yang diminta.
 // Resolusi peran→orang (termasuk fallback PLT) terjadi di dalam RoleNotifier (core/notification).
 //
-// DEFERRED(PR-3.6.x): terapkan RoleBindings tenant pada Escalation.EscalateToRole SEBELUM
-// merutekan — peran di Escalation masih generik (tenant-agnostik dari definisi). Binding
-// diambil lewat TemplateStore.GetForTenant (BUKAN DefinitionStore.Get mentah) saat konsumsi
-// role binding dinyalakan; titik penyisipannya persis di sini (lihat ROADMAP backlog 3.6.x).
+// RESOLVED(PR-N2): Escalation.EscalateToRole yang tiba DI SINI sudah peran KONKRET tenant —
+// binding diterapkan lebih awal, di core/workflow.Engine (StartFromTemplate + ExecuteWithComment,
+// lewat ApplyBindings terhadap instance.RoleBindings yang dibekukan saat Start), bukan di
+// adapter ini. NotifierEscalator tetap TIDAK menyentuh TemplateStore sama sekali — ia murni
+// memetakan Escalation apa adanya ke RoleTarget.
 type NotifierEscalator struct {
 	notifier    RoleNotify
 	templateKey string
@@ -127,15 +128,20 @@ func NewNotifierEscalator(notifier RoleNotify, templateKey string, channels ...s
 // Escalate mengirim notifikasi eskalasi ke peran tujuan. Ini murni NOTIFIKASI — tak ada
 // business logic / mutasi data (PRD F6).
 func (n *NotifierEscalator) Escalate(ctx context.Context, e coreWf.Escalation) error {
-	target := notification.RoleTarget{
-		TenantID: e.TenantID,
-		Role:     e.EscalateToRole,
-	}
-	_, err := n.notifier.NotifyRole(ctx, target, n.templateKey, map[string]any{
+	return sendRoleNotify(ctx, n.notifier, e.TenantID, e.EscalateToRole, n.templateKey, map[string]any{
 		"instance_id": e.InstanceID.String(),
 		"state":       e.State,
 		"role":        e.EscalateToRole,
-	}, n.channels...)
+	}, n.channels)
+}
+
+// sendRoleNotify adalah langkah bersama NotifierEscalator.Escalate dan
+// NotifierTransition.NotifyTransition: bangun notification.RoleTarget dari (tenantID, role)
+// lalu panggil RoleNotify.NotifyRole. Kedua pemanggil murni NOTIFIKASI — tak ada business
+// logic / mutasi data di titik ini (PRD F3/F6).
+func sendRoleNotify(ctx context.Context, notifier RoleNotify, tenantID, role, templateKey string, data map[string]any, channels []string) error {
+	target := notification.RoleTarget{TenantID: tenantID, Role: role}
+	_, err := notifier.NotifyRole(ctx, target, templateKey, data, channels...)
 	return err
 }
 
@@ -143,4 +149,31 @@ func (n *NotifierEscalator) Escalate(ctx context.Context, e coreWf.Escalation) e
 func isNotFound(err error) bool {
 	var fe *core.FrameworkError
 	return errors.As(err, &fe) && fe.Code == "NOT_FOUND"
+}
+
+// NotifierTransition mengimplementasi coreWf.TransitionNotifier (PR-N2) di atas
+// notification.RoleNotifier: memetakan NotifySpec → RoleTarget lalu mengirim template transisi
+// ke channel yang diminta. spec.ToRole yang tiba di sini sudah peran KONKRET tenant (binding
+// diterapkan di Engine — lihat doc NotifierEscalator di atas, pola identik).
+type NotifierTransition struct {
+	notifier RoleNotify
+	channels []string
+}
+
+var _ coreWf.TransitionNotifier = (*NotifierTransition)(nil)
+
+// NewNotifierTransition merakit adapter. channels = channel tujuan (mis. "in_app"); templateKey
+// TIDAK diset di konstruksi — tiap transisi punya template sendiri (spec.Template).
+func NewNotifierTransition(notifier RoleNotify, channels ...string) *NotifierTransition {
+	return &NotifierTransition{notifier: notifier, channels: channels}
+}
+
+// NotifyTransition mengirim notifikasi transisi ke peran tujuan. Ini murni NOTIFIKASI — tak ada
+// business logic / mutasi data (PRD F3).
+func (n *NotifierTransition) NotifyTransition(ctx context.Context, tenantID string, spec coreWf.NotifySpec, inst coreWf.WorkflowInstance) error {
+	return sendRoleNotify(ctx, n.notifier, tenantID, spec.ToRole, spec.Template, map[string]any{
+		"instance_id": inst.ID.String(),
+		"state":       inst.CurrentState,
+		"role":        spec.ToRole,
+	}, n.channels)
 }

@@ -342,8 +342,8 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
     core/notification.RoleNotifier). Guard race = backstop: deadline basi / cancel luput →
     no-op karena instance sudah pindah. Mock `MockDeadlineScheduler`/`MockInstanceStateReader`/
     `MockEscalator` di testkit; 15 unit test (core/workflow + infra/workflow), build+vet+lint
-    clean. **Binding tenant pada peran eskalasi DITUNDA ke [PR-3.6.x] Konsumsi role binding**
-    — seam sudah di `NotifierEscalator` (via GetForTenant, bukan DefinitionStore.Get mentah).
+    clean. **Binding tenant pada peran eskalasi: RESOLVED PR-N2** — lewat `Engine.StartFromTemplate`
+    + `ApplyBindings` di tiap `ExecuteWithComment` (bukan di `NotifierEscalator`), lihat PR-N2.
 
 - **PR-3.2.7** Workflow history & instance versioning ← 3.2.3, 1.3.1
   - Riwayat transisi immutable; instance berjalan pakai versi definisi saat mulai
@@ -462,6 +462,38 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
     "ActingFor PLT-jabatan". DoD: integration test lulus (`-p 1`), lint/vet/gofmt bersih.
   - N2 (bridge workflow→notifikasi) & N3 (contact seam + email/SMS real) menyusul, TIDAK
     bergantung phase berikutnya — lihat memory `plan-notification-completion`.
+
+- **PR-N2** Bridge workflow→notification (Escalator adapter + seam Notify transisi) ← 3.2.6, N1 ✅
+  - Menutup backlog "[PR-3.6.x] Konsumsi role binding saat notifikasi/eskalasi" (lihat di
+    bawah) — workflow yang sudah ada kini BENAR-BENAR memicu notifikasi (sebelumnya dormant).
+  - `Engine.StartFromTemplate` (`core/workflow/engine.go`, opsi `WithTemplates`) menggantikan
+    jalur `Start(def.ID)` mentah untuk instance ber-template: mengambil `TemplateStore.GetTenantConfig`
+    lalu `ApplyBindings` SEKALI, membekukan hasilnya ke `WorkflowInstance.RoleBindings` (field
+    baru). `ExecuteWithComment` menerapkan ulang `ApplyBindings(def, instance.RoleBindings)` pada
+    SETIAP transisi (bukan cuma initial_state) sebelum membaca state/transition — jadi
+    `Escalation.EscalateToRole` & `NotifySpec.ToRole` konsisten role KONKRET tenant sepanjang
+    hidup instance, kebal terhadap tenant merekonfigurasi `RoleBindings` di tengah jalan
+    (paralel dengan `DefinitionVersion` yang juga dikunci saat Start).
+  - Seam baru `TransitionNotifier` (`core/workflow/notify.go`, opsi `WithNotifier`, pola sama
+    `WithDeadlines` — nil = no-op) dipicu SETELAH transisi otoritatif & SLA state baru
+    terjadwal. Kegagalan notifikasi TIDAK membatalkan transisi (state sudah berubah) tapi TETAP
+    dipropagasi sebagai error (best-effort, caller async bisa retry) — didokumentasikan di
+    `notify.go`.
+  - Adapter `infra/workflow.NotifierTransition` (mirror `NotifierEscalator` yang sudah ada sejak
+    PR-3.2.6) memetakan `NotifySpec`→`RoleTarget` lalu panggil `RoleNotifier.NotifyRole`.
+    `NotifierEscalator` TIDAK berubah — comment DEFERRED lama dihapus karena binding kini
+    diterapkan di Engine, bukan di adapter.
+  - Bagian C (backlog keamanan "Prasyarat keamanan saat binding mulai dikonsumsi"): seam
+    `RoleChecker` (`core/workflow/template_choice.go`) + adapter `infra/workflow.TenantRoleChecker`
+    (atas `gov.tenant_roles`) — `TemplateChoiceManager.SetChoice` kini menolak `RoleBindings`
+    yang menunjuk role tak terdaftar di tenant SAAT TULIS (`NewTemplateChoiceManager` nambah
+    parameter `RoleChecker`).
+  - Mock baru di testkit: `MockTransitionNotifier`, `MockRoleChecker`.
+  - DoD terbukti: unit test `core/workflow` (binding konsisten di Notify+SLA, notifier
+    best-effort, RoleChecker menolak binding tak dikenal) + integration test
+    `infra/workflow.TestN2Bridge_TemplateBerbinding_NotifyDanSLA_SampaiInbox` (instance dari
+    template ter-binding → transisi ber-Notify sampai inbox holder role konkret → SLA lewat →
+    eskalasi sampai inbox holder role konkret lain), semua `-p 1`, lint/vet/gofmt bersih.
 
 ### Sub-phase 3.7 — Storage & metrics ports
 
@@ -827,24 +859,20 @@ rule linter `markerref`).
   Selesaikan saat menyentuh write-path strategy selection (kandidat: bersama PR-3.3.4 opsi
   irisan rule-tier, atau PR tersendiri sebelum wiring gateway Phase-5.1.1).
 
-- **[PR-3.6.x] Konsumsi role binding saat notifikasi/eskalasi.** `ApplyBindings` (PR-3.2.4)
-  mengganti peran generik → role konkret tenant pada `State.EscalateToRole` & `NotifySpec.ToRole`,
-  tapi Engine sekarang mengambil definisi lewat `DefinitionStore` (unbound) dan belum menyentuh
-  Notify/EscalateToRole sama sekali (notifikasi DEFERRED PR-3.6.x). Alur pemilihan: caller
-  `TemplateStore.GetForTenant(tenant, slot)` → dapat def ber-binding → `Engine.Start(def.ID)`.
-  Saat notifikasi di-wire (3.6.x), pengirim notif WAJIB me-resolve peran lewat binding tenant
-  (pakai def hasil `GetForTenant`, bukan `DefinitionStore.Get` mentah), lalu resolusi role→orang
-  (PLT fallback) di core/permission + kepegawaian. Engine tetap tenant-agnostik (bicara PERAN).
+- **[PR-3.6.x] Konsumsi role binding saat notifikasi/eskalasi. ✅ RESOLVED PR-N2.** `ApplyBindings`
+  (PR-3.2.4) mengganti peran generik → role konkret tenant pada `State.EscalateToRole` &
+  `NotifySpec.ToRole`. PR-N2 menyambungkannya: `Engine.StartFromTemplate` (opsi `WithTemplates`)
+  mengambil `TemplateStore.GetTenantConfig` + `ApplyBindings` sekali di Start, membekukan hasilnya
+  ke `WorkflowInstance.RoleBindings`; `ExecuteWithComment` menerapkan ulang `ApplyBindings` pada
+  SETIAP transisi (bukan cuma initial_state) sebelum membaca state/transition — jadi
+  `Escalation.EscalateToRole`/`NotifySpec.ToRole` konsisten peran KONKRET sepanjang hidup
+  instance. Resolusi role→orang (PLT fallback) tetap di `core/notification.RoleNotifier`
+  (core/permission + kepegawaian); Engine tetap tenant-agnostik.
 
-  **Prasyarat keamanan saat binding mulai dikonsumsi.** Selama notifikasi belum di-wire,
-  `RoleBindings` tidak berdampak: ia hanya mengganti NAMA peran tujuan, tidak memberi permission,
-  dan tidak ada yang membacanya. Begitu 3.6.x menyalakan notifikasi, binding berubah menjadi
-  jalur yang menentukan SIAPA MENERIMA DOKUMEN — dan nilainya saat ini tidak divalidasi sama
-  sekali (map string bebas). Maka di 3.6.x (atau di use case admin bila itu lebih dulu): nilai
-  binding WAJIB dibatasi ke role yang benar-benar terdaftar di `gov.tenant_roles` milik tenant
-  tersebut, agar notifikasi tidak bisa diarahkan ke nama role di luar tenant. Validasi ini
-  dilakukan saat TULIS (use case admin), bukan saat baca — supaya config yang tersimpan selalu
-  dalam keadaan sah.
+  **Prasyarat keamanan — ✅ RESOLVED PR-N2.** Nilai `RoleBindings` kini divalidasi SAAT TULIS:
+  `TemplateChoiceManager.SetChoice` menolak binding yang menunjuk role tak terdaftar di
+  `gov.tenant_roles` milik tenant, lewat seam `RoleChecker` (`core/workflow/template_choice.go`)
+  + adapter `infra/workflow.TenantRoleChecker`.
 
 - **[belum terjadwal] Isolasi integration test — semua paket berbagi satu database.**
   Tiap paket integration test me-reset schema-nya sendiri saat setup (`DROP TABLE` +
