@@ -20,8 +20,14 @@ import (
 //     DEFERRED ke modul keuangan), gerbang dilewati dan hanya effective-date resolution yang
 //     menjaga non-retroaktivitas baca.
 //
-// Permission check BUKAN tanggung jawab manager ini — itu milik use case admin pemanggil
-// (belum ada; lihat ROADMAP). Manager hanya menegakkan versi + audit + gerbang periode.
+// Permission check BUKAN tanggung jawab manager ini — beda dari customization.Manager &
+// workflow.TemplateChoiceManager (yang menegakkan permission langsung, konvensi yang
+// belakangan mengkonsolidasi di framework ini). ChoiceManager sengaja generik lintas
+// strategy key ({modul}.{titik}) tanpa permission string tetap per key — permission untuk
+// tiap decision point BELUM ditentukan (lihat ROADMAP backlog "ChoiceManager permission
+// gap"). Sampai use case admin/pemetaan permission-per-key ada, Manager ini HANYA menegakkan
+// versi + audit + gerbang periode — TIDAK aman dipanggil langsung dari path yang menerima
+// input actor sembarangan tanpa lapisan otorisasi tambahan di pemanggil.
 type ChoiceManager struct {
 	store  TenantConfigStore
 	fiscal port.FiscalChecker // opsional; nil = gerbang periode dilewati (seam)

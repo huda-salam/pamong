@@ -12,16 +12,15 @@ import (
 )
 
 // DBTemplateStore mengimplementasi coreWf.TemplateStore di atas Postgres.
-// UPSERT pada (tenant_id, slot) agar SetTenantTemplate idempoten — panggilan
-// berulang untuk slot yang sama menimpa pilihan sebelumnya.
+// Penyimpanan append-only ber-versi (PR-3.3.2b, pola tenant_configs PR-3.3.3): tiap
+// SetTenantTemplate/SetTenantTemplateAsActor MENAMBAH versi baru (version = max+1 per
+// tenant+slot) — tidak menimpa. Versi lama tetap terbaca lewat GetTenantConfigVersions
+// untuk riwayat/rollback; set_by adalah jejak siapa-mengubah.
 //
 // SetTenantTemplateAsActor adalah varian yang mencatat aktor pada kolom set_by;
-// SetTenantTemplate untuk seed/framework menyimpan set_by = NULL.
-//
-// PERHATIAN: set_by BUKAN audit trail. UPSERT menimpa baris, jadi pilihan template
-// sebelumnya hilang — tidak ada riwayat, tidak ada entri gov.audit_logs, tidak ada
-// effective_from untuk rollback. Audit & versioning penuh menyusul di PR-3.3.2
-// (lihat ROADMAP "[PR-3.3.2] Rekonsiliasi penyimpanan template selection").
+// SetTenantTemplate untuk seed/framework menyimpan set_by = NULL. Permission check +
+// pemaksaan tenant_id dari token ada di core/workflow.TemplateChoiceManager.SetChoice
+// (PR-3.3.2b butir c) — store ini tidak menegakkan otorisasi.
 type DBTemplateStore struct {
 	pool *db.Pool
 	defs coreWf.DefinitionStore

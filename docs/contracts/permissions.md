@@ -63,3 +63,18 @@ Catatan: `tenant_id` selalu diambil dari AuthContext (token tersigning), bukan p
 aktor tak bisa menulis kustomisasi tenant lain. Custom field ber-class data (default aman
 `internal`); enkripsi field ber-pengenal DEFERRED(Phase-3.8/ADR-009). Custom field yang bentrok
 nama dengan field inti atau menargetkan entity tak terdaftar ditolak fail-closed.
+
+## workflow
+
+Tata-kelola pilihan template workflow tenant, disimpan di tenant DB (schema `gov`).
+Konstanta di `core/workflow/permissions.go`; ditegakkan di `TemplateChoiceManager.SetChoice`.
+
+| Permission | Use case | Keterangan |
+|---|---|---|
+| `workflow:template:pilih` | TemplateChoiceManager.SetChoice | Pilih/ubah template workflow tenant untuk satu slot (PR-3.3.2b) |
+
+Catatan: `tenant_id` selalu diambil dari AuthContext (token tersigning), bukan parameter —
+aktor tak bisa menulis pilihan template tenant lain. `template_id` divalidasi terdaftar DAN
+milik slot yang dituju — format `{slot}.{varian}` dengan varian satu segmen (bukan sekadar
+prefix string, agar slot bertingkat seperti "keuangan.spm" vs "keuangan.spm.lanjutan" tidak
+saling lolos). Penyimpanan append-only ber-versi; pilihan lama tetap terbaca untuk audit/rollback.

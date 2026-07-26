@@ -359,8 +359,8 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
   - Skema config `tenant[/unit/resource]`, resolusi paling-spesifik-menang
   - DoD: config tenant terbaca; scope unit kerja meng-override tenant
   - SELESAI: `gov.tenant_configs` + `core/config.Resolver` + `infra/config` store +
-    `strategy.ConfigSelectionSource` (ganti MemorySelectionSource). SISA: rekonsiliasi
-    template selection versi/effective-date/validasi SELESAI di PR-3.3.2b store-level; sisa hanya use case admin + permission (butir c).
+    `strategy.ConfigSelectionSource` (ganti MemorySelectionSource). Rekonsiliasi template
+    selection (versi/effective-date/validasi/permission) SELESAI PENUH di PR-3.3.2b (a-d).
 
 - **PR-3.3.3** Strategy choice versioning + non-retroaktif ← 3.3.2, 1.3.1 ✅
   - Pilihan ber-versi + effective date; periode terkunci tak berubah
@@ -732,8 +732,8 @@ rule linter `markerref`).
   menang" + `core/config.TenantConfigStore` (Memory + Postgres `infra/config`) + migration
   `core/config/migrations/001`. `core/strategy` kini memakai `ConfigSelectionSource` di atas
   resolver ini sebagai jalur produksi (MemorySelectionSource tinggal untuk test). DoD terpenuhi:
-  scope unit kerja meng-override tenant (unit-test + integration test). **SISA (belum dikerjakan):
-  rekonsiliasi template selection SELESAI store-level di PR-3.3.2b; sisa hanya use case admin + permission (butir c, lihat backlog).**
+  scope unit kerja meng-override tenant (unit-test + integration test). Rekonsiliasi template
+  selection SELESAI PENUH di PR-3.3.2b (a-d, lihat backlog).
 
 - **[PR-3.3.2b] Rekonsiliasi penyimpanan template selection.** PRD workflow F4
   menyebut pilihan template "disimpan di gov.tenant_configs", tapi tabel/resolver itu baru hadir di
@@ -764,7 +764,7 @@ rule linter `markerref`).
   `TemplateStore` (port di `core/workflow/ports.go`) sudah jadi seam — penyimpanan bisa diganti tanpa
   menyentuh engine/caller.
 
-  **Riwayat & audit pilihan template — STORE-LEVEL SELESAI (PR-3.3.2b), sisa (c) menunggu use case.**
+  **Riwayat & audit pilihan template — SELESAI PENUH (PR-3.3.2b, butir a-d).**
   `SetTenantTemplate` dulu UPSERT murni pada `(tenant_id, slot)` (pilihan lama hilang). Kini
   append-only ber-versi (migration `core/workflow/migrations/003`), meniru pola PR-3.3.3:
   - (a) ✅ `version` + `effective_from` — `TenantWorkflowConfig` += Version/EffectiveFrom;
@@ -775,17 +775,37 @@ rule linter `markerref`).
   - (d) ✅ `TemplateChoiceManager.SetChoice` (core/workflow/template_choice.go) memvalidasi
     `template_id` terhadap `DefinitionStore` SAAT TULIS + stamp `set_by`; jalur seed
     `SetTenantTemplate` sengaja tetap tanpa validasi (template boleh diseed setelah config).
-  - (c) ⏳ **BELUM**: permission check + use case admin. `TemplateChoiceManager` sudah jadi seam
-    yang dipanggil use case, TAPI use case admin + permission string BELUM dibuat (scope 3.3.2b
-    sengaja store-level; permission dibahas saat write path di-wire ke gateway). Sampai (c) ada,
-    **jangan buka pilihan template ke UI admin tenant.** Slot validasi "template sah UNTUK slot itu"
-    (cegah arahkan slot ke definisi modul lain) juga milik use case ini.
-  - **[doc-stale] Komentar `DBTemplateStore` usang.** Doc struct di `infra/workflow/template_store.go`
-    masih menyebut "UPSERT pada (tenant_id, slot) … menimpa pilihan sebelumnya" dan "set_by BUKAN
-    audit trail … Audit & versioning penuh menyusul di PR-3.3.2" — padahal PR-3.3.2b sudah menjadikan
-    tabel append-only ber-versi (versi lama tersimpan, `GetTenantConfigVersions`). Perbaiki komentar
-    saat menyentuh file ini berikutnya (mis. use case admin butir (c)); TIDAK dikoreksi di PR go:embed
-    migrations agar commit fokus.
+  - (c) ✅ **SELESAI**: permission `workflow:template:pilih` (`core/workflow/permissions.go`,
+    permission workflow pertama, namespace ikut preseden opsi A `customization:*` dari PR-3.4.1)
+    ditegakkan langsung di `TemplateChoiceManager.SetChoice` (baris pertama, sebelum validasi
+    apapun) — belum ada use case admin/gateway terpisah karena Manager belum punya pemanggil
+    seed/internal yang perlu skip permission. `TenantID` dipaksa dari `AuthContext.TenantID()`
+    (pola `customization.Manager`, cegah actor tulis tenant lain). Slot-ownership validation
+    ("template sah UNTUK slot itu", cegah arahkan slot ke definisi modul lain) ditegakkan via
+    `strings.CutPrefix(TemplateID, Slot+".")` + tolak bila sisa (varian) masih mengandung titik
+    — bukan `HasPrefix` biasa, agar slot bertingkat (mis. "keuangan.spm" vs "keuangan.spm.lanjutan")
+    tidak saling lolos lewat kecocokan prefix string semata. **Barrier "jangan buka ke UI admin
+    tenant" TERANGKAT** — butir a/b/c/d semua closed.
+  - **[doc-stale] Komentar `DBTemplateStore` — ✅ DIPERBAIKI bersama butir (c).** Doc struct di
+    `infra/workflow/template_store.go` sebelumnya menyebut "UPSERT pada (tenant_id, slot) … menimpa
+    pilihan sebelumnya" dan "set_by BUKAN audit trail … Audit & versioning penuh menyusul di PR-3.3.2".
+    Diluruskan: append-only ber-versi (versi lama tersimpan, `GetTenantConfigVersions`), otorisasi
+    ada di `TemplateChoiceManager`, bukan store.
+
+- **[Backlog] ChoiceManager (`core/config/choice.go`) permission gap.** Ditemukan saat review
+  PR-3.3.2b butir (c): `customization.Manager` dan `workflow.TemplateChoiceManager` kini
+  menegakkan permission LANGSUNG di dalam Manager (konvensi yang mengkonsolidasi setelah
+  PR-3.4.1), sementara `config.ChoiceManager.SetChoice` (dipakai `core/strategy` untuk pilihan
+  strategy key) TIDAK punya permission check apapun — doc comment lama menyebut "milik use case
+  admin pemanggil (belum ada)" yang kini kontradiktif dengan dua Manager lain. Belum ada
+  pemanggil produksi (`grep -rn 'ChoiceManager\b'` di luar `core/config` = 0 hasil di luar
+  komentar), jadi TIDAK exploitable sekarang, tapi harus ditutup sebelum `ChoiceManager` di-wire
+  ke gateway/UI admin (sama seperti barrier butir (c) di atas sebelum dibuka). Sulit langsung
+  disamakan dengan pola workflow/customization karena `ChoiceManager` generik lintas SEMUA
+  strategy key (`{modul}.{titik}`) — perlu keputusan: satu permission generik
+  (`strategy:choice:pilih`, kasar seperti `workflow:template:pilih`) atau permission per-modul.
+  Selesaikan saat menyentuh write-path strategy selection (kandidat: bersama PR-3.3.4 opsi
+  irisan rule-tier, atau PR tersendiri sebelum wiring gateway Phase-5.1.1).
 
 - **[PR-3.6.x] Konsumsi role binding saat notifikasi/eskalasi.** `ApplyBindings` (PR-3.2.4)
   mengganti peran generik → role konkret tenant pada `State.EscalateToRole` & `NotifySpec.ToRole`,

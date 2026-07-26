@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/huda-salam/pamong/port"
@@ -18,8 +20,10 @@ import (
 //     sampai GetForTenant). Jalur seed TemplateStore.SetTenantTemplate SENGAJA tidak divalidasi
 //     agar template boleh diseed setelah config — pembatasan ini milik lapisan ber-aktor ini.
 //
-// Permission check BUKAN tanggung jawab manager ini — itu milik use case admin pemanggil
-// (belum ada; permission string ditetapkan saat write path di-wire ke gateway).
+// Permission ditegakkan lewat PermTemplatePilih (PR-3.3.2b butir c) — actor tanpa permission
+// ditolak sebelum validasi apapun. TenantID selalu dipaksa dari AuthContext (token tersigning),
+// tak pernah dari parameter — pola sama dengan customization.Manager, mencegah actor menulis
+// pilihan template tenant lain.
 type TemplateChoiceManager struct {
 	store TemplateStore
 	defs  DefinitionStore
@@ -32,11 +36,25 @@ func NewTemplateChoiceManager(store TemplateStore, defs DefinitionStore) *Templa
 }
 
 // SetChoice menetapkan pilihan template tenant untuk aktor tertentu, berlaku sejak
-// effectiveFrom (nol → sekarang). Memvalidasi template_id terdaftar lalu menambah versi baru
-// dengan SetBy = aktor. Pilihan lama tetap terbaca lewat TemplateStore.GetTenantConfigVersions.
+// effectiveFrom (nol → sekarang). Menegakkan PermTemplatePilih, memaksa TenantID dari
+// AuthContext, memvalidasi template_id terdaftar DAN milik slot yang dituju, lalu menambah
+// versi baru dengan SetBy = aktor. Pilihan lama tetap terbaca lewat GetTenantConfigVersions.
 func (m *TemplateChoiceManager) SetChoice(ctx port.AuthContext, cfg TenantWorkflowConfig, effectiveFrom time.Time) error {
+	if err := ctx.RequirePermission(PermTemplatePilih); err != nil {
+		return err
+	}
+	cfg.TenantID = ctx.TenantID() // paksa dari token, jangan dari input (cegah tulis tenant lain)
 	if cfg.TenantID == "" || cfg.Slot == "" || cfg.TemplateID == "" {
 		return ErrInvalidTemplateConfig("tenant_id, slot, dan template_id wajib diisi")
+	}
+	// Cegah slot diarahkan ke definisi milik slot/modul lain — relasi slot↔template lewat
+	// konvensi penamaan template key "{slot}.{varian}", varian SATU segmen (tanpa titik
+	// lagi). Prefix check saja tidak cukup: slot "keuangan.spm" adalah prefix string dari
+	// template "keuangan.spm.lanjutan.standar" milik slot bertingkat "keuangan.spm.lanjutan"
+	// yang berbeda — wajib tolak sisa setelah prefix yang masih mengandung titik.
+	varian, ok := strings.CutPrefix(cfg.TemplateID, cfg.Slot+".")
+	if !ok || strings.Contains(varian, ".") {
+		return ErrInvalidTemplateConfig(fmt.Sprintf("template_id %q harus milik slot %q (format %q.{varian})", cfg.TemplateID, cfg.Slot, cfg.Slot))
 	}
 	// Validasi template_id merujuk definisi yang ADA (cegah slot menunjuk ID sembarang).
 	if _, err := m.defs.Get(cfg.TemplateID); err != nil {
