@@ -126,6 +126,26 @@ func TestDBRecipientDirectory_HoldersOf_TenantWide(t *testing.T) {
 	}
 }
 
+// TestDBRecipientDirectory_HoldersOf_DedupUserAssignmentGanda membuktikan satu user dengan DUA
+// assignment aktif untuk role yang sama (mis. di-assign ulang dgn scope unit berbeda) hanya
+// dihitung SEKALI — tanpa dedup, RoleNotifier akan mengirim notifikasi dobel ke orang yang sama.
+func TestDBRecipientDirectory_HoldersOf_DedupUserAssignmentGanda(t *testing.T) {
+	pool, ctx := setupDirectoryDB(t)
+	roleID := seedRole(t, pool, ctx, "kepala_dinas")
+	user := uuid.New()
+	seedAssignment(t, pool, ctx, assignmentSpec{userID: user, roleID: roleID})
+	seedAssignment(t, pool, ctx, assignmentSpec{userID: user, roleID: roleID}) // assignment kedua, user sama
+
+	dir := infraNotif.NewDBRecipientDirectory(pool)
+	got, err := dir.HoldersOf(ctx, coreNotif.RoleTarget{TenantID: "pemkot", Role: "kepala_dinas"})
+	if err != nil {
+		t.Fatalf("HoldersOf: %v", err)
+	}
+	if len(got) != 1 || got[0].PersonID != user {
+		t.Fatalf("holders = %+v, mau tepat 1 (dedup user dgn assignment ganda)", got)
+	}
+}
+
 func TestDBRecipientDirectory_HoldersOf_ScopeUnit_ExactDanSubtree(t *testing.T) {
 	pool, ctx := setupDirectoryDB(t)
 	roleID := seedRole(t, pool, ctx, "kepala_dinas")

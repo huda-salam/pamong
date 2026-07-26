@@ -83,8 +83,15 @@ func (d *DBRecipientDirectory) HoldersOf(ctx context.Context, t coreNotif.RoleTa
 		return nil, fmt.Errorf("iterasi pemegang role %q: %w", t.Role, err)
 	}
 
+	// dedup by user_id: satu user bisa punya lebih dari satu assignment aktif untuk role yang
+	// sama (mis. di-assign ulang dengan scope unit berbeda) — tanpa ini RoleNotifier mengirim
+	// notifikasi dobel ke orang yang sama.
+	seen := make(map[uuid.UUID]bool, len(candidates))
 	var out []coreNotif.Recipient
 	for _, c := range candidates {
+		if seen[c.userID] {
+			continue
+		}
 		if t.UnitKerjaID != nil {
 			within, err := d.withinScope(ctx, *t.UnitKerjaID, c.unitKerjaID, c.includeSubtree)
 			if err != nil {
@@ -94,6 +101,7 @@ func (d *DBRecipientDirectory) HoldersOf(ctx context.Context, t coreNotif.RoleTa
 				continue
 			}
 		}
+		seen[c.userID] = true
 		out = append(out, coreNotif.Recipient{PersonID: c.userID})
 	}
 	return out, nil
@@ -129,7 +137,7 @@ func (d *DBRecipientDirectory) withinScope(ctx context.Context, target uuid.UUID
 // (fail-loud), BUKAN salah kirim diam-diam ke penerima yang belum tentu tepat. Ini benar untuk
 // keadaan sekarang. Mekanisme fallback PLT sendiri tetap teruji lewat MemoryDirectory.
 //
-// DEFERRED(modul kepegawaian — PLT-jabatan): isi ActingFor dari sumber penunjukan PLT jabatan
+// DEFERRED(Phase-7.x — modul kepegawaian): isi ActingFor dari sumber penunjukan PLT jabatan
 // yang benar begitu modul kepegawaian tersedia. Lihat ROADMAP backlog "ActingFor PLT-jabatan".
 func (d *DBRecipientDirectory) ActingFor(_ context.Context, _ coreNotif.RoleTarget) ([]coreNotif.Recipient, error) {
 	return nil, nil

@@ -106,8 +106,9 @@ func (n *RoleNotifier) NotifyRole(ctx context.Context, t RoleTarget, templateKey
 
 // MemoryDirectory adalah RecipientDirectory in-memory untuk seed/test. Pemegang jabatan dan
 // pelaksana (PLT) diset terpisah per target sehingga skenario "jabatan kosong → PLT" bisa
-// diperagakan tanpa DB. Adapter tenant-DB (baca gov.user_role_assignments + gov.delegations)
-// menyusul saat seam kontak email/telepon tersedia — lihat catatan di paket doc.
+// diperagakan tanpa DB. Adapter tenant-DB produksi ada di
+// infra/notification.DBRecipientDirectory (baca gov.user_role_assignments nyata; ActingFor
+// DEFERRED ke modul kepegawaian — BUKAN dari gov.delegations, lihat doc di sana).
 type MemoryDirectory struct {
 	holders map[string][]Recipient
 	acting  map[string][]Recipient

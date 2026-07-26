@@ -38,17 +38,21 @@ type DeliveryRecorder interface {
 // SUMBER data (siapa memegang role, siapa pelaksana) pluggable lewat adapter:
 //
 //   - HoldersOf  → penerima yang AKTIF memegang role pada scope target (jalur utama).
-//   - ActingFor  → penerima PLT/pelaksana (delegasi core/permission) — dipakai HANYA saat
-//     HoldersOf kosong. Memisahkannya (bukan menggabung di satu query) membuat urutan
+//   - ActingFor  → penerima PLT/pelaksana — dipakai HANYA saat HoldersOf kosong. SUMBER data
+//     PLT/pelaksana ditentukan ADAPTER (bukan bagian tetap kontrak ini): adapter boleh
+//     mengembalikan kosong bila belum punya sumber PLT yang sahih (lihat
+//     infra/notification.DBRecipientDirectory.ActingFor — sengaja TIDAK memakai
+//     core/permission delegasi, karena delegasi berbasis-permission ≠ penunjukan PLT-jabatan).
+//     Memisahkan HoldersOf/ActingFor (bukan menggabung di satu query) membuat urutan
 //     preferensi eksplisit & teruji, dan mencegah PLT ikut terkirim saat pejabat definitif ada.
 //
 // Notify berbasis PERAN, bukan person_id hardcoded, agar tak rusak saat mutasi/PLT (PRD F3).
 //
-// CATATAN untuk adapter tenant-DB (deferred): PJ/Plt LUAR-DAERAH (cross-tenant, mis. PJ Bupati
-// dari Pemprov) BUKAN delegasi intra-tenant — ia di-clone jadi gov.user_profiles
+// CATATAN cross-tenant (berlaku utk SEMUA adapter): PJ/Plt LUAR-DAERAH (cross-tenant, mis. PJ
+// Bupati dari Pemprov) BUKAN delegasi intra-tenant — ia di-clone jadi gov.user_profiles
 // (is_cross_tenant=true) + diberi role tenant, sehingga jatuh ke HoldersOf (pemegang definitif),
 // bukan ActingFor. Karena itu HoldersOf JANGAN memfilter is_cross_tenant. Kejadian jarang tapi
-// tak boleh ditutup — bahas saat adapter DB dibangun.
+// tak boleh ditutup — lihat infra/notification.DBRecipientDirectory.HoldersOf.
 type RecipientDirectory interface {
 	HoldersOf(ctx context.Context, t RoleTarget) ([]Recipient, error)
 	ActingFor(ctx context.Context, t RoleTarget) ([]Recipient, error)

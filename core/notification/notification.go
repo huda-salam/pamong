@@ -12,10 +12,13 @@
 // tracking dasar (F4).
 // PR-3.6.2: routing by role/jabatan + fallback PLT (F3) — Router/RoleNotifier + RecipientDirectory.
 //
-// DEFERRED(PR-3.6.x): adapter tenant-DB untuk RecipientDirectory. Jalur in-app hanya butuh
-// PersonID (sudah cukup), tapi channel email/SMS butuh alamat kontak yang BELUM ter-ekspos:
+// PR-N1: adapter tenant-DB untuk RecipientDirectory (infra/notification.DBRecipientDirectory) —
+// jalur in-app jalan penuh lewat gov.tenant_roles/gov.user_role_assignments nyata. ActingFor
+// (PLT-jabatan) DEFERRED(Phase-7.x — modul kepegawaian): lihat doc DBRecipientDirectory.ActingFor.
+//
+// DEFERRED(PR-N3): channel email/SMS masih butuh alamat kontak yang BELUM ter-ekspos:
 // gov.user_profiles & port.UserResolver tak memuat email/telepon (hidup di id.persons, identity
-// DB). Adapter DB menyusul bersama seam kontak (perluasan clone user_profiles + port resolver).
+// DB). Seam kontak (ContactResolver) menyusul di PR-N3.
 package notification
 
 import "github.com/google/uuid"
