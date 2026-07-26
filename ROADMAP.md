@@ -435,13 +435,33 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
 
 ### Sub-phase 3.6 — Notification & messaging
 
-- **PR-3.6.1** Channel abstraction + template engine ← 3.1.1
+- **PR-3.6.1** Channel abstraction + template engine ← 3.1.1 ✅
   - Port channel, template per tenant, i18n
   - DoD: kirim notif in-app & email (mock) dengan template benar
+  - Impl: `ChannelRegistry` + `EmailChannel`/`InAppChannel`, `TemplateEngine` per-tenant+i18n
+    (tenant>global, locale exact>default), delivery tracking, migrasi
+    `gov.notification_templates|inapp|deliveries`, adapter Postgres `infra/notification/db_store.go`
+    (`DBTemplateStore`/`DBInAppInbox`/`DBDeliveryRecorder` + integration test) (`13d31c0`).
 
-- **PR-3.6.2** Routing by role/jabatan ← 3.6.1, 2.3.x
+- **PR-3.6.2** Routing by role/jabatan ← 3.6.1, 2.3.x ✅
   - Notif ke role/jabatan, fallback ke PLT
   - DoD: notif ke "Kadis" jatuh ke PLT bila jabatan kosong
+  - Impl: `Router` (kebijakan fallback PLT di core) + `RoleNotifier` + port `RecipientDirectory`
+    + `MemoryDirectory` (seed/test) + doc kontrak cross-tenant (`8051d2c`). Adapter tenant-DB
+    (`DBRecipientDirectory`) menyusul di PR-N1 (lihat bawah) — ActingFor (PLT-jabatan) DEFERRED
+    ke modul kepegawaian, lihat backlog "ActingFor PLT-jabatan".
+
+- **PR-N1** Adapter tenant-DB untuk `RecipientDirectory` ← 3.6.2 ✅
+  - `DBRecipientDirectory` (`infra/notification/directory.go`): baca pemegang role tenant nyata
+    dari `gov.tenant_roles`/`gov.user_role_assignments` (menggantikan `MemoryDirectory` di
+    produksi). In-app jalan end-to-end lewat DB.
+  - Scope unit kerja + subtree (reuse `tenantrole/adapter/db.OrgUnitHierarchy.IsWithin`,
+    disaring di Go), assignment kedaluwarsa diabaikan, `is_cross_tenant` SENGAJA TIDAK
+    difilter (PJ/Plt luar-daerah jatuh ke HoldersOf, bukan ActingFor).
+  - `ActingFor` mengembalikan kosong (nil, nil) — PLT-jabatan DEFERRED, lihat backlog
+    "ActingFor PLT-jabatan". DoD: integration test lulus (`-p 1`), lint/vet/gofmt bersih.
+  - N2 (bridge workflow→notifikasi) & N3 (contact seam + email/SMS real) menyusul, TIDAK
+    bergantung phase berikutnya — lihat memory `plan-notification-completion`.
 
 ### Sub-phase 3.7 — Storage & metrics ports
 
@@ -970,6 +990,18 @@ rule linter `markerref`).
 - **[Phase-2.4] Sumber non-delegable dari manifest.** `CreateDelegation` menolak permission
   non-delegable dari `domain.NonDelegableSet` yang di-inject (MVP: daftar manual). DEFERRED:
   sumber dari flag `non_delegable` per-permission di manifest modul (lihat `delegation/domain/policy.go`).
+
+- **[Modul kepegawaian] ActingFor PLT-jabatan di `DBRecipientDirectory`.** PR-N1
+  (`infra/notification/directory.go`) mengembalikan `ActingFor` KOSONG (`nil, nil`) — bukan
+  menunda karena teknis, tapi keputusan sadar (dikonfirmasi user, 2026-07-26): `gov.delegations`
+  (`delegation/`) bersifat berbasis-PERMISSION ("user X meminjam wewenang A,B,C"), BUKAN
+  "user X ditunjuk PLT menjabat Kadis" — tak ada tabel "penunjukan PLT jabatan". Menebak PLT
+  dari delegasi wewenang berisiko salah kirim notifikasi resmi ke orang yang cuma dipinjami
+  sebagian izin, bukan menjabat. Konsekuensi interim: jabatan kosong → `ErrNoRecipient`
+  (fail-loud via `Router.Resolve`), bukan salah kirim diam-diam — ini benar untuk sekarang.
+  Saat modul kepegawaian (penunjukan PLT/pelaksana jabatan) ada: isi `ActingFor` dari sumber
+  PLT-jabatan yang benar (bukan `gov.delegations`). Fallback PLT sebagai MEKANISME tetap
+  teruji lewat `MemoryDirectory` (unit test PR-3.6.2) — hanya SUMBER data DB yang ditunda.
 
 - **[Phase-3.6+] Job purge/notifikasi delegasi kedaluwarsa.** Kedaluwarsa delegasi sudah BENAR
   & lazy saat evaluasi (`ListActiveByDelegatee` filter di SQL) — tak bergantung job. Job scheduler
