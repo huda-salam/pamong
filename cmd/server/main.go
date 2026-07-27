@@ -102,9 +102,6 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("katalog role sentral (RBAC): %w", err)
 	}
-	// Factory evaluator: bangun port.PermissionEvaluator per-request (composite central+tenant),
-	// disuntik ke middleware auth agar gateway.Context.RequirePermission menegakkan RBAC live.
-	evalFactory := newEvaluatorFactory(centralCatalog, connMgr)
 	// Rate limiter per-principal (in-memory; swap Redis untuk multi-instance — titik ekstensi #1).
 	rateLimiter := ratelimit.NewMemory(nil)
 	// Store idempotency: tabel gov.idempotency_keys per tenant DB (skema dipastikan lazy per
@@ -147,6 +144,14 @@ func run() error {
 	if err := registry.Validate(); err != nil {
 		return fmt.Errorf("registry modul tidak valid: %w", err)
 	}
+
+	// Factory evaluator: bangun port.PermissionEvaluator per-request (composite central+tenant),
+	// disuntik ke middleware auth agar gateway.Context.RequirePermission menegakkan RBAC live.
+	// Permission strict (SoD) dikumpulkan dari manifest modul terdaftar (ADR-014); dibangun
+	// SETELAH Validate agar hanya modul valid yang berkontribusi. TTL cache catalog tenant dari
+	// config (refresh-on-change TTL-based; event-driven menyusul — lihat evaluator_factory.go).
+	evalFactory := newEvaluatorFactory(centralCatalog, connMgr, registry.StrictPermissions(), cfg.Permission.CatalogTTL())
+
 	for _, m := range registry.Modules() {
 		if err := m.Bootstrap(ctx, app); err != nil {
 			return fmt.Errorf("bootstrap modul %q: %w", m.Manifest().Name, err)

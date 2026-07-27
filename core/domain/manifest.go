@@ -58,6 +58,15 @@ type PermissionGroup struct {
 type PermissionDef struct {
 	Name  string
 	Label string
+
+	// Strict menandai permission yang tunduk pada resolusi INTERSECTION antar role
+	// non-global (segregation of duties): izin hanya bila SEMUA role non-global yang
+	// dipegang actor memberi perm — memegang satu role yang tak memberinya memblokir.
+	// Default false = permission biasa (union). Manifest adalah satu-satunya titik
+	// deklarasi strict; dikumpulkan saat boot (Registry.StrictPermissions) dan disuntik
+	// ke permission.Engine. Semantik intersection sudah diputus F7/PRD (lihat
+	// core/permission/engine.go) & ADR-014 — field ini hanya titik deklarasinya.
+	Strict bool
 }
 
 // PermissionImport mendaftarkan permission modul lain yang dipakai modul ini.

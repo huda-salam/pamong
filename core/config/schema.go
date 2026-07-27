@@ -35,6 +35,33 @@ type AppConfig struct {
 	RateLimit   RateLimitConfig     `yaml:"ratelimit"`
 	HTTP        HTTPConfig          `yaml:"http"`
 	CORS        CORSConfig          `yaml:"cors"`
+	Permission  PermissionConfig    `yaml:"permission"`
+}
+
+// PermissionConfig — perilaku penegakan RBAC di gateway. CatalogTTLSeconds mengatur umur
+// cache snapshot catalog role tenant di evaluator factory: setelah lewat, catalog dibangun
+// ulang dari tenant DB sehingga perubahan DEFINISI role tenant (permission yang dipetakan
+// ke sebuah nama role) terlihat tanpa restart, dengan jeda ≤ TTL. CAKUPAN TERBATAS: refresh
+// ini TIDAK menyegarkan role apa yang dipegang user, maupun penonaktifan user — keduanya
+// dibawa klaim token (berlaku lewat masa token / revocation jti), bukan lewat catalog.
+// 0 = default 300s; negatif = tak pernah kedaluwarsa. Invalidasi seketika (event-driven saat
+// admin mengubah definisi role) menyusul — lihat DEFERRED di cmd/server/evaluator_factory.go.
+type PermissionConfig struct {
+	CatalogTTLSeconds int `yaml:"catalog_ttl" env:"GOV_PERMISSION_CATALOG_TTL"`
+}
+
+// CatalogTTL mengembalikan umur cache catalog tenant sebagai Duration. Bila tidak diset
+// (<= 0), memakai default aman 300 detik (5 menit) — cukup segar untuk perubahan role,
+// cukup jarang agar tak membebani tenant DB tiap request. Untuk menonaktifkan kedaluwarsa
+// secara eksplisit, set negatif via kode (bukan jalur config umum).
+func (p PermissionConfig) CatalogTTL() time.Duration {
+	if p.CatalogTTLSeconds == 0 {
+		return 300 * time.Second
+	}
+	if p.CatalogTTLSeconds < 0 {
+		return 0
+	}
+	return time.Duration(p.CatalogTTLSeconds) * time.Second
 }
 
 // HTTPConfig — server HTTP (gateway). Addr = alamat listen (mis. ":8080").

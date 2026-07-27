@@ -28,8 +28,13 @@ audit). gateway.Context mengimplementasi port.AuthContext.
 - PR-5.1.1 (SELESAI): Router aggregator + wiring cmd/server + http.Server + /healthz + recovery.
   Routing DB per-tenant lewat infra/db.TenantRoutingConn (baca tenant dari context;
   port.WithTenant/TenantFrom + fallback AuthContext).
-- PR-5.1.2 (BELUM): stack middleware KEAMANAN (auth/tenant/ratelimit/CORS/audit). Sampai ini
-  ada, cmd/server melayani rute TANPA auth & RequirePermission permisif-default — BELUM layak deploy.
+- PR-5.1.2 (SELESAI): stack middleware KEAMANAN (Recovery/CORS/RequestID/Auth/RequireAuth/
+  TenantResolver/RateLimit). Rute bisnis kini WAJIB auth & RequirePermission menegakkan RBAC
+  live — layak deploy (dengan identity schema ter-migrasi + GOV_AUTH_TOKEN_SECRET di prod).
+- PR-5.1.2b (SELESAI): idempotency middleware (mutasi + Idempotency-Key; replay/409/422/503) +
+  CORS allowlist dari config (GOV_CORS_ALLOWED_ORIGINS).
+- PR-5.1.2c (SELESAI): strict-perm dari manifest → Engine (ADR-014) + refresh catalog tenant
+  TTL-based (GOV_PERMISSION_CATALOG_TTL; invalidasi event-driven DEFERRED).
 
 ## Konvensi khusus
 - Urutan middleware penting (lihat PRD). Auth & tenant resolver di awal.

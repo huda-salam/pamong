@@ -215,6 +215,33 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
 
 ---
 
+## G. Gateway middleware — Phase 5.1
+
+Temuan review PR-5.1.2b/5.1.2c yang sengaja DITUNDA sampai fitur/caller yang menentukan
+kebutuhannya dibangun (keputusan user 2026-07-27) — bukan bug aktif, tapi jangan hilang.
+
+### G1. Buffering body request di middleware Idempotency — `DEFERRED` (edge body-limit)
+- `gateway/middleware/idempotency.go` (`io.ReadAll(r.Body)`), calon rumah: server/edge
+  (`http.MaxBytesReader` di `cmd/server` atau middleware terluar)
+- Properti yang ingin dijaga: batas ukuran body request agar mutasi ber-Idempotency-Key tak
+  mem-buffer body tak-terbatas ke memori sebelum handler jalan. **Auth-gated** (hanya principal
+  terverifikasi), jadi bukan permukaan anonim; kelas DoS/memory (di luar cakupan security-review).
+- Kenapa ditunda: batas ukuran body adalah kebijakan **edge gateway** yang berlaku untuk SEMUA
+  handler, bukan tambalan di satu middleware (altitude). Tetapkan saat handler unggah besar
+  (mis. lampiran surat) hadir sehingga ambang nyata jelas — reject vs skip-idempotency vs
+  stream-to-disk diputuskan bersama kebutuhan itu.
+
+### G2. Fidelitas header saat replay Idempotency — `DEFERRED` (butuh handler non-JSON)
+- `gateway/middleware/idempotency.go` (`replayResponse`)
+- Properti: replay hanya menyimpan status+body dan memaksa `Content-Type: application/json`;
+  header lain (mis. `Location` pada 201) hilang. Aman di bawah kontrak "semua respons framework
+  = JSON" (didokumentasikan di komentar), jadi belum ada dampak.
+- Kenapa ditunda: revisit saat ADA handler yang menyetel header bermakna (Location/Content-Type
+  non-JSON) — saat itu simpan & replay header terpilih. Sampai itu, menyimpan header sewenang-
+  wenang = spekulatif.
+
+---
+
 ## H. Enkripsi field & key management — sub-phase kripto (ADR-009/010)
 
 ### H1. Cakupan enkripsi selektif — `DEFERRED(kripto)`

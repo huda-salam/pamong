@@ -205,6 +205,31 @@ func (r *Registry) ExportedPermissions() map[string]string {
 	return out
 }
 
+// StrictPermissions mengembalikan semua permission yang dideklarasikan strict
+// (PermissionDef.Strict) di seluruh modul terdaftar, terurut & unik. Ini dikumpulkan
+// saat boot lalu disuntik ke permission.Engine (lewat evaluatorFactory) agar resolusi
+// intersection SoD berlaku. Manifest adalah satu-satunya titik deklarasi strict —
+// sejalan dengan ExportedPermissions yang juga menurunkan katalog lintas-modul dari
+// manifest tanpa menyentuh paket modul (ADR-014).
+func (r *Registry) StrictPermissions() []string {
+	seen := make(map[string]bool)
+	for _, name := range r.uniqueNames() {
+		for _, g := range r.byName[name].Manifest().Permissions.Groups {
+			for _, p := range g.Permissions {
+				if p.Strict {
+					seen[p.Name] = true
+				}
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // permModule mengembalikan segmen modul (sebelum titik dua pertama) dari sebuah
 // string permission {modul}:{entity}:{aksi}. Mengembalikan "" bila tak ada titik dua.
 func permModule(perm string) string {

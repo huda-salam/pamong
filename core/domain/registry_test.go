@@ -183,6 +183,66 @@ func TestRegistry_ImportPrefixSalah(t *testing.T) {
 	}
 }
 
+// strictGroup membangun satu PermissionGroup dengan sebagian entri ditandai strict.
+// strictSet memuat nama permission yang harus ber-Strict=true.
+func strictGroup(strictSet map[string]bool, perms ...string) domain.PermissionGroup {
+	g := domain.PermissionGroup{Name: "g"}
+	for _, p := range perms {
+		g.Permissions = append(g.Permissions, domain.PermissionDef{Name: p, Strict: strictSet[p]})
+	}
+	return g
+}
+
+func TestRegistry_StrictPermissions_KumpulLintasModul(t *testing.T) {
+	r := domain.NewRegistry()
+	r.Register(
+		dummyModule{name: "keuangan", perms: domain.PermissionManifest{
+			Groups: []domain.PermissionGroup{
+				strictGroup(map[string]bool{"keuangan:spm:verifikasi": true},
+					"keuangan:spm:buat", "keuangan:spm:verifikasi"),
+			},
+		}},
+		dummyModule{name: "aset", perms: domain.PermissionManifest{
+			Groups: []domain.PermissionGroup{
+				strictGroup(map[string]bool{"aset:hapus:setujui": true}, "aset:hapus:setujui"),
+			},
+		}},
+	)
+	got := r.StrictPermissions()
+	// Terurut & hanya yang Strict; perm biasa (keuangan:spm:buat) tak ikut.
+	want := []string{"aset:hapus:setujui", "keuangan:spm:verifikasi"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("StrictPermissions = %v, mau %v", got, want)
+	}
+}
+
+func TestRegistry_StrictPermissions_KosongBilaTakAda(t *testing.T) {
+	r := domain.NewRegistry()
+	r.Register(dummyModule{name: "surat_masuk", perms: domain.PermissionManifest{
+		Groups: []domain.PermissionGroup{permGroup("surat_masuk:surat:buat")}, // tak ada strict
+	}})
+	if got := r.StrictPermissions(); len(got) != 0 {
+		t.Fatalf("tanpa strict harus kosong, dapat %v", got)
+	}
+}
+
+func TestRegistry_StrictPermissions_Dedup(t *testing.T) {
+	// Permission strict yang sama muncul di dua group/modul → hanya sekali.
+	r := domain.NewRegistry()
+	r.Register(
+		dummyModule{name: "keuangan", perms: domain.PermissionManifest{
+			Groups: []domain.PermissionGroup{
+				strictGroup(map[string]bool{"keuangan:spm:verifikasi": true}, "keuangan:spm:verifikasi"),
+				strictGroup(map[string]bool{"keuangan:spm:verifikasi": true}, "keuangan:spm:verifikasi"),
+			},
+		}},
+	)
+	got := r.StrictPermissions()
+	if len(got) != 1 || got[0] != "keuangan:spm:verifikasi" {
+		t.Fatalf("strict duplikat harus dedup jadi satu, dapat %v", got)
+	}
+}
+
 func names(mods []domain.Module) []string {
 	out := make([]string, len(mods))
 	for i, m := range mods {

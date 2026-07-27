@@ -100,3 +100,12 @@ ratelimit:
 # http: server gateway (PR-5.1.1). addr = alamat listen.
 http:
   addr: ":8080"
+
+# permission: penegakan RBAC di gateway (PR-5.1.2c).
+# catalog_ttl = umur cache snapshot catalog role tenant di evaluator factory (detik).
+# Setelah lewat, catalog dibangun ulang dari tenant DB → perubahan DEFINISI role tenant
+# (permission sebuah nama role) terlihat tanpa restart (jeda ≤ TTL). CATATAN: ini TIDAK
+# menyegarkan role yang dipegang user atau penonaktifan user — itu dibawa klaim token
+# (berlaku lewat masa token / revocation). 0 = default 300s; negatif = tak pernah kedaluwarsa.
+permission:
+  catalog_ttl: 300
