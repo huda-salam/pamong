@@ -96,3 +96,7 @@ ratelimit:
   enabled: false
   rps: 100
   burst: 20
+
+# http: server gateway (PR-5.1.1). addr = alamat listen.
+http:
+  addr: ":8080"

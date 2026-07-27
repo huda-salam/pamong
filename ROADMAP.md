@@ -623,9 +623,22 @@ Tujuan: API gateway lengkap, pamongctl lengkap, linter lengkap, dokumentasi kont
 
 ### Sub-phase 5.1 — API gateway
 
-- **PR-5.1.1** Router aggregator ← 1.1.1, 2.4.2
+- **PR-5.1.1** Router aggregator ← 1.1.1, 2.4.2 ✅
   - Kumpulkan rute dari semua modul saat bootstrap
-  - DoD: rute modul ter-register & dapat diakses
+  - DoD: rute modul ter-register & dapat diakses ✅
+  - Impl: `gateway.Router` (implementasi konkret `port.Router` di atas net/http.ServeMux
+    method-aware Go 1.22+); `infra/db.TenantRoutingConn` (`port.DBConn` yang me-route DB
+    per-tenant: `port.TenantFrom(ctx)` → `TenantConnManager.Tenant()`, dengan helper
+    `port.WithTenant`/`TenantFrom` + fallback AuthContext); `config.HTTPConfig`/`HTTPAddr()`.
+    `cmd/server` kini composition root PENUH: connect identity DB (bootstrap ADR-004), rakit
+    driven adapter (eventbus/storage/metrics/tenant-routing DB), `NewApp`, Bootstrap semua modul
+    (rute ter-register), `http.Server` + `/healthz` + recovery (crash-safety) + graceful shutdown.
+    Smoke: boot → `/healthz`=200, `POST /surat-masuk` reachable (500 anggun karena Sequence
+    Phase-1 belum ada), `GET /tak-ada`=404, SIGTERM=shutdown bersih.
+  - GAP diketahui (bukan lingkup 5.1.1): Sequence generator (Phase-1) & UserResolver adapter
+    produksi (Phase-2) belum ada → di-wire nil; jalur request yang memakainya gagal anggun.
+    **Stack middleware KEAMANAN (auth/tenant/ratelimit/CORS/audit) = PR-5.1.2** — sampai itu,
+    rute bisnis TANPA auth & RequirePermission permisif-default. Server BELUM layak deploy.
 
 - **PR-5.1.2** Middleware stack ← 5.1.1, 2.2.2, 1.3.1
   - Auth, rate limit, tenant resolver, CORS, audit trail

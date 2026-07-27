@@ -19,9 +19,17 @@ audit). gateway.Context mengimplementasi port.AuthContext.
 - Idempotency & optimistic lock middleware (data integrity framework-level)
 
 ## File kunci
-- router/ — agregasi rute
-- middleware/ — auth, tenant_resolver, ratelimit, idempotency, optlock, cors, audit
+- router.go — Router: implementasi konkret port.Router di atas net/http.ServeMux
+  (method-aware Go 1.22+); agregasi rute modul, dirakit di cmd/server (PR-5.1.1)
+- middleware/ — auth, tenant_resolver, ratelimit, idempotency, optlock, cors, audit (PR-5.1.2)
 - context.go — gateway.Context (implement AuthContext)
+
+## Status implementasi
+- PR-5.1.1 (SELESAI): Router aggregator + wiring cmd/server + http.Server + /healthz + recovery.
+  Routing DB per-tenant lewat infra/db.TenantRoutingConn (baca tenant dari context;
+  port.WithTenant/TenantFrom + fallback AuthContext).
+- PR-5.1.2 (BELUM): stack middleware KEAMANAN (auth/tenant/ratelimit/CORS/audit). Sampai ini
+  ada, cmd/server melayani rute TANPA auth & RequirePermission permisif-default — BELUM layak deploy.
 
 ## Konvensi khusus
 - Urutan middleware penting (lihat PRD). Auth & tenant resolver di awal.

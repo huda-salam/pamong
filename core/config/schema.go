@@ -33,6 +33,20 @@ type AppConfig struct {
 	Observ      ObservabilityConfig `yaml:"observability"`
 	Auth        AuthConfig          `yaml:"auth"`
 	RateLimit   RateLimitConfig     `yaml:"ratelimit"`
+	HTTP        HTTPConfig          `yaml:"http"`
+}
+
+// HTTPConfig — server HTTP (gateway). Addr = alamat listen (mis. ":8080").
+type HTTPConfig struct {
+	Addr string `yaml:"addr" env:"GOV_HTTP_ADDR"`
+}
+
+// HTTPAddr mengembalikan alamat listen efektif, default ":8080" bila tak diset.
+func (c *AppConfig) HTTPAddr() string {
+	if c.HTTP.Addr == "" {
+		return ":8080"
+	}
+	return c.HTTP.Addr
 }
 
 // DBConfig — DEFAULT/SHARED koneksi tenant DB (ADR-004). BUKAN "satu tenant DB":
