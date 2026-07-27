@@ -20,6 +20,7 @@ import (
 	identitytoken "github.com/huda-salam/pamong/identity/adapter/token"
 	"github.com/huda-salam/pamong/infra/db"
 	"github.com/huda-salam/pamong/infra/eventbus"
+	"github.com/huda-salam/pamong/infra/idempotency"
 	"github.com/huda-salam/pamong/infra/observability"
 	"github.com/huda-salam/pamong/infra/ratelimit"
 	"github.com/huda-salam/pamong/infra/storage"
@@ -106,6 +107,9 @@ func run() error {
 	evalFactory := newEvaluatorFactory(centralCatalog, connMgr)
 	// Rate limiter per-principal (in-memory; swap Redis untuk multi-instance — titik ekstensi #1).
 	rateLimiter := ratelimit.NewMemory(nil)
+	// Store idempotency: tabel gov.idempotency_keys per tenant DB (skema dipastikan lazy per
+	// tenant). Menegakkan "request mutasi duplikat → response sama tanpa efek ganda".
+	idempotencyStore := idempotency.NewDBStore(connMgr)
 
 	// Router aggregator: rute semua modul terkumpul di sini saat Bootstrap.
 	router := gateway.NewRouter()
@@ -158,7 +162,8 @@ func run() error {
 		tenantResolver: tenantResolver,
 		rateLimiter:    rateLimiter,
 		rateLimit:      cfg.RateLimit,
-		corsOrigins:    nil, // allowlist origin dari config = DEFERRED; kosong = same-origin only (aman)
+		idempotency:    idempotencyStore,
+		corsOrigins:    cfg.CORS.AllowedOrigins, // allowlist dari config; kosong = same-origin only (aman)
 		logger:         logger,
 	})
 

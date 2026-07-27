@@ -34,11 +34,20 @@ type AppConfig struct {
 	Auth        AuthConfig          `yaml:"auth"`
 	RateLimit   RateLimitConfig     `yaml:"ratelimit"`
 	HTTP        HTTPConfig          `yaml:"http"`
+	CORS        CORSConfig          `yaml:"cors"`
 }
 
 // HTTPConfig — server HTTP (gateway). Addr = alamat listen (mis. ":8080").
 type HTTPConfig struct {
 	Addr string `yaml:"addr" env:"GOV_HTTP_ADDR"`
+}
+
+// CORSConfig — kebijakan Cross-Origin Resource Sharing (gateway middleware CORS).
+// AllowedOrigins adalah ALLOWLIST origin eksplisit (mis. "https://admin.pemkot.go.id").
+// Kosong = same-origin only (default aman untuk konteks pemerintahan; tak ada "*" implisit).
+// Override env memakai daftar dipisah koma: GOV_CORS_ALLOWED_ORIGINS="https://a,https://b".
+type CORSConfig struct {
+	AllowedOrigins []string `yaml:"allowed_origins" env:"GOV_CORS_ALLOWED_ORIGINS"`
 }
 
 // HTTPAddr mengembalikan alamat listen efektif, default ":8080" bila tak diset.

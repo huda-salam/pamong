@@ -105,6 +105,43 @@ func TestLoad_EnvVarTipe(t *testing.T) {
 	}
 }
 
+// TestLoad_SliceEnvVar memastikan []string bisa di-override env var sebagai daftar dipisah
+// koma, dengan trim & pembuangan elemen kosong (dipakai GOV_CORS_ALLOWED_ORIGINS).
+func TestLoad_SliceEnvVar(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "default.yaml", "env: development\n")
+	t.Setenv("GOV_CORS_ALLOWED_ORIGINS", "https://a.go.id, https://b.go.id ,, https://c.go.id")
+
+	cfg, err := config.Load(config.WithDir(dir), config.WithEnv("development"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.CORS.AllowedOrigins
+	want := []string{"https://a.go.id", "https://b.go.id", "https://c.go.id"}
+	if len(got) != len(want) {
+		t.Fatalf("cors.allowed_origins = %v, mau %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("cors.allowed_origins[%d] = %q, mau %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestLoad_SliceYAML memastikan []string terbaca dari YAML (bukan hanya env).
+func TestLoad_SliceYAML(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "default.yaml", "env: development\ncors:\n  allowed_origins:\n    - https://admin.go.id\n")
+
+	cfg, err := config.Load(config.WithDir(dir), config.WithEnv("development"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.CORS.AllowedOrigins) != 1 || cfg.CORS.AllowedOrigins[0] != "https://admin.go.id" {
+		t.Errorf("cors.allowed_origins = %v, mau [https://admin.go.id]", cfg.CORS.AllowedOrigins)
+	}
+}
+
 // TestLoad_ValidasiGagal memastikan config tidak valid ditolak (gagal cepat saat boot).
 func TestLoad_ValidasiGagal(t *testing.T) {
 	dir := t.TempDir()

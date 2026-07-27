@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -136,6 +138,98 @@ func TestServerHandler_RateLimit_PerPrincipal(t *testing.T) {
 	// User B: bucket TERPISAH — tetap lolos meski bucket A sudah habis.
 	if c := do("tokB"); c != http.StatusOK {
 		t.Fatalf("B#1 = %d, mau 200 (bucket B independen dari A)", c)
+	}
+}
+
+// fakeIdemStore adalah port.IdempotencyStore in-memory minimal untuk membuktikan middleware
+// idempotency terpasang di chain dan menerima principal+tenant (bukan konteks anonim).
+type fakeIdemRec struct {
+	fingerprint string
+	status      int
+	body        []byte
+	completed   bool
+}
+
+type fakeIdemStore struct {
+	mu sync.Mutex
+	m  map[string]*fakeIdemRec
+}
+
+func newFakeIdemStore() *fakeIdemStore {
+	return &fakeIdemStore{m: make(map[string]*fakeIdemRec)}
+}
+
+func (s *fakeIdemStore) Reserve(_ context.Context, tenant string, person uuid.UUID, key, fp string) (*port.IdempotencyRecord, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kk := tenant + "|" + person.String() + "|" + key
+	if r, ok := s.m[kk]; ok {
+		return &port.IdempotencyRecord{Fingerprint: r.fingerprint, Status: r.status, Body: r.body, Completed: r.completed}, false, nil
+	}
+	s.m[kk] = &fakeIdemRec{fingerprint: fp}
+	return nil, true, nil
+}
+
+func (s *fakeIdemStore) Complete(_ context.Context, tenant string, person uuid.UUID, key string, status int, body []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r, ok := s.m[tenant+"|"+person.String()+"|"+key]; ok {
+		r.status, r.body, r.completed = status, append([]byte(nil), body...), true
+	}
+	return nil
+}
+
+func (s *fakeIdemStore) Release(_ context.Context, tenant string, person uuid.UUID, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.m, tenant+"|"+person.String()+"|"+key)
+	return nil
+}
+
+// TestServerHandler_Idempotency_TerpasangDiChain membuktikan idempotency middleware aktif di
+// stack dan berjalan SETELAH Auth+TenantResolver (ia butuh principal+tenant): dua POST identik
+// ber-Idempotency-Key hanya menjalankan handler sekali, request kedua di-replay.
+func TestServerHandler_Idempotency_TerpasangDiChain(t *testing.T) {
+	var runs int
+	router := gateway.NewRouter()
+	router.Post("/surat", func(w http.ResponseWriter, _ *http.Request) {
+		runs++
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	router.Get("/healthz", healthz)
+
+	claims := &port.Claims{PersonID: uuid.New(), Persona: "employee", TenantID: "pemkot-a"}
+	h := buildServerHandler(serverDeps{
+		router:         router,
+		verifier:       &fakeVerifier{tokens: map[string]*port.Claims{"tok": claims}},
+		evalFactory:    fakeFactory{},
+		tenantResolver: fakeTenantResolver{},
+		rateLimiter:    ratelimit.NewMemory(nil),
+		rateLimit:      config.RateLimitConfig{Enabled: true, RPS: 100},
+		idempotency:    newFakeIdemStore(),
+		logger:         testkit.NewNoopLogger(),
+	})
+
+	do := func() *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/surat", strings.NewReader(`{"perihal":"x"}`))
+		r.Header.Set("Authorization", "Bearer tok")
+		r.Header.Set("Idempotency-Key", "key-1")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	w1 := do()
+	if w1.Code != http.StatusCreated {
+		t.Fatalf("POST#1 = %d, mau 201", w1.Code)
+	}
+	w2 := do()
+	if w2.Code != http.StatusCreated || w2.Header().Get("Idempotent-Replay") != "true" {
+		t.Fatalf("POST#2 harus replay 201 dgn header Idempotent-Replay; got %d replay=%q", w2.Code, w2.Header().Get("Idempotent-Replay"))
+	}
+	if runs != 1 {
+		t.Fatalf("handler harus jalan sekali (request kedua di-replay); runs=%d", runs)
 	}
 }
 

@@ -51,6 +51,8 @@ func httpStatus(code string) int {
 		return http.StatusTooManyRequests
 	case "BAD_REQUEST":
 		return http.StatusBadRequest
+	case "UNAVAILABLE":
+		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError
 	}

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -125,6 +126,18 @@ func setField(field reflect.Value, raw string) {
 	case reflect.Bool:
 		if b, err := strconv.ParseBool(raw); err == nil {
 			field.SetBool(b)
+		}
+	case reflect.Slice:
+		// Hanya []string yang didukung dari env: daftar dipisah koma, tiap elemen di-trim,
+		// elemen kosong dibuang (mis. GOV_CORS_ALLOWED_ORIGINS="https://a, https://b").
+		if field.Type().Elem().Kind() == reflect.String {
+			var out []string
+			for _, part := range strings.Split(raw, ",") {
+				if p := strings.TrimSpace(part); p != "" {
+					out = append(out, p)
+				}
+			}
+			field.Set(reflect.ValueOf(out))
 		}
 	}
 }

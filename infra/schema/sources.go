@@ -10,6 +10,7 @@ import (
 	"io/fs"
 
 	coreCfg "github.com/huda-salam/pamong/core/config"
+	coreIdem "github.com/huda-salam/pamong/core/idempotency"
 	coreNotif "github.com/huda-salam/pamong/core/notification"
 	coreSched "github.com/huda-salam/pamong/core/scheduler"
 	coreWf "github.com/huda-salam/pamong/core/workflow"
@@ -26,6 +27,7 @@ type coreComponent struct {
 // di sini — dimasukkan pada PR terpisah (perubahan identity butuh review ekstra, CLAUDE.md).
 var coreComponents = []coreComponent{
 	{coreCfg.MigrationModule, coreCfg.MigrationsFS},
+	{coreIdem.MigrationModule, coreIdem.MigrationsFS},
 	{coreNotif.MigrationModule, coreNotif.MigrationsFS},
 	{coreSched.MigrationModule, coreSched.MigrationsFS},
 	{coreWf.MigrationModule, coreWf.MigrationsFS},

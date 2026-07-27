@@ -20,34 +20,38 @@ type serverDeps struct {
 	tenantResolver port.TenantResolver
 	rateLimiter    port.RateLimiter
 	rateLimit      config.RateLimitConfig
+	idempotency    port.IdempotencyStore // nil → middleware idempotency tidak dipasang
 	corsOrigins    []string
 	logger         port.Logger
 }
 
-// buildServerHandler merakit stack middleware KEAMANAN (PR-5.1.2) di sekeliling router bisnis
-// dan menutup celah permisif-default PR-5.1.1: rute bisnis wajib auth, RequirePermission
-// menegakkan RBAC live, laju dibatasi. Urutan (PRD gateway F3), terluar → terdalam:
+// buildServerHandler merakit stack middleware KEAMANAN (PR-5.1.2/5.1.2b) di sekeliling router
+// bisnis dan menutup celah permisif-default PR-5.1.1: rute bisnis wajib auth, RequirePermission
+// menegakkan RBAC live, laju dibatasi, mutasi ber-idempotency. Urutan (PRD gateway F3),
+// terluar → terdalam:
 //
-//	Recovery → CORS → RequestID → Auth → RequireAuth → TenantResolver → RateLimit → router
+//	Recovery → CORS → RequestID → Auth → RequireAuth → TenantResolver → RateLimit → Idempotency → router
 //
 // Catatan urutan:
 //   - Recovery terluar: menangkap panic dari semua middleware & handler (termasuk /healthz).
 //   - CORS sebelum Auth: preflight OPTIONS dijawab tanpa kredensial aplikasi.
 //   - TenantResolver SETELAH Auth: tenant hanya dari klaim token tersigning; ia menyuntik
 //     port.WithTenant ke context (via SetTenantID) → TenantRoutingConn route DB dengan benar.
-//   - RateLimit SETELAH RequireAuth: principal dijamin ada (anonymous sudah ditolak 401).
+//   - RateLimit & Idempotency SETELAH RequireAuth+TenantResolver: keduanya membaca principal
+//     (dan tenant) dari gateway.Context lewat FromRequest, yang baru terisi setelah Auth.
+//     RateLimit sebelum Idempotency mengikuti urutan PRD (5→6): batasi laju dulu, baru
+//     de-duplikasi request mutasi.
 //   - Optimistic-lock (409) & audit ditegakkan di lapis repository (audited repos + WHERE
-//     version=), bukan middleware. Idempotency middleware = DEFERRED(Phase-5.1.2b, butuh
-//     tabel gov.idempotency_keys).
+//     version=), bukan middleware.
 //
 // /healthz dilayani auth-free lewat top mux (liveness untuk orchestrator); sisanya lewat stack.
 func buildServerHandler(d serverDeps) http.Handler {
-	// Urutan dibangun sebagai slice agar RateLimit dapat disisipkan sebagai lapisan TERDALAM
-	// (dijalankan SETELAH Auth+TenantResolver) — bukan membungkus seluruh chain. Ini krusial:
-	// RateLimit membaca principal dari gateway.Context (lewat FromRequest), yang baru terisi
-	// setelah Auth berjalan. Bila RateLimit diletakkan di luar (outermost), ia berjalan sebelum
-	// Auth → FromRequest mengembalikan konteks anonim → semua request berbagi satu bucket nil-
-	// principal (bukan per-principal). Karena itu ia HARUS jadi entri terakhir chain.
+	// Urutan dibangun sebagai slice; middleware yang bergantung pada principal (RateLimit,
+	// Idempotency) HARUS berada SETELAH Auth+TenantResolver (bukan membungkus seluruh chain
+	// dari luar). Bila diletakkan di luar Auth, FromRequest mengembalikan konteks anonim →
+	// principal/tenant kosong → RateLimit ber-bucket global (bukan per-principal) & Idempotency
+	// kehilangan scope tenant/principal. Karena itu keduanya ditambahkan sebagai entri TERAKHIR
+	// (terdalam), sesudah TenantResolver.
 	mws := []func(http.Handler) http.Handler{
 		middleware.CORS(d.corsOrigins),
 		middleware.RequestID(),
@@ -59,6 +63,11 @@ func buildServerHandler(d serverDeps) http.Handler {
 		mws = append(mws, middleware.RateLimit(d.rateLimiter, d.rateLimit.RPS, time.Second))
 	} else {
 		d.logger.Info(context.Background(), "rate limit nonaktif (RATELIMIT_ENABLED=false atau RPS<=0)")
+	}
+	if d.idempotency != nil {
+		mws = append(mws, middleware.Idempotency(d.idempotency, d.logger))
+	} else {
+		d.logger.Info(context.Background(), "idempotency nonaktif (store tidak dikonfigurasi)")
 	}
 	businessChain := chain(d.router, mws...)
 
