@@ -94,8 +94,20 @@ func (c *Context) IsCitizen() bool          { return c.persona == "citizen" }
 
 // SetTenantID dipakai middleware tenant resolver setelah memvalidasi tenant terhadap
 // registry. Tenant tidak pernah diset dari input mentah tanpa resolusi.
-func (c *Context) SetTenantID(id string) { c.tenantID = id }
-func (c *Context) IsCrossTenant() bool   { return c.isCrossTenant }
+//
+// Selain menyimpan tenantID untuk AuthContext, ia MENYUNTIKKAN tenant ke embedded
+// context.Context lewat port.WithTenant. Inilah yang menutup DEFERRED(Phase-5.1.2 #2):
+// driven adapter (infra/db.TenantRoutingConn) me-resolve tenant lewat port.TenantFrom
+// SECARA ROBUST — nilai bertahan meski context dibungkus (WithValue/WithTimeout/WithCancel)
+// di rantai handler→usecase→repo, sehingga tak lagi bergantung pada fallback rapuh
+// ctx.(AuthContext) yang pecah begitu context dibungkus.
+func (c *Context) SetTenantID(id string) {
+	c.tenantID = id
+	if c.Context != nil {
+		c.Context = port.WithTenant(c.Context, id)
+	}
+}
+func (c *Context) IsCrossTenant() bool { return c.isCrossTenant }
 
 func (c *Context) HasRole(role string) bool {
 	return c.roles[role] || c.centralRoles[role]

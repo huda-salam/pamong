@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/huda-salam/pamong/port"
-	"github.com/huda-salam/pamong/testkit"
 )
 
 func TestTenantFrom_ExplicitValue(t *testing.T) {
@@ -21,22 +20,25 @@ func TestTenantFrom_KosongBilaTakAda(t *testing.T) {
 	}
 }
 
-// TestTenantFrom_FallbackAuthContext memastikan bila context adalah AuthContext (mis.
-// gateway.Context yang dibawa handler), tenant diambil dari TenantID()-nya — sehingga routing
-// DB tetap benar pada jalur handler meski WithTenant belum disisipkan eksplisit.
-func TestTenantFrom_FallbackAuthContext(t *testing.T) {
-	ctx := testkit.Ctx(t, testkit.WithTenant("pemkot-malang"))
-	if got := port.TenantFrom(ctx); got != "pemkot-malang" {
-		t.Fatalf("TenantFrom (fallback AuthContext) = %q, mau pemkot-malang", got)
+// TestTenantFrom_BertahanSaatDibungkus memastikan nilai WithTenant tetap ter-resolve setelah
+// context dibungkus (WithValue/WithCancel) di rantai handler→usecase→repo — properti yang
+// menjadi alasan menghapus fallback ctx.(AuthContext) yang rapuh (DEFERRED Phase-5.1.2 #2).
+func TestTenantFrom_BertahanSaatDibungkus(t *testing.T) {
+	base := port.WithTenant(context.Background(), "pemkot-malang")
+	wrapped := context.WithValue(base, struct{ k int }{1}, "x")
+	child, cancel := context.WithCancel(wrapped)
+	defer cancel()
+	if got := port.TenantFrom(child); got != "pemkot-malang" {
+		t.Fatalf("TenantFrom setelah dibungkus = %q, mau pemkot-malang", got)
 	}
 }
 
-// TestTenantFrom_ExplicitMenangAtasFallback memastikan nilai WithTenant menang atas TenantID()
-// AuthContext bila keduanya ada (WithTenant lebih spesifik/disengaja).
-func TestTenantFrom_ExplicitMenangAtasFallback(t *testing.T) {
-	base := testkit.Ctx(t, testkit.WithTenant("dari-authcontext"))
-	ctx := port.WithTenant(base, "dari-withtenant")
-	if got := port.TenantFrom(ctx); got != "dari-withtenant" {
-		t.Fatalf("TenantFrom = %q, mau dari-withtenant (WithTenant menang)", got)
+// TestTenantFrom_TerdalamMenang memastikan WithTenant yang lebih dalam menutupi yang lebih luar
+// (paling spesifik menang) — perilaku standar context.Value.
+func TestTenantFrom_TerdalamMenang(t *testing.T) {
+	outer := port.WithTenant(context.Background(), "luar")
+	inner := port.WithTenant(outer, "dalam")
+	if got := port.TenantFrom(inner); got != "dalam" {
+		t.Fatalf("TenantFrom = %q, mau dalam (terdalam menang)", got)
 	}
 }

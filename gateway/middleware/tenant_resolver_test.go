@@ -106,6 +106,33 @@ func TestTenantResolver_NoTenant_PassThrough(t *testing.T) {
 	}
 }
 
+// TestTenantResolver_InjectWithTenant mengunci penutupan DEFERRED(Phase-5.1.2 #2): setelah
+// resolver, tenant ter-resolve dapat dibaca driven adapter lewat port.TenantFrom SECARA ROBUST
+// meski context downstream dibungkus (context.WithValue) — bukan bergantung pada assertion
+// AuthContext yang rapuh. Ini yang memungkinkan TenantRoutingConn me-route DB dengan benar.
+func TestTenantResolver_InjectWithTenant(t *testing.T) {
+	var fromCtx string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simulasikan rantai handler→usecase→repo yang membungkus context sebelum repo
+		// memanggil port.TenantFrom.
+		ctx := gateway.FromRequest(r)
+		wrapped := context.WithValue(ctx, struct{ k int }{1}, "x")
+		fromCtx = port.TenantFrom(wrapped)
+		w.WriteHeader(http.StatusOK)
+	})
+	h := middleware.TenantResolver(newResolver())(handler)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, reqWithClaimTenant("pemkot-a", ""))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("code=%d", w.Code)
+	}
+	if fromCtx != "pemkot-a" {
+		t.Fatalf("port.TenantFrom setelah dibungkus = %q, mau pemkot-a (WithTenant ter-inject)", fromCtx)
+	}
+}
+
 // TestTenantResolver_HeaderDiabaikan mengunci properti keamanan: X-Tenant-ID tak pernah
 // menjadi sumber tenant. Klien tak bisa memalsukan/menarget tenant lewat header.
 func TestTenantResolver_HeaderDiabaikan(t *testing.T) {

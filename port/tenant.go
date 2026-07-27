@@ -31,22 +31,17 @@ func WithTenant(ctx context.Context, tenantID string) context.Context {
 
 // TenantFrom mengembalikan tenant_id yang berlaku untuk context ini, atau "" bila tak ada.
 //
-// Dua sumber, berurutan: (1) nilai eksplisit yang disisipkan WithTenant; (2) fallback bila
-// context itu sendiri sebuah AuthContext (mis. gateway.Context yang dibawa handler ke use
-// case), pakai TenantID()-nya.
+// Satu-satunya sumber: nilai eksplisit yang disisipkan WithTenant. Middleware tenant resolver
+// (PR-5.1.2) menyuntikkan tenant ke embedded context gateway.Context lewat SetTenantID →
+// port.WithTenant, sehingga nilai ini bertahan menembus pembungkusan context (WithValue/
+// WithTimeout/WithCancel) di rantai handler→usecase→repo.
 //
-// DEFERRED(Phase-5.1.2): fallback (2) RAPUH — assertion ctx.(AuthContext) hanya cocok bila ctx
-// adalah gateway.Context telanjang. Begitu ada lapisan yang membungkus (context.WithValue/
-// WithTimeout/WithCancel) di rantai handler→usecase→repo, ctx bukan lagi AuthContext dan
-// fallback mengembalikan "" → routing gagal. Jalur yang benar & tahan-bungkus adalah WithTenant
-// eksplisit yang disisipkan middleware tenant resolver (PR-5.1.2); fallback ini hanya jembatan
-// sementara dan JANGAN diandalkan untuk jalur yang membungkus context.
+// Catatan: fallback lama via assertion ctx.(AuthContext) DIHAPUS (menutup DEFERRED
+// Phase-5.1.2 #2) — ia pecah begitu context dibungkus. Jalur ber-tenant kini WAJIB lewat
+// WithTenant eksplisit; context tanpa WithTenant → "" (routing gagal eksplisit, bukan diam).
 func TenantFrom(ctx context.Context) string {
-	if v, ok := ctx.Value(tenantKey{}).(string); ok && v != "" {
+	if v, ok := ctx.Value(tenantKey{}).(string); ok {
 		return v
-	}
-	if ac, ok := ctx.(AuthContext); ok {
-		return ac.TenantID()
 	}
 	return ""
 }

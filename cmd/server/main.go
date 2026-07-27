@@ -17,9 +17,11 @@ import (
 	"github.com/huda-salam/pamong/core/domain"
 	"github.com/huda-salam/pamong/gateway"
 	identitydb "github.com/huda-salam/pamong/identity/adapter/db"
+	identitytoken "github.com/huda-salam/pamong/identity/adapter/token"
 	"github.com/huda-salam/pamong/infra/db"
 	"github.com/huda-salam/pamong/infra/eventbus"
 	"github.com/huda-salam/pamong/infra/observability"
+	"github.com/huda-salam/pamong/infra/ratelimit"
 	"github.com/huda-salam/pamong/infra/storage"
 	"github.com/huda-salam/pamong/modules"
 	"github.com/huda-salam/pamong/port"
@@ -68,6 +70,9 @@ func run() error {
 	connMgr := db.NewTenantConnManager(tenantResolver, cfg.DB, cfg.CentralDBResolved())
 	defer connMgr.Close()
 	tenantDB := db.NewTenantRoutingConn(connMgr)
+	// DB sentral (entity ResidencyCentral, ADR-005) — jalur eksplisit ke pool sentral, terpisah
+	// dari tenantDB yang route per-tenant (menutup DEFERRED Phase-5.1.2 #1).
+	centralDB := db.NewCentralRoutingConn(connMgr)
 
 	// Event bus (driver dari config: memory untuk dev; nats/redis untuk produksi).
 	bus, err := eventbus.NewFromConfig(cfg.EventBus, eventbus.NewSchemaRegistry())
@@ -82,18 +87,36 @@ func run() error {
 	}
 	metrics := observability.NewPrometheusMetrics()
 
+	// --- Auth stack (PR-5.1.2) ---
+	// Token verifier internal (HS256, ADR-007): verifikasi tanda tangan + jti-revocation
+	// (revoked store di identity DB). Ini seam TokenVerifier yang dikonsumsi middleware auth.
+	verifier := identitytoken.NewJWTCodec(
+		[]byte(cfg.Auth.TokenSecret),
+		cfg.Auth.TokenTTL(),
+		identitydb.NewRevokedTokenStore(identityPool),
+	)
+	// Katalog role sentral: snapshot proses dari identity DB (dibaca sekali saat boot; gagal =
+	// gagal boot, fail-fast philosophy #4 — tanpa katalog RBAC tak bisa ditegakkan).
+	centralCatalog, err := identitydb.NewCentralRoleCatalog(ctx, identitydb.NewCentralRoleRepo(identityPool))
+	if err != nil {
+		return fmt.Errorf("katalog role sentral (RBAC): %w", err)
+	}
+	// Factory evaluator: bangun port.PermissionEvaluator per-request (composite central+tenant),
+	// disuntik ke middleware auth agar gateway.Context.RequirePermission menegakkan RBAC live.
+	evalFactory := newEvaluatorFactory(centralCatalog, connMgr)
+	// Rate limiter per-principal (in-memory; swap Redis untuk multi-instance — titik ekstensi #1).
+	rateLimiter := ratelimit.NewMemory(nil)
+
 	// Router aggregator: rute semua modul terkumpul di sini saat Bootstrap.
 	router := gateway.NewRouter()
 
-	// Health check (liveness) — tidak menyentuh DB, aman dipakai orchestrator. Didaftarkan
-	// SEBELUM Bootstrap modul agar rute framework ini "menang": bila modul keliru mendaftar
-	// "/healthz", ServeMux panic saat registrasi modul — konflik ter-atribusi ke modul, bukan
-	// ke framework (fail-fast, philosophy #4).
-	router.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
+	// Health check TRIPWIRE (liveness). /healthz yang BENAR-BENAR dilayani ada di top mux
+	// (auth-free, lihat perakitan server di bawah) yang membayangi (shadow) pendaftaran ini.
+	// Registrasi di sini SEBELUM Bootstrap modul sengaja dipertahankan sebagai tripwire: bila
+	// modul keliru mendaftar "/healthz" ke router bisnis, gateway.Router panic saat registrasi
+	// — konflik ter-atribusi ke modul (fail-fast, philosophy #4). Ia tak pernah men-serve
+	// request karena top mux menang; hanya menjaga namespace /healthz tetap milik framework.
+	router.Get("/healthz", healthz)
 
 	// App container. Sebagian port belum punya implementasi produksi (gap fase lebih awal,
 	// BUKAN lingkup PR-5.1.1) — di-wire nil dengan catatan; konstruksi modul tak men-deref-nya,
@@ -102,6 +125,7 @@ func run() error {
 	//   - UserResolver: belum ada adapter produksi baca gov.user_profiles — DEFERRED(Phase-2).
 	app := domain.NewApp(
 		tenantDB,             // DBConn (routing per-tenant)
+		centralDB,            // CentralDB (routing ke DB sentral, ADR-005)
 		bus,                  // EventPublisher
 		bus,                  // EventSubscriber
 		nil,                  // Sequence — DEFERRED(Phase-1)
@@ -126,19 +150,24 @@ func run() error {
 		logger.Info(ctx, "modul ter-bootstrap", port.F("module", m.Manifest().Name))
 	}
 
-	// --- HTTP server + graceful shutdown ---
-	// PERINGATAN KEAMANAN (PR-5.1.1): stack middleware KEAMANAN (auth/tenant/ratelimit/CORS/
-	// audit) belum dipasang — itu PR-5.1.2. Sampai saat itu, rute bisnis dilayani TANPA auth
-	// dan RequirePermission bersifat permisif-default (gateway.Context tanpa evaluator →
-	// mengizinkan). Server ini BELUM layak deploy; hanya untuk membuktikan agregasi rute &
-	// boot end-to-end. Yang dipasang di sini hanya recovery — pengaman crash dasar (bukan
-	// bagian stack keamanan): panic handler → 500 anggun, bukan koneksi ter-reset.
+	// --- HTTP server + middleware stack + graceful shutdown ---
+	handler := buildServerHandler(serverDeps{
+		router:         router,
+		verifier:       verifier,
+		evalFactory:    evalFactory,
+		tenantResolver: tenantResolver,
+		rateLimiter:    rateLimiter,
+		rateLimit:      cfg.RateLimit,
+		corsOrigins:    nil, // allowlist origin dari config = DEFERRED; kosong = same-origin only (aman)
+		logger:         logger,
+	})
+
 	// Timeout menyeluruh: ReadHeaderTimeout saja tak menutup slow-body/idle Slowloris.
 	// ReadTimeout membatasi pembacaan seluruh request, WriteTimeout respons, IdleTimeout
 	// koneksi keep-alive menganggur.
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr(),
-		Handler:           withRecovery(router, logger),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -170,50 +199,6 @@ func run() error {
 	}
 	logger.Info(ctx, "pamong berhenti dengan bersih")
 	return nil
-}
-
-// withRecovery membungkus handler agar panic pada satu request menjadi respons 500 anggun +
-// log — bukan koneksi ter-reset (HTTP 000) yang membingungkan klien. Ini pengaman crash dasar
-// tingkat server, TERPISAH dari stack middleware keamanan (auth/tenant/ratelimit/audit, PR-5.1.2).
-func withRecovery(next http.Handler, logger port.Logger) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rw := &recorder{ResponseWriter: w}
-		defer func() {
-			if rec := recover(); rec != nil {
-				logger.Error(r.Context(), "panic saat melayani request",
-					port.F("panic", fmt.Sprint(rec)),
-					port.F("method", r.Method),
-					port.F("path", r.URL.Path))
-				// Hanya tulis 500 bila belum ada status/body terkirim; kalau handler sudah
-				// menulis lalu panic di tengah, status sudah commit — memaksa WriteHeader(500)
-				// hanya menghasilkan warning "superfluous" + body korup. Yang bisa dilakukan
-				// hanyalah menghentikan penulisan (respons akan truncated, tapi ter-log).
-				if !rw.wrote {
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusInternalServerError)
-					_, _ = w.Write([]byte(`{"error":"internal server error"}`))
-				}
-			}
-		}()
-		next.ServeHTTP(rw, r)
-	})
-}
-
-// recorder membungkus http.ResponseWriter untuk menandai apakah status/body sudah terkirim,
-// agar recovery tak menulis header ganda setelah handler menulis sebagian lalu panic.
-type recorder struct {
-	http.ResponseWriter
-	wrote bool
-}
-
-func (r *recorder) WriteHeader(code int) {
-	r.wrote = true
-	r.ResponseWriter.WriteHeader(code)
-}
-
-func (r *recorder) Write(b []byte) (int, error) {
-	r.wrote = true // Write implisit meng-commit 200 bila WriteHeader belum dipanggil
-	return r.ResponseWriter.Write(b)
 }
 
 // workflowActions adalah WorkflowRegistry minimal: menyimpan pemetaan nama→use case yang
