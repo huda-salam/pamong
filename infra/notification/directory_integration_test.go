@@ -105,6 +105,64 @@ func seedOrgUnits(t *testing.T, pool *db.Pool, ctx context.Context, units ...str
 	}
 }
 
+// seedUserProfile menulis satu baris clone gov.user_profiles (kontak email/no_hp) lewat raw SQL
+// — meniru hasil sync engine tanpa mengimpor identity/sync ke test notifikasi. DDL mengikuti
+// writer sync (kolom NOT NULL diisi nilai dummy; yang diuji hanya email/no_hp). Kontak kosong
+// ("") disimpan NULL agar semantik "kosong = kanal tak tersedia" konsisten.
+func seedUserProfile(t *testing.T, pool *db.Pool, ctx context.Context, id uuid.UUID, email, noHP string) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS gov.user_profiles (
+		    id UUID PRIMARY KEY, person_id UUID NOT NULL, employment_status VARCHAR(10) NOT NULL,
+		    nip VARCHAR(18), nik VARCHAR(16) NOT NULL, nama_lengkap VARCHAR(255) NOT NULL,
+		    assignment_id UUID NOT NULL, is_cross_tenant BOOLEAN NOT NULL DEFAULT false,
+		    email VARCHAR(255), no_hp VARCHAR(15), synced_at TIMESTAMPTZ NOT NULL,
+		    jabatan_lokal VARCHAR(255), unit_kerja_id UUID)`); err != nil {
+		t.Fatalf("create user_profiles: %v", err)
+	}
+	var e, p any
+	if email != "" {
+		e = email
+	}
+	if noHP != "" {
+		p = noHP
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO gov.user_profiles
+		(id, person_id, employment_status, nik, nama_lengkap, assignment_id, email, no_hp, synced_at)
+		VALUES ($1,$1,'asn','3578010101900001','Dummy',$2,$3,$4, now())`,
+		id, uuid.New(), e, p); err != nil {
+		t.Fatalf("seed user_profile: %v", err)
+	}
+}
+
+// TestDBRecipientDirectory_HoldersOf_MengisiKontakDariClone membuktikan Email/Phone terisi dari
+// clone gov.user_profiles (PR-N3b): holder dengan profil berkontak → terisi; holder tanpa profil
+// → kontak kosong (best-effort, tak menggagalkan resolusi pemegang).
+func TestDBRecipientDirectory_HoldersOf_MengisiKontakDariClone(t *testing.T) {
+	pool, ctx := setupDirectoryDB(t)
+	roleID := seedRole(t, pool, ctx, "kepala_dinas")
+	userBerkontak, userTanpaProfil := uuid.New(), uuid.New()
+	seedAssignment(t, pool, ctx, assignmentSpec{userID: userBerkontak, roleID: roleID})
+	seedAssignment(t, pool, ctx, assignmentSpec{userID: userTanpaProfil, roleID: roleID})
+	seedUserProfile(t, pool, ctx, userBerkontak, "kadis@example.test", "0812340001")
+
+	dir := infraNotif.NewDBRecipientDirectory(pool)
+	got, err := dir.HoldersOf(ctx, coreNotif.RoleTarget{TenantID: "pemkot", Role: "kepala_dinas"})
+	if err != nil {
+		t.Fatalf("HoldersOf: %v", err)
+	}
+	byID := map[uuid.UUID]coreNotif.Recipient{}
+	for _, r := range got {
+		byID[r.PersonID] = r
+	}
+	if r := byID[userBerkontak]; r.Email != "kadis@example.test" || r.Phone != "0812340001" {
+		t.Fatalf("kontak holder tak terisi dari clone: email=%q phone=%q", r.Email, r.Phone)
+	}
+	if r := byID[userTanpaProfil]; r.Email != "" || r.Phone != "" {
+		t.Fatalf("holder tanpa profil harus kontak kosong, dapat email=%q phone=%q", r.Email, r.Phone)
+	}
+}
+
 func TestDBRecipientDirectory_HoldersOf_TenantWide(t *testing.T) {
 	pool, ctx := setupDirectoryDB(t)
 	roleID := seedRole(t, pool, ctx, "kepala_dinas")

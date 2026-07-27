@@ -506,6 +506,19 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
   - Membuat jalur transport OTP citizen (2.4.4) nyata (tinggal `driver=smtp`). DoD: unit test
     (factory, log, komposisi/mapping-error SMTP), lint/vet/gofmt bersih.
 
+- **PR-N3b** Contact seam — kontak di clone tenant (routing email/SMS) ← N1 ✅
+  - Opsi A (ADR-013): kolom `email`/`no_hp` ditambah ke `gov.user_profiles`, mengalir lewat event
+    fat `identity.employment.ditugaskan` (payload + publisher + writer + engine). `DBRecipientDirectory.
+    fillContacts` mengisi `Recipient.Email/Phone` best-effort (dijaga keberadaan kedua kolom via
+    `information_schema`; error kontak dicatat & di-swallow di HoldersOf → jalur in-app tak ikut gagal);
+    kontak kosong/NULL → channel email/SMS gagal anggun `INVALID_RECIPIENT`.
+  - Freshness (update-on-change kontak) DEFERRED — identik dengan gap `nama_lengkap` (butuh handler
+    `identity.person.diperbarui` lintas-tenant yang belum ada); menumpang solusi clone-freshness umum.
+  - SENSITIF (menyentuh identity/sync) + PII kontak (personal_id, ADR-009) menyebar ke tenant DB —
+    konsekuensi sadar opsi A; enkripsi field DEFERRED (ROADMAP 3.8). Skema clone dipastikan sekali
+    per tenant/proses (bukan DDL tiap write). DoD: integration test lulus (`-p 1`, clone bawa kontak;
+    directory isi Recipient.Email/Phone; holder tanpa profil → kosong), lint/vet/gofmt bersih.
+
 ### Sub-phase 3.7 — Storage & metrics ports
 
 - **PR-3.7.1** Storage port + MinIO/S3 adapter ← 0.2.1

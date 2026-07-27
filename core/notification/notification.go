@@ -16,9 +16,10 @@
 // jalur in-app jalan penuh lewat gov.tenant_roles/gov.user_role_assignments nyata. ActingFor
 // (PLT-jabatan) DEFERRED(Phase-7.x — modul kepegawaian): lihat doc DBRecipientDirectory.ActingFor.
 //
-// DEFERRED(PR-N3): channel email/SMS masih butuh alamat kontak yang BELUM ter-ekspos:
-// gov.user_profiles & port.UserResolver tak memuat email/telepon (hidup di id.persons, identity
-// DB). Seam kontak (ContactResolver) menyusul di PR-N3.
+// PR-N3b (ADR-013): channel email/SMS kini mendapat alamat kontak. Kontak (email/no_hp) di-clone
+// dari id.persons ke gov.user_profiles tenant lewat event identity.employment.ditugaskan, lalu
+// DBRecipientDirectory.fillContacts mengisi Recipient.Email/Phone best-effort. Kontak yang tak
+// tersedia (belum ter-clone / NULL) tetap kosong → channel bersangkutan gagal anggun.
 package notification
 
 import "github.com/google/uuid"

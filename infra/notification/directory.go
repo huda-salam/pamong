@@ -3,6 +3,7 @@ package notification
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/google/uuid"
 	coreNotif "github.com/huda-salam/pamong/core/notification"
@@ -21,8 +22,8 @@ type hierarchy interface {
 
 // DBRecipientDirectory mengimplementasi coreNotif.RecipientDirectory di atas Postgres tenant DB:
 // membaca pemegang role tenant NYATA (gov.tenant_roles + gov.user_role_assignments), pengganti
-// MemoryDirectory di produksi. In-app langsung jalan (cukup PersonID); Email/Phone kosong (seam
-// kontak DEFERRED — lihat doc coreNotif.notification package).
+// MemoryDirectory di produksi. In-app cukup PersonID; Email/Phone diisi best-effort dari clone
+// tenant gov.user_profiles (kontak seam, PR-N3b/ADR-013 — lihat fillContacts).
 //
 // READER MURNI: tidak membuat/ensure tabel gov.tenant_roles, gov.user_role_assignments, atau
 // gov.delegations — tabel itu milik tenantrole/ & delegation/ (ensure-on-write oleh pemiliknya
@@ -104,7 +105,89 @@ func (d *DBRecipientDirectory) HoldersOf(ctx context.Context, t coreNotif.RoleTa
 		seen[c.userID] = true
 		out = append(out, coreNotif.Recipient{PersonID: c.userID})
 	}
+	// Kontak bersifat BEST-EFFORT: kegagalannya TIDAK boleh menggagalkan resolusi pemegang —
+	// jalur in-app (cukup PersonID) harus tetap jalan meski clone/kontak bermasalah. Error
+	// dicatat (bukan ditelan diam-diam) agar tetap terlihat; Recipient.Email/Phone dibiarkan kosong.
+	if err := d.fillContacts(ctx, out); err != nil {
+		slog.WarnContext(ctx, "notifikasi: gagal mengisi kontak dari gov.user_profiles; kontak dikosongkan (best-effort)",
+			"role", t.Role, "error", err)
+	}
 	return out, nil
+}
+
+// fillContacts mengisi Email/Phone tiap Recipient dari clone tenant gov.user_profiles
+// (PR-N3b, ADR-013) secara BEST-EFFORT:
+//   - Kolom kontak belum tentu ada: (a) tabel bisa absen karena pemegang role BISA eksis tanpa
+//     profil (gov.user_role_assignments sengaja tanpa FK ke gov.user_profiles, tenantrole/
+//     schema.go); (b) selama window rollout, tabel bisa ada tapi dibuat versi lama TANPA kolom
+//     email/no_hp (writer menambahnya lewat ALTER pada write berikutnya, tapi reader tak menulis).
+//     Karena itu keberadaan KEDUA kolom diperiksa dulu (information_schema) — bila tak lengkap,
+//     kontak dibiarkan kosong. Kegagalan DB apa pun di sini juga best-effort: caller (HoldersOf)
+//     mencatat error dan tetap mengembalikan pemegang, sehingga jalur in-app TIDAK ikut gagal.
+//   - Person tanpa baris profil, atau kontak NULL, dibiarkan kosong. Recipient.Email/Phone
+//     kosong = kanal itu tak tersedia → channel email/SMS gagal anggun (INVALID_RECIPIENT).
+//
+// Isolasi tenant tetap struktural (pool sudah terkoneksi ke tenant DB); query tak menyebut
+// tenant_id. Mutasi in-place pada slice (backing array sama dengan yang dikembalikan HoldersOf).
+func (d *DBRecipientDirectory) fillContacts(ctx context.Context, recips []coreNotif.Recipient) error {
+	if len(recips) == 0 {
+		return nil
+	}
+	// Cek KEDUA kolom (email & no_hp): SELECT di bawah membaca keduanya, jadi bila hanya salah
+	// satu ada (mis. ALTER terputus) fill dilewati alih-alih query gagal.
+	// gov:raw-ok reason=notif-contact-probe query=notification-user-profiles-contact-cols
+	var hasContactCols bool
+	if err := d.pool.QueryRow(ctx,
+		`SELECT count(*) = 2 FROM information_schema.columns
+		    WHERE table_schema = 'gov' AND table_name = 'user_profiles'
+		      AND column_name IN ('email', 'no_hp')`).
+		Scan(&hasContactCols); err != nil {
+		return fmt.Errorf("cek kolom kontak gov.user_profiles: %w", err)
+	}
+	if !hasContactCols {
+		return nil
+	}
+
+	ids := make([]string, len(recips))
+	for i, r := range recips {
+		ids[i] = r.PersonID.String()
+	}
+	// gov:raw-ok reason=notif-contact-fill query=notification-contact-by-ids
+	rows, err := d.pool.Query(ctx,
+		`SELECT id, email, no_hp FROM gov.user_profiles WHERE id = ANY($1::uuid[])`, ids)
+	if err != nil {
+		return fmt.Errorf("baca kontak user_profiles: %w", err)
+	}
+	defer rows.Close()
+
+	type contact struct{ email, phone string }
+	byID := make(map[uuid.UUID]contact, len(recips))
+	for rows.Next() {
+		var id uuid.UUID
+		var email, phone *string // NULL → nil
+		if err := rows.Scan(&id, &email, &phone); err != nil {
+			return fmt.Errorf("scan kontak user_profiles: %w", err)
+		}
+		var c contact
+		if email != nil {
+			c.email = *email
+		}
+		if phone != nil {
+			c.phone = *phone
+		}
+		byID[id] = c
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterasi kontak user_profiles: %w", err)
+	}
+
+	for i := range recips {
+		if c, ok := byID[recips[i].PersonID]; ok {
+			recips[i].Email = c.email
+			recips[i].Phone = c.phone
+		}
+	}
+	return nil
 }
 
 // withinScope menentukan apakah sebuah assignment berlaku untuk target unit kerja:

@@ -38,5 +38,7 @@ func (e *Engine) onEmploymentDitugaskan(ctx context.Context, ev port.Event) erro
 		NamaLengkap:      p.NamaLengkap,
 		EmploymentStatus: p.EmploymentStatus,
 		IsCrossTenant:    p.IsCrossTenant,
+		Email:            p.Email,
+		NoHP:             p.NoHP,
 	})
 }

@@ -106,6 +106,9 @@ func (uc *AssignEmploymentToTenant) Execute(ctx port.AuthContext, in AssignEmplo
 			NamaLengkap:      person.NamaLengkap,
 			EmploymentStatus: string(emp.Status),
 			IsCrossTenant:    in.CrossTenant,
+			// Kontak person untuk mengisi clone tenant → Recipient.Email/Phone (PR-N3b).
+			Email: person.Email,
+			NoHP:  person.NoHP,
 		},
 	}); err != nil {
 		return nil, err

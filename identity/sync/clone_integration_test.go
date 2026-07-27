@@ -70,6 +70,8 @@ func TestSyncClone_EmploymentDitugaskan(t *testing.T) {
 			NIP:              "199001012015011001",
 			NamaLengkap:      "Budi Santoso",
 			EmploymentStatus: "asn",
+			Email:            "budi@example.test",
+			NoHP:             "0812340001",
 		},
 	}); err != nil {
 		t.Fatalf("publish ditugaskan: %v", err)
@@ -80,17 +82,22 @@ func TestSyncClone_EmploymentDitugaskan(t *testing.T) {
 		gotNIK, gotNIP, gotNama, gotStatus string
 		gotAssignment                      uuid.UUID
 		gotCross                           bool
+		gotEmail, gotNoHP                  string
 	)
 	if err := pool.QueryRow(ctx,
-		`SELECT nik, nip, nama_lengkap, employment_status, assignment_id, is_cross_tenant
+		`SELECT nik, nip, nama_lengkap, employment_status, assignment_id, is_cross_tenant, email, no_hp
 		   FROM gov.user_profiles WHERE id = $1`, personID,
-	).Scan(&gotNIK, &gotNIP, &gotNama, &gotStatus, &gotAssignment, &gotCross); err != nil {
+	).Scan(&gotNIK, &gotNIP, &gotNama, &gotStatus, &gotAssignment, &gotCross, &gotEmail, &gotNoHP); err != nil {
 		t.Fatalf("clone tidak ditemukan: %v", err)
 	}
 	if gotNIK != "3578010101900001" || gotNIP != "199001012015011001" ||
 		gotNama != "Budi Santoso" || gotStatus != "asn" || gotAssignment != assignmentID || gotCross {
 		t.Fatalf("data clone salah: nik=%s nip=%s nama=%s status=%s assignment=%s cross=%v",
 			gotNIK, gotNIP, gotNama, gotStatus, gotAssignment, gotCross)
+	}
+	// Kontak ikut ter-clone (PR-N3b) → sumber Recipient.Email/Phone.
+	if gotEmail != "budi@example.test" || gotNoHP != "0812340001" {
+		t.Fatalf("kontak clone salah: email=%q no_hp=%q", gotEmail, gotNoHP)
 	}
 
 	// Idempoten: event terkirim ulang tidak menggandakan baris (ON CONFLICT).

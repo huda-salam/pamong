@@ -18,7 +18,9 @@ setiap perubahan butuh review ekstra (lihat aturan PR).
 - Tenant assignment: penugasan employment ke tenant; cross-tenant (PLT/PJ) ber-otorisasi
 - Auth flow: tiga jalur (employee sentral, employee daerah, citizen publik)
 - JWT issue/verify, revocation (jti)
-- Sync engine: clone person/employment ke tenant DB via event
+- Sync engine: clone person/employment ke tenant DB via event (fat event). Clone `gov.user_profiles`
+  membawa KONTAK (email/no_hp) untuk routing notifikasi email/SMS (PR-N3b, ADR-013) — masih tanpa
+  kredensial/password. Freshness kontak/nama (update-on-change lintas-tenant) DEFERRED.
 
 ## BUKAN tanggung jawab
 - Evaluasi permission (itu core/permission; identity menyimpan central role master)

@@ -34,6 +34,13 @@ type EmploymentDibuatPayload struct {
 
 // EmploymentDitugaskanPayload menyertai EventEmploymentDitugaskan — pemicu clone person
 // ke gov.user_profiles tenant tujuan. Membawa seluruh kolom clone agar consumer mandiri.
+//
+// Email & NoHP adalah kontak person (dari id.persons), disertakan agar clone tenant bisa
+// mengisi Recipient.Email/Phone untuk channel notifikasi email/SMS (PR-N3b, ADR-013).
+// Penambahan field ini ADITIF (JSON-compatible, tipe payload sama) — bukan versi baru:
+// SchemaRegistry mencocokkan berdasarkan tipe Go, dan event lama tanpa field ini ter-unmarshal
+// dengan kontak kosong (channel email lalu gagal anggun INVALID_RECIPIENT). Keduanya kelas
+// personal_id (ADR-009); enkripsi field DEFERRED bersama nik/no_hp lain (ROADMAP 3.8).
 type EmploymentDitugaskanPayload struct {
 	AssignmentID     uuid.UUID
 	EmploymentID     uuid.UUID
@@ -44,4 +51,6 @@ type EmploymentDitugaskanPayload struct {
 	NamaLengkap      string
 	EmploymentStatus string
 	IsCrossTenant    bool
+	Email            string
+	NoHP             string
 }

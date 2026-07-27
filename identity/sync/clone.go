@@ -23,6 +23,10 @@ type UserProfileClone struct {
 	NamaLengkap      string
 	EmploymentStatus string
 	IsCrossTenant    bool
+	// Kontak person (dari id.persons) — mengisi Recipient.Email/Phone untuk channel
+	// notifikasi email/SMS (PR-N3b, ADR-013). Kosong = kanal itu tak tersedia untuk user ini.
+	Email string
+	NoHP  string
 }
 
 // Writer menulis clone ke DB satu tenant. Implementasi (writer_tenantdb.go) memilih pool

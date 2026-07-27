@@ -68,7 +68,10 @@ func seedPersonEmployment(t *testing.T) (*fakePersons, *storeEmployments, *domai
 	t.Helper()
 	persons := newFakePersons()
 	emps := newStoreEmployments()
-	person := &domain.Person{ID: uuid.New(), NIK: "3578010101900001", NamaLengkap: "Budi", IsActive: true}
+	person := &domain.Person{
+		ID: uuid.New(), NIK: "3578010101900001", NamaLengkap: "Budi", IsActive: true,
+		Email: "budi@example.test", NoHP: "0812340001",
+	}
 	_ = persons.Save(context.Background(), person)
 	emp := &domain.Employment{
 		ID: uuid.New(), PersonID: person.ID, Status: domain.StatusASN, NIP: "199001012015011001", IsActive: true,
@@ -109,6 +112,10 @@ func TestAssignEmploymentToTenant_Success(t *testing.T) {
 	if payload.PersonID != person.ID || payload.NIK != person.NIK ||
 		payload.NIP != emp.NIP || payload.TenantID != "pemkot-surabaya" || payload.IsCrossTenant {
 		t.Fatalf("payload tidak sesuai: %+v", payload)
+	}
+	// Kontak person ikut dibawa payload fat (PR-N3b) → mengisi clone → Recipient.Email/Phone.
+	if payload.Email != person.Email || payload.NoHP != person.NoHP {
+		t.Fatalf("payload kontak tidak sesuai: email=%q no_hp=%q", payload.Email, payload.NoHP)
 	}
 	if ev.TenantID != "pemkot-surabaya" {
 		t.Fatalf("event tenant_id salah: %q", ev.TenantID)
