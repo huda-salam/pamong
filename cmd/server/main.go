@@ -23,7 +23,9 @@ import (
 	"github.com/huda-salam/pamong/infra/idempotency"
 	"github.com/huda-salam/pamong/infra/observability"
 	"github.com/huda-salam/pamong/infra/ratelimit"
+	"github.com/huda-salam/pamong/infra/sequence"
 	"github.com/huda-salam/pamong/infra/storage"
+	infrauser "github.com/huda-salam/pamong/infra/user"
 	"github.com/huda-salam/pamong/modules"
 	"github.com/huda-salam/pamong/port"
 )
@@ -107,6 +109,14 @@ func run() error {
 	// Store idempotency: tabel gov.idempotency_keys per tenant DB (skema dipastikan lazy per
 	// tenant). Menegakkan "request mutasi duplikat → response sama tanpa efek ganda".
 	idempotencyStore := idempotency.NewDBStore(connMgr)
+	// Generator nomor ber-urut: tabel gov.sequences per tenant DB (skema dipastikan lazy per
+	// tenant). Atomik + reset per tahun — dipakai use case seperti CreateSuratMasuk untuk
+	// nomor agenda. Menutup kabel nil PR-5.1.1 (gap Phase-1).
+	sequenceGen := sequence.NewDBGenerator(connMgr)
+	// Resolver user: baca READ-ONLY clone gov.user_profiles pada tenant DB (tenant dari context).
+	// Modul bisnis mengakses data user lewat port ini, bukan query clone langsung. Menutup kabel
+	// nil PR-5.1.1 (gap Phase-2). HasCentralRole DEFERRED (butuh lookup identity DB).
+	userResolver := infrauser.NewDBResolver(connMgr)
 
 	// Router aggregator: rute semua modul terkumpul di sini saat Bootstrap.
 	router := gateway.NewRouter()
@@ -119,20 +129,18 @@ func run() error {
 	// request karena top mux menang; hanya menjaga namespace /healthz tetap milik framework.
 	router.Get("/healthz", healthz)
 
-	// App container. Sebagian port belum punya implementasi produksi (gap fase lebih awal,
-	// BUKAN lingkup PR-5.1.1) — di-wire nil dengan catatan; konstruksi modul tak men-deref-nya,
-	// hanya jalur request yang memakainya yang belum lengkap:
-	//   - Sequence: belum ada generator nomor — DEFERRED(Phase-1: sequence adapter).
-	//   - UserResolver: belum ada adapter produksi baca gov.user_profiles — DEFERRED(Phase-2).
+	// App container. Sequence & UserResolver kini ter-wire (PR-5.1.x live-path completion) —
+	// jalur request bisnis lengkap end-to-end. WorkflowRegistry masih minimal; dispatch penuh
+	// via engine menyusul di slice berikutnya.
 	app := domain.NewApp(
 		tenantDB,             // DBConn (routing per-tenant)
 		centralDB,            // CentralDB (routing ke DB sentral, ADR-005)
 		bus,                  // EventPublisher
 		bus,                  // EventSubscriber
-		nil,                  // Sequence — DEFERRED(Phase-1)
+		sequenceGen,          // SequenceGenerator (gov.sequences per-tenant, atomik)
 		metrics,              // MetricsPort
 		store,                // StoragePort
-		nil,                  // UserResolver — DEFERRED(Phase-2)
+		userResolver,         // UserResolver (baca clone gov.user_profiles tenant DB)
 		newWorkflowActions(), // WorkflowRegistry (minimal; dispatch penuh via engine menyusul)
 		router,               // Router
 	)

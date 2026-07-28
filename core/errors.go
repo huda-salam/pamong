@@ -73,6 +73,18 @@ func ErrUnavailable(reason string) error {
 	}
 }
 
+// ErrUnimplemented dipublikasikan saat sebuah kapabilitas yang secara sengaja ditunda dipanggil
+// (HTTP 501). Beda dari 500 (bug tak terduga) & 503 (transient): 501 = "fitur ini memang belum
+// ada". Dipakai adapter yang mengimplementasi sebagian kontrak port agar pemanggil GAGAL LANTANG
+// alih-alih menerima jawaban yang diam-diam salah (mis. UserResolver.HasCentralRole yang butuh
+// lookup identity DB — DEFERRED).
+func ErrUnimplemented(feature string) error {
+	return &FrameworkError{
+		Code:    "UNIMPLEMENTED",
+		Message: fmt.Sprintf("kapabilitas %q belum diimplementasikan", feature),
+	}
+}
+
 // ErrTooManyRequests dipublikasikan saat batas laju (rate limit) terlampaui (HTTP 429).
 // Dipakai proteksi brute-force/flooding — mis. terlalu banyak permintaan/verifikasi OTP untuk
 // satu kredensial. Berbeda dari ErrUnauthorized (401: kredensial salah): 429 = "benar atau salah,

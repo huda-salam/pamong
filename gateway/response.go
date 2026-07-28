@@ -53,6 +53,8 @@ func httpStatus(code string) int {
 		return http.StatusBadRequest
 	case "UNAVAILABLE":
 		return http.StatusServiceUnavailable
+	case "UNIMPLEMENTED":
+		return http.StatusNotImplemented
 	default:
 		return http.StatusInternalServerError
 	}

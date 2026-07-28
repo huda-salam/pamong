@@ -13,6 +13,7 @@ import (
 	coreIdem "github.com/huda-salam/pamong/core/idempotency"
 	coreNotif "github.com/huda-salam/pamong/core/notification"
 	coreSched "github.com/huda-salam/pamong/core/scheduler"
+	coreSeq "github.com/huda-salam/pamong/core/sequence"
 	coreWf "github.com/huda-salam/pamong/core/workflow"
 	"github.com/huda-salam/pamong/infra/db"
 )
@@ -30,6 +31,7 @@ var coreComponents = []coreComponent{
 	{coreIdem.MigrationModule, coreIdem.MigrationsFS},
 	{coreNotif.MigrationModule, coreNotif.MigrationsFS},
 	{coreSched.MigrationModule, coreSched.MigrationsFS},
+	{coreSeq.MigrationModule, coreSeq.MigrationsFS},
 	{coreWf.MigrationModule, coreWf.MigrationsFS},
 }
 
