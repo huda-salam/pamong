@@ -70,3 +70,63 @@ func TestGenerateMigration_EmptySchema(t *testing.T) {
 		t.Fatal("schema kosong harus error")
 	}
 }
+
+// encryptedEntity mendeklarasikan pengenal terenkripsi (ADR-009): nik (Unique+Searchable →
+// _enc + _bidx UNIQUE), email (Searchable non-Unique → _enc + _bidx + index), biometrik
+// (specific non-searchable → hanya _enc).
+func encryptedEntity() domain.EntityDef {
+	return domain.EntityDef{
+		Name:     "Warga",
+		Schema:   "layanan",
+		Tier:     domain.Tier1,
+		Audit:    domain.Audited{},
+		Lockable: domain.NotLockable{},
+		Fields: []domain.FieldDef{
+			{Name: "nama", Type: domain.FieldText, Required: true, Class: domain.DataPersonal},
+			{Name: "nik", Type: domain.FieldText, Required: true, Unique: true, Class: domain.DataPersonalID, Searchable: true},
+			{Name: "email", Type: domain.FieldText, Class: domain.DataPersonalID, Searchable: true},
+			{Name: "biometrik", Type: domain.FieldJSON, Class: domain.DataSpecific},
+		},
+	}
+}
+
+func TestGenerateMigration_EncryptedColumns(t *testing.T) {
+	if err := encryptedEntity().Validate(); err != nil {
+		t.Fatalf("entity terenkripsi harus valid: %v", err)
+	}
+	up, down, err := db.GenerateMigration("layanan", []domain.EntityDef{encryptedEntity()})
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	wants := []string{
+		"nama TEXT NOT NULL",             // personal (nama) TIDAK dienkripsi
+		"nik_enc BYTEA NOT NULL",         // ciphertext
+		"nik_bidx BYTEA NOT NULL UNIQUE", // UNIQUE menempel di blind index, bukan _enc
+		"email_enc BYTEA",                // non-required
+		"email_bidx BYTEA",               // searchable non-unique
+		"CREATE INDEX idx_wargas_email_bidx ON layanan.wargas (email_bidx);",
+		"biometrik_enc BYTEA", // specific non-searchable → hanya _enc
+	}
+	for _, w := range wants {
+		if !strings.Contains(up, w) {
+			t.Errorf("up tidak memuat %q\n---\n%s", w, up)
+		}
+	}
+
+	// Plaintext pengenal TIDAK boleh muncul sebagai kolom.
+	forbidden := []string{
+		"\n    nik TEXT", "\n    email TEXT", "\n    biometrik JSONB",
+		"nik_enc BYTEA NOT NULL UNIQUE", // UNIQUE tak boleh di _enc
+		"biometrik_bidx",                // non-searchable → tak ada bidx
+	}
+	for _, f := range forbidden {
+		if strings.Contains(up, f) {
+			t.Errorf("up seharusnya TIDAK memuat %q\n---\n%s", f, up)
+		}
+	}
+
+	if !strings.Contains(down, "DROP TABLE IF EXISTS layanan.wargas;") {
+		t.Errorf("down kurang lengkap:\n%s", down)
+	}
+}

@@ -56,6 +56,27 @@ func TestEntity_AturanValidasi(t *testing.T) {
 		{"field duplikat", func(e *domain.EntityDef) { e.Fields[1].Name = "nomor" }, "duplikat"},
 		{"fiscalfield bukan field", func(e *domain.EntityDef) { e.Lockable = domain.Lockable{FiscalField: "xx"} }, "FiscalField"},
 		{"searchable bukan field", func(e *domain.EntityDef) { e.Searchable = []string{"xx"} }, "Searchable"},
+		{"class tidak dikenal", func(e *domain.EntityDef) { e.Fields[2].Class = "rahasia" }, "class"},
+		{"searchable non-text", func(e *domain.EntityDef) {
+			e.Fields[2].Class = domain.DataPersonalID
+			e.Fields[2].Searchable = true // nilai bertipe Decimal
+		}, "Text"},
+		{"searchable non-encrypted", func(e *domain.EntityDef) { e.Fields[0].Searchable = true }, "terenkripsi"},
+		{"unique terenkripsi tanpa searchable", func(e *domain.EntityDef) {
+			// nomor: Text, Unique — jadikan terenkripsi tanpa Searchable
+			e.Fields[0].Class = domain.DataPersonalID
+		}, "Searchable=true"},
+		{"default terenkripsi", func(e *domain.EntityDef) {
+			def := "x"
+			e.Fields[1] = domain.FieldDef{Name: "nik", Type: domain.FieldText, Class: domain.DataPersonalID, Default: &def}
+			e.Lockable = domain.NotLockable{}
+		}, "Default"},
+		{"enum terenkripsi", func(e *domain.EntityDef) { e.Fields[3].Class = domain.DataSpecific }, "tak boleh dienkripsi"},
+		{"field terenkripsi di EntityDef.Searchable", func(e *domain.EntityDef) {
+			e.Fields[1] = domain.FieldDef{Name: "nik", Type: domain.FieldText, Class: domain.DataPersonalID, Searchable: true}
+			e.Lockable = domain.NotLockable{}
+			e.Searchable = []string{"nik"}
+		}, "terenkripsi"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

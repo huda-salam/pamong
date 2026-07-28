@@ -10,33 +10,29 @@ import (
 	"github.com/huda-salam/pamong/core/domain"
 )
 
-// DataClass adalah sumbu klasifikasi data sebuah field (CLAUDE.md §Klasifikasi data &
-// enkripsi). Custom field tenant WAJIB menyatakan class (default aman `internal`) supaya
-// field ber-pengenal (NIK/NIP/no rekening) tak diam-diam disimpan sebagai `public`.
+// DataClass di-kanonik-kan di core/domain (ADR-009 §1); customization me-reuse-nya lewat alias
+// agar tak ada dua tipe klasifikasi kembar yang bisa divergen. Alias menjaga call-site lama
+// (ClassInternal, dst) tetap kompilasi. Custom field tenant WAJIB menyatakan class (default aman
+// `internal`) supaya field ber-pengenal (NIK/NIP/no rekening) tak diam-diam disimpan `public`.
 //
-// DEFERRED(Phase-3.8): penegakan perilaku (enkripsi at-rest + blind index untuk
-// personal_id/specific) menyusul bersama ADR-009/010. Di sini class hanya DIDEKLARASIKAN &
-// divalidasi nilainya; belum menurunkan enkripsi. FieldDef inti akan memperoleh Class serupa
-// pada sub-phase yang sama — untuk sekarang class hanya hidup di custom field.
-type DataClass string
+// DEFERRED(PR-3.8.3): penegakan perilaku (enkripsi at-rest + blind index untuk personal_id/
+// specific) pada custom field menyusul bersama wiring repository. Di sini class DIDEKLARASIKAN &
+// divalidasi nilainya. Catatan: CustomFieldDef.Class (di bawah) masih terpisah dari Field.Class
+// (kolom domain.FieldDef yang kini ber-Class) — rekonsiliasi keduanya bagian PR-3.8.3.
+type DataClass = domain.DataClass
 
 const (
-	ClassPublic     DataClass = "public"
-	ClassInternal   DataClass = "internal"
-	ClassPersonal   DataClass = "personal"
-	ClassPersonalID DataClass = "personal_id"
-	ClassSpecific   DataClass = "specific"
+	ClassPublic     = domain.DataPublic
+	ClassInternal   = domain.DataInternal
+	ClassPersonal   = domain.DataPersonal
+	ClassPersonalID = domain.DataPersonalID
+	ClassSpecific   = domain.DataSpecific
 )
 
 // DefaultDataClass adalah class default yang aman untuk custom field tanpa deklarasi eksplisit:
 // internal (tak ter-expose publik, tak butuh enkripsi). Sengaja BUKAN public (fail-safe).
-const DefaultDataClass = ClassInternal
-
-// validDataClasses adalah himpunan class yang dikenal.
-var validDataClasses = map[DataClass]bool{
-	ClassPublic: true, ClassInternal: true, ClassPersonal: true,
-	ClassPersonalID: true, ClassSpecific: true,
-}
+// Beda dari zero-value domain.FieldDef (public): custom field tenant lebih konservatif.
+const DefaultDataClass = domain.DataInternal
 
 // CustomFieldDef adalah satu field yang DITAMBAHKAN tenant ke entity modul inti tanpa mengubah
 // kode modul (PRD F1). Hidup di layer kustomisasi terpisah (gov.tenant_custom_fields); di-merge
@@ -87,7 +83,7 @@ func (c CustomFieldDef) Validate() error {
 	if class == "" {
 		class = DefaultDataClass
 	}
-	if !validDataClasses[class] {
+	if !class.Valid() {
 		return ErrCustomFieldInvalid(c.Field.Name, "class "+string(class)+" tidak dikenal")
 	}
 	if err := c.Field.Validate(); err != nil {

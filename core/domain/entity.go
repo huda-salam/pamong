@@ -144,11 +144,13 @@ func (e EntityDef) Validate() error {
 
 	// Field: tidak boleh duplikat nama; tiap field valid.
 	seen := make(map[string]bool)
+	encrypted := make(map[string]bool)
 	for _, f := range e.Fields {
 		if seen[f.Name] {
 			errs = append(errs, fmt.Sprintf("field duplikat: %q", f.Name))
 		}
 		seen[f.Name] = true
+		encrypted[f.Name] = f.Class.IsEncrypted()
 		if err := f.Validate(); err != nil {
 			errs = append(errs, err.Error())
 		}
@@ -163,10 +165,15 @@ func (e EntityDef) Validate() error {
 		}
 	}
 
-	// Searchable harus menunjuk field yang ada.
+	// Searchable (ILIKE/partial atas plaintext) harus menunjuk field yang ada dan TIDAK
+	// terenkripsi — pencarian parsial mustahil atas ciphertext. Field terenkripsi yang perlu
+	// equality lookup memakai FieldDef.Searchable (blind index), bukan daftar ini (ADR-009 §2).
 	for _, s := range e.Searchable {
-		if !seen[s] {
+		switch {
+		case !seen[s]:
 			errs = append(errs, fmt.Sprintf("Searchable %q bukan field entity", s))
+		case encrypted[s]:
+			errs = append(errs, fmt.Sprintf("Searchable %q terenkripsi — ILIKE/partial mustahil atas ciphertext; pakai FieldDef.Searchable (equality via blind index)", s))
 		}
 	}
 

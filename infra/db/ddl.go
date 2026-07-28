@@ -38,6 +38,14 @@ func GenerateMigration(schema string, entities []domain.EntityDef) (up, down str
 			idx := indexName(table, col)
 			fmt.Fprintf(&ub, "CREATE INDEX %s ON %s (%s);\n", idx, table, col)
 		}
+		// Blind index equality untuk field terenkripsi Searchable non-Unique (ADR-009 §2).
+		// Field Unique sudah memperoleh index implisit dari constraint UNIQUE pada _bidx.
+		for _, f := range e.Fields {
+			if f.Class.IsEncrypted() && f.Searchable && !f.Unique {
+				bcol := bidxColumn(f.Name)
+				fmt.Fprintf(&ub, "CREATE INDEX %s ON %s (%s);\n", indexName(table, bcol), table, bcol)
+			}
+		}
 		dropStmts = append(dropStmts, fmt.Sprintf("DROP TABLE IF EXISTS %s;", table))
 	}
 	// Down: drop tabel urutan terbalik agar FK intra-modul aman, lalu drop schema.
@@ -56,11 +64,13 @@ func createTable(table string, e domain.EntityDef) (string, error) {
 	cols := []string{"    id             UUID PRIMARY KEY"}
 
 	for _, f := range e.Fields {
-		col, err := columnDef(f)
+		defs, err := columnDef(f)
 		if err != nil {
 			return "", err
 		}
-		cols = append(cols, "    "+col)
+		for _, d := range defs {
+			cols = append(cols, "    "+d)
+		}
 	}
 
 	// Kolom sistem framework. created_by/updated_by SUDAH direserve di domain
@@ -78,11 +88,17 @@ func createTable(table string, e domain.EntityDef) (string, error) {
 	return b.String(), nil
 }
 
-// columnDef menghasilkan definisi satu kolom dari FieldDef.
-func columnDef(f domain.FieldDef) (string, error) {
+// columnDef menghasilkan definisi kolom dari FieldDef. Umumnya satu kolom; untuk field
+// terenkripsi (Class personal_id/specific, ADR-009) DUA kolom fisik: {field}_enc (ciphertext
+// AES-256-GCM) plus {field}_bidx (blind index HMAC) bila Searchable — nilai plaintext {field}
+// TIDAK pernah disimpan. UNIQUE menempel pada _bidx, bukan _enc (nonce GCM acak → tak bisa unik).
+func columnDef(f domain.FieldDef) ([]string, error) {
+	if f.Class.IsEncrypted() {
+		return encryptedColumnDefs(f), nil
+	}
 	sqlType, err := pgType(f)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	parts := []string{f.Name, sqlType}
 	if f.Required {
@@ -101,8 +117,32 @@ func columnDef(f domain.FieldDef) (string, error) {
 		}
 		parts = append(parts, fmt.Sprintf("CHECK (%s IN (%s))", f.Name, strings.Join(quoted, ", ")))
 	}
-	return strings.Join(parts, " "), nil
+	return []string{strings.Join(parts, " ")}, nil
 }
+
+// encryptedColumnDefs memetakan satu field terenkripsi ke kolom fisiknya (ADR-009 §2).
+// FieldDef.Validate menjamin invariant (mis. Unique ⇒ Searchable) sebelum sampai sini.
+func encryptedColumnDefs(f domain.FieldDef) []string {
+	enc := []string{encColumn(f.Name), "BYTEA"}
+	if f.Required {
+		enc = append(enc, "NOT NULL")
+	}
+	out := []string{strings.Join(enc, " ")}
+	if f.Searchable {
+		bidx := []string{bidxColumn(f.Name), "BYTEA"}
+		if f.Required {
+			bidx = append(bidx, "NOT NULL")
+		}
+		if f.Unique {
+			bidx = append(bidx, "UNIQUE")
+		}
+		out = append(out, strings.Join(bidx, " "))
+	}
+	return out
+}
+
+func encColumn(field string) string  { return field + "_enc" }
+func bidxColumn(field string) string { return field + "_bidx" }
 
 // pgType memetakan FieldType ke tipe kolom Postgres.
 func pgType(f domain.FieldDef) (string, error) {
