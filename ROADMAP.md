@@ -324,9 +324,10 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
     template selection" butir (a)-(d) dan "[PR-3.6.x] Konsumsi role binding".
     Belum ada use case admin / handler HTTP: store baru dipakai dari kode bootstrap.
 
-- **PR-3.2.5** Guard expression DSL ← 3.2.3, 2.4.2
+- **PR-3.2.5** Guard expression DSL ← 3.2.3, 2.4.2 ✅
   - Evaluator ekspresi boolean, di-compile saat load, tanpa side-effect
-  - DoD: guard mengevaluasi konteks actor & entity; syntax error ketahuan saat load
+  - DoD: guard mengevaluasi konteks actor & entity; syntax error ketahuan saat load ✅
+  - SELESAI (`ac65fec`): `core/workflow/guard.go` — compile saat load, boolean-only.
 
 - **PR-3.2.6** SLA, deadline & eskalasi ← 3.2.1, 3.6.1 ✅
   - Batas waktu per state, eskalasi otomatis saat lewat
@@ -345,9 +346,10 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
     clean. **Binding tenant pada peran eskalasi: RESOLVED PR-N2** — lewat `Engine.StartFromTemplate`
     + `ApplyBindings` di tiap `ExecuteWithComment` (bukan di `NotifierEscalator`), lihat PR-N2.
 
-- **PR-3.2.7** Workflow history & instance versioning ← 3.2.3, 1.3.1
+- **PR-3.2.7** Workflow history & instance versioning ← 3.2.3, 1.3.1 ✅
   - Riwayat transisi immutable; instance berjalan pakai versi definisi saat mulai
-  - DoD: perubahan definisi tidak mengubah instance yang sedang berjalan
+  - DoD: perubahan definisi tidak mengubah instance yang sedang berjalan ✅
+  - SELESAI (`6c49969`): instance versioning + history komentar (`core/workflow/instance.go`).
 
 ### Sub-phase 3.3 — Strategy registry & tenant config
 
@@ -521,13 +523,15 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
 
 ### Sub-phase 3.7 — Storage & metrics ports
 
-- **PR-3.7.1** Storage port + MinIO/S3 adapter ← 0.2.1
+- **PR-3.7.1** Storage port + MinIO/S3 adapter ← 0.2.1 ✅
   - Upload/download/delete, metadata
-  - DoD: integration test simpan & ambil file dari MinIO
+  - DoD: integration test simpan & ambil file dari MinIO ✅
+  - SELESAI (`5e8ec08`): `infra/storage` driver minio/s3 + local.
 
-- **PR-3.7.2** Metrics port + Prometheus/OTEL adapter ← 0.2.2
+- **PR-3.7.2** Metrics port + Prometheus/OTEL adapter ← 0.2.2 ✅
   - Counter, gauge, histogram; tracing OTEL
-  - DoD: metric tereskpos di endpoint; trace muncul di collector
+  - DoD: metric tereskpos di endpoint; trace muncul di collector ✅
+  - SELESAI (`eae322f`, fix `c61d7c5`): `infra/observability` MetricsPort Prometheus + tracing OTEL.
 
 ### Sub-phase 3.8 — Klasifikasi data & enkripsi field (ADR-009/010)
 
@@ -536,12 +540,14 @@ tanpa mematikan lookup/UNIQUE. WAJIB selesai sebelum tenant produksi pertama —
 migrasi naik seiring data & entity. Lihat ADR-009 (klasifikasi/enkripsi) & ADR-010 (KMS
 pluggable + custody sebagai kebijakan per-tenant).
 
-- **PR-3.8.1** `DataClass` di `FieldDef` + validasi + DDL multi-kolom ← 1.1.x (core/domain)
+- **PR-3.8.1** `DataClass` di `FieldDef` + validasi + DDL multi-kolom ← 1.1.x (core/domain) ✅
   - Tambah `Class`/`Searchable`; `Validate()` tolak kombinasi mustahil; `columnDef` → N kolom
     (`_enc`+`_bidx`) untuk field terenkripsi. **Murah sekarang** (satu-satunya konsumen
     EntityDef produksi = surat_masuk, tanpa pengenal).
   - DoD: entity dengan field `personal_id` meng-generate dua kolom; validasi menolak
-    `Unique`+terenkripsi+`!Searchable`; entity lama tetap kompilasi & lulus test.
+    `Unique`+terenkripsi+`!Searchable`; entity lama tetap kompilasi & lulus test. ✅
+  - SELESAI (`fdb1a78`): `DataClass` kanonik di `core/domain` (customization di-alias); UNIQUE
+    di `_bidx`; `EntityDef.Searchable` tolak field terenkripsi. Nol runtime kripto.
 
 - **PR-3.8.2** `port/crypto.go` + `infra/crypto` (AES-256-GCM + blind index) ← 3.8.1
   - CryptoPort (Encrypt/Decrypt/BlindIndex); KeyProvider registry + envelope; DEK store
