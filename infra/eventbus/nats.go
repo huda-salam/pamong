@@ -2,6 +2,7 @@ package eventbus
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 
@@ -56,6 +57,13 @@ func (d *NATSDriver) Dispatch(ctx context.Context, event port.Event) error {
 // (OutboxRelay yang dispatch via driver ini setelah commit transaksi bisnis).
 // Deserialisasi payload memakai schema.Unmarshal sehingga handler menerima struct
 // konkret bertipe sama dengan yang didaftarkan di SchemaRegistry.
+//
+// Subscribe BLOKIR sampai server NATS mengonfirmasi subscription (Flush). Ini bukan
+// kehati-hatian berlebih: nc.Subscribe hanya menaruh protokol SUB di buffer tulis klien,
+// dan NATS Core MEMBUANG pesan yang tiba sebelum subscription tercatat di server — tanpa
+// re-delivery. Tanpa Flush, event yang di-dispatch pada jendela antara Bootstrap dan
+// pencatatan SUB hilang permanen, sementara OutboxRelay sudah menandainya terkirim.
+// Biaya blokirnya satu round-trip saat boot (batas 10 detik bawaan klien).
 func (d *NATSDriver) Subscribe(event string, handler port.EventHandler) error {
 	sub, err := d.nc.Subscribe(event, func(msg *nats.Msg) {
 		ev, err := unmarshalEvent(msg.Data, event, d.schema)
@@ -74,6 +82,13 @@ func (d *NATSDriver) Subscribe(event string, handler port.EventHandler) error {
 	})
 	if err != nil {
 		return err
+	}
+	if err := d.nc.Flush(); err != nil {
+		// Subscription sudah terdaftar di klien tapi belum tentu di server: lepaskan supaya
+		// tak ada handler menggantung yang mengira dirinya aktif, lalu laporkan kegagalannya
+		// (bootstrap gagal lebih baik daripada subscriber diam-diam tuli).
+		_ = sub.Unsubscribe()
+		return fmt.Errorf("eventbus: konfirmasi subscribe %q ke server NATS gagal: %w", event, err)
 	}
 	d.mu.Lock()
 	d.subs = append(d.subs, sub)

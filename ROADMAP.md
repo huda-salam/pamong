@@ -272,6 +272,15 @@ Tujuan: event-driven, workflow yang bisa diubah, scheduler, notifikasi, storage,
     (NATS Core driver: `wire.go` serialisasi JSON lintas transport; `nats.go`
     `NATSDriver` Subscribe/Dispatch; `factory.go` `NewFromConfig` switch by config;
     4 integration test embed NATS server. Redis DEFERRED. Security review: clear.)
+  - **FIX (31 Jul 2026, ditemukan saat PR-3.8.2):** `Subscribe` tak mem-Flush, sehingga SUB
+    masih di buffer klien saat publish pertama datang — NATS Core membuang pesan tanpa
+    subscriber terdaftar dan tak pernah re-deliver. Dampak produksi: event yang di-dispatch
+    pada jendela antara Bootstrap dan pencatatan SUB HILANG PERMANEN padahal OutboxRelay sudah
+    menandainya terkirim. Gejalanya selama ini terbaca sebagai `TestNATSDriver_MultiSubscriber`
+    "flaky" (terbukti gagal 4/10 run). Perbaikan: `Subscribe` blokir sampai server
+    mengonfirmasi (Unsubscribe + error bila gagal) + test regresi
+    `TestNATSDriver_SubscribeSiapSaatReturn` (20 iterasi publish-langsung-setelah-subscribe;
+    diverifikasi gagal 3/5 run tanpa fix, hijau 10/10 dengan fix).
 
 - **PR-3.1.4** DLQ & retry ← 3.1.3 — SELESAI
   - Retry backoff, dead letter queue, alert

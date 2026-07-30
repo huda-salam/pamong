@@ -27,6 +27,12 @@ Driven adapter: implementasi port.EventPublisher + EventSubscriber. Driver memor
 ## Pitfall umum
 - Publish tanpa schema terdaftar [linter: event-must-use-const di sisi pemanggil].
 - Kehilangan event saat crash (gunakan outbox, bukan publish langsung).
+- **Mendaftarkan subscription NATS tanpa Flush.** `nc.Subscribe` hanya menaruh protokol SUB
+  di buffer tulis klien; NATS Core MEMBUANG pesan yang tiba sebelum server mencatatnya, tanpa
+  re-delivery. Akibatnya event yang di-dispatch pada jendela antara Bootstrap dan pencatatan
+  SUB hilang permanen padahal OutboxRelay sudah menandainya terkirim. `NATSDriver.Subscribe`
+  karena itu blokir sampai server mengonfirmasi — jangan dilepas demi "boot lebih cepat".
+  Gejalanya dulu muncul sebagai test yang tampak flaky, bukan sebagai error.
 
 ## Test
 - Unit: schema validation, retry/DLQ (memory driver).

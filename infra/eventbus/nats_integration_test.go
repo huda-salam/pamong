@@ -58,6 +58,50 @@ func newNATSSchema(t *testing.T) *eventbus.SchemaRegistry {
 	return schema
 }
 
+// TestNATSDriver_SubscribeSiapSaatReturn mengunci kontrak yang sebelumnya bocor: begitu
+// Subscribe mengembalikan nil, server NATS SUDAH mencatat subscription — sehingga event yang
+// di-dispatch pada instruksi berikutnya pasti diterima.
+//
+// Ini bukan test kosmetik. Sebelum perbaikan, nc.Subscribe hanya menaruh SUB di buffer tulis
+// klien; NATS Core membuang pesan yang tiba sebelum server mencatatnya dan tak pernah
+// re-deliver. Di produksi itu berarti event yang di-dispatch pada jendela antara Bootstrap dan
+// pencatatan SUB HILANG PERMANEN, sementara OutboxRelay sudah menandainya terkirim.
+//
+// Diulang beberapa kali karena jendelanya sempit: satu iterasi bisa lolos kebetulan (itulah
+// yang membuat TestNATSDriver_MultiSubscriber dulu tampak "flaky" alih-alih rusak). Tanpa
+// Flush di Subscribe, test ini gagal hampir pasti; dengan Flush ia deterministik.
+func TestNATSDriver_SubscribeSiapSaatReturn(t *testing.T) {
+	url := startEmbeddedNATS(t)
+	schema := newNATSSchema(t)
+	pub := eventbus.NewNATSDriver(newNATSConn(t, url), schema)
+
+	const iterasi = 20
+	for i := 0; i < iterasi; i++ {
+		received := make(chan struct{}, 1)
+		sub := eventbus.NewNATSDriver(newNATSConn(t, url), schema)
+		if err := sub.Subscribe(eventSuratDiterima, func(_ context.Context, _ port.Event) error {
+			received <- struct{}{}
+			return nil
+		}); err != nil {
+			t.Fatalf("iterasi %d: subscribe: %v", i, err)
+		}
+
+		// Tanpa jeda apa pun sesudah Subscribe — justru itu yang diuji.
+		if err := pub.Dispatch(context.Background(), port.Event{
+			Name:    eventSuratDiterima,
+			Payload: suratDiterima{NomorSurat: "004/IN/2025"},
+		}); err != nil {
+			t.Fatalf("iterasi %d: dispatch: %v", i, err)
+		}
+
+		select {
+		case <-received:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iterasi %d: event hilang — subscription belum tercatat di server saat Subscribe return", i)
+		}
+	}
+}
+
 // TestNATSDriver_PublishSubscribe_LintasKoneksi adalah DoD PR-3.1.3: publish dari
 // satu koneksi, subscribe dari koneksi lain ke broker NATS sungguhan. Event harus
 // tiba dengan payload bertipe konkret (bukan map[string]any).
