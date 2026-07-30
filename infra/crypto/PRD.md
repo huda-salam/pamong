@@ -7,9 +7,16 @@ envelope encryption KEK→DEK per-tenant per-purpose (ADR-010). Domain & use cas
 nol-dependency kripto — pemanggilan otomatis di lapis repository (infra/db).
 
 ## Status
-DEFERRED — implementasi pasca-Phase 3, sebelum tenant produksi pertama. PRD ini mengunci
-kontrak agar `port/crypto.go`, `FieldDef.Class`, dan DDL multi-kolom bisa masuk lebih dulu
-tanpa biaya migrasi belakangan.
+**IMPLEMENTED (PR-3.8.2)** untuk F1–F6 dengan driver `static` + `local` dan custody
+`platform`. Belum di-wire ke lapis repository — pemanggilan otomatis dari `FieldDef.Class`
+adalah PR-3.8.3, jadi belum ada kolom produksi yang terenkripsi.
+
+Yang masih terbuka:
+- Mode custody `tenant` + driver KMS eksternal (vault/aws-kms/bssn) → PR-3.8.8. Seam-nya
+  sudah ada: `RegisterProvider` + `CustodyProvider`; menambahnya tidak mengubah kode kripto.
+- Jalur operasi rotasi (re-wrap DEK saat KEK dirotasi, reindex saat kunci bidx dirotasi)
+  belum punya perintah CLI — rotasi KEK sudah didukung format & kode, tapi eksekusinya manual.
+- Jalur kebocoran samping (ADR-009 §6) → PR-3.8.4/3.8.5.
 
 ## Kebutuhan fungsional
 - F1: `Encrypt(ctx, tenantID, purpose, plain) → ct` — AES-256-GCM, nonce acak per-nilai;
@@ -54,13 +61,16 @@ tanpa biaya migrasi belakangan.
 - Enkripsi kolom tanpa menutup jalur samping (audit/event/idempotency/staging/log) — ADR-009 §6.
 
 ## Acceptance criteria
-- [ ] Roundtrip Encrypt→Decrypt mengembalikan plaintext identik; ciphertext dua panggilan
+- [x] Roundtrip Encrypt→Decrypt mengembalikan plaintext identik; ciphertext dua panggilan
       atas plaintext sama BERBEDA (nonce acak).
-- [ ] BlindIndex atas nilai sama (ternormalisasi) identik; atas nilai beda berbeda.
-- [ ] tenantID berbeda → ciphertext tak bisa didekripsi lintas tenant (isolasi DEK).
-- [ ] Rotasi key_version: ciphertext lama tetap terbaca; tulis baru pakai versi baru.
-- [ ] Driver `local` menolak jalan saat `GOV_ENV=production`.
-- [ ] Driver `static` menolak start bila `GOV_CRYPTO_MASTER_KEY` tak ada/tak valid (32-byte).
-- [ ] Driver `static`: rotasi master key (V1→V2) — DEK lama tetap ter-unwrap, DEK baru pakai V2.
-- [ ] `KeyProvider` baru bisa didaftarkan tanpa mengubah kode kripto (interface + Register).
-- [ ] `key_custody` per-tenant diresolusi ke KeyProvider yang benar (platform vs tenant).
+- [x] BlindIndex atas nilai sama (ternormalisasi) identik; atas nilai beda berbeda.
+- [x] tenantID berbeda → ciphertext tak bisa didekripsi lintas tenant (isolasi DEK).
+- [x] Rotasi key_version: ciphertext lama tetap terbaca; tulis baru pakai versi baru.
+- [x] Driver `local` menolak jalan saat `GOV_ENV=production` (dua gerbang: `config.Validate`
+      menolak di luar development, `NewFromConfig` menolak sekali lagi).
+- [x] Driver `static` menolak start bila `GOV_CRYPTO_MASTER_KEY` tak ada/tak valid (32-byte).
+- [x] Driver `static`: rotasi master key (V1→V2) — DEK lama tetap ter-unwrap, DEK baru pakai V2.
+- [x] `KeyProvider` baru bisa didaftarkan tanpa mengubah kode kripto (interface + Register).
+- [x] `key_custody` per-tenant diresolusi ke KeyProvider yang benar; mode tanpa provider
+      terdaftar DITOLAK LANTANG (`ErrCustodyUnsupported`), tidak jatuh ke platform.
+      Mode `tenant` sendiri baru aktif di PR-3.8.8 (driver pemda).

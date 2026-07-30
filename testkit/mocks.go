@@ -2,7 +2,12 @@ package testkit
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -191,6 +196,83 @@ func (m *MockMessaging) SentEmails() []SentEmail {
 	defer m.mu.Unlock()
 	out := make([]SentEmail, len(m.Emails))
 	copy(out, m.Emails)
+	return out
+}
+
+// --- MockCrypto ---
+
+// MockCrypto mengimplementasi port.CryptoPort di memori, tanpa KMS maupun DB (ADR-009).
+// Dipakai test lapis di atas kripto (repository, audit) yang perlu tahu "field ini melewati
+// enkripsi", bukan menguji kriptografinya — itu diuji di infra/crypto.
+//
+// BUKAN kripto: ciphertext-nya reversibel oleh siapa pun (base64). Sengaja demikian agar test
+// bisa memeriksa bahwa nilai yang tersimpan bukan plaintext dan tetap bisa dibaca kembali.
+// Sifat yang ditiru dari implementasi nyata:
+//   - Encrypt memakai nonce acak → dua panggilan atas nilai sama berbeda hasilnya.
+//   - Decrypt menolak ciphertext milik tenant lain (port.ErrCiphertextInvalid).
+//   - BlindIndex deterministik per (tenant, purpose) dan menormalkan nilai dengan aturan
+//     YANG SAMA seperti implementasi nyata (trim + case-fold untuk purpose tertentu).
+//     Kesamaan ini WAJIB: kalau mock lebih longgar, test keunikan `_bidx` bisa lolos di sini
+//     lalu bentrok di produksi. Diikat oleh test paritas di infra/crypto.
+type MockCrypto struct{}
+
+func NewMockCrypto() *MockCrypto { return &MockCrypto{} }
+
+var _ port.CryptoPort = (*MockCrypto)(nil)
+
+const mockCryptoPrefix = "mockenc"
+
+func (c *MockCrypto) Encrypt(_ context.Context, tenantID, purpose string, plain []byte) ([]byte, error) {
+	if tenantID == "" || purpose == "" {
+		return nil, errors.New("testkit: MockCrypto butuh tenantID & purpose")
+	}
+	nonce := make([]byte, 8)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, err
+	}
+	return []byte(strings.Join([]string{
+		mockCryptoPrefix, tenantID, purpose,
+		base64.RawStdEncoding.EncodeToString(nonce),
+		base64.RawStdEncoding.EncodeToString(plain),
+	}, ":")), nil
+}
+
+func (c *MockCrypto) Decrypt(_ context.Context, tenantID string, ct []byte) ([]byte, error) {
+	parts := strings.Split(string(ct), ":")
+	if len(parts) != 5 || parts[0] != mockCryptoPrefix {
+		return nil, fmt.Errorf("%w: bukan ciphertext MockCrypto", port.ErrCiphertextInvalid)
+	}
+	if parts[1] != tenantID {
+		return nil, fmt.Errorf("%w: ciphertext milik tenant lain", port.ErrCiphertextInvalid)
+	}
+	plain, err := base64.RawStdEncoding.DecodeString(parts[4])
+	if err != nil {
+		return nil, fmt.Errorf("%w: payload rusak", port.ErrCiphertextInvalid)
+	}
+	return plain, nil
+}
+
+func (c *MockCrypto) BlindIndex(_ context.Context, tenantID, purpose string, plain []byte) ([]byte, error) {
+	if tenantID == "" || purpose == "" {
+		return nil, errors.New("testkit: MockCrypto butuh tenantID & purpose")
+	}
+	sum := sha256.Sum256([]byte(tenantID + "|" + purpose + "|" + normalizeBlindIndex(purpose, plain)))
+	return sum[:], nil
+}
+
+// mockCaseFoldedPurposes menyalin tabel kebijakan framework di infra/crypto (crypto.go).
+// Salinan, bukan import: testkit sengaja bebas dependency infra agar unit test domain tak
+// menyeret pgx. Test paritas di infra/crypto yang menjaga keduanya tak menyimpang —
+// menambah purpose di sana WAJIB diikuti di sini (test akan gagal bila lupa).
+var mockCaseFoldedPurposes = map[string]bool{
+	"email": true,
+}
+
+func normalizeBlindIndex(purpose string, plain []byte) string {
+	out := strings.TrimSpace(string(plain))
+	if mockCaseFoldedPurposes[purpose] {
+		out = strings.ToLower(out)
+	}
 	return out
 }
 

@@ -322,15 +322,21 @@ GOV_STORAGE_ACCESS_KEY=...
 GOV_STORAGE_SECRET_KEY=...
 
 # Crypto / KMS (ADR-009/010) — enkripsi field selektif. Driver ber-registry (pluggable).
-GOV_CRYPTO_KMS_DRIVER=static         # static (default, KMS-alike bawaan) | local (dev/test) |
+GOV_CRYPTO_KMS_DRIVER=static         # static (pilihan PRODUKSI Tier 1/2, KMS-alike bawaan) |
+                                     # local (dev/test, DITOLAK di luar development) |
                                      # vault | aws-kms | gcp-kms | bssn ...
+                                     # default.yaml membiarkannya KOSONG = belum dipilih:
+                                     # boot tetap jalan, penolakan terjadi saat kripto dipakai
 GOV_CRYPTO_KMS_ENDPOINT=...          # untuk driver eksternal (vault/aws-kms/...)
 # Driver `static`: master KEK dari secret (JANGAN commit; JANGAN di default.yaml). Ber-versi
 # untuk rotasi. DEK ter-wrap disimpan sentral di id.data_keys.
 GOV_CRYPTO_MASTER_KEY=...            # base64 32-byte; atau via file/secret manager
-# GOV_CRYPTO_MASTER_KEY_V2=...       # versi berikutnya saat rotasi (V1 tetap utk unwrap lama)
-# Custody KEK ditetapkan per-tenant (key_custody: platform|tenant) di tenant config/registry,
-# BUKAN env global — lihat ADR-010.
+# GOV_CRYPTO_MASTER_KEY_V2=...       # versi berikutnya saat rotasi (V1 tetap utk unwrap lama;
+#                                    # versi tertinggi yang terisi = versi aktif)
+GOV_CRYPTO_DEK_CACHE_TTL=5m          # umur DEK ter-decrypt di cache in-process (0 = 5m)
+# Custody KEK ditetapkan per-tenant (key_custody: platform|tenant) di id.tenant_registry,
+# BUKAN env global — lihat ADR-010. Mode `tenant` belum punya driver (PR-3.8.8): tenant
+# ber-custody 'tenant' DITOLAK, tidak jatuh ke platform.
 
 # Cache
 GOV_CACHE_DRIVER=redis               # redis | memory

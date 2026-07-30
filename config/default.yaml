@@ -69,6 +69,23 @@ messaging:
   smtp_password: ""
   from_email: no-reply@pamong.local
 
+# crypto: enkripsi field selektif (ADR-009) + key management (ADR-010).
+# kms_driver SENGAJA kosong di sini. Kosong = "belum dipilih": deployment yang belum
+# memakai kripto tetap bisa boot, dan penolakan terjadi di titik PEMAKAIAN
+# (crypto.NewFromConfig) — bukan memaksa semua staging/production menyediakan kunci
+# sebelum ada satu pun kolom terenkripsi. Di development, kosong diperlakukan "local".
+#   local  = dev/test (kunci turunan tetap, ada di source code) — DITOLAK di luar development.
+#   static = produksi Tier 1/2; set GOV_CRYPTO_MASTER_KEY (base64 32-byte) dari secret
+#            store — JANGAN taruh master key di file ini.
+# Custody (siapa pegang KEK) bukan di sini: kebijakan per-tenant di
+# id.tenant_registry.key_custody.
+crypto:
+  kms_driver: ""
+  kms_endpoint: ""
+  master_key: ""
+  master_key_v2: ""
+  dek_cache_ttl: 5m
+
 cache:
   driver: memory
   url: ""

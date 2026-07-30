@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/huda-salam/pamong/core/config"
 )
@@ -197,5 +198,125 @@ func TestLoad_StagingMessagingLogDitolak(t *testing.T) {
 	_, err := config.Load(config.WithDir(dir), config.WithEnv("staging"))
 	if err == nil {
 		t.Fatal("messaging.driver=log di staging harus ditolak Validate()")
+	}
+}
+
+// TestLoad_CryptoLocalDitolakDiLuarDevelopment: kunci driver KMS "local" ada di source code,
+// jadi ia tak boleh menyentuh data mirip-nyata (ADR-010) — pola sama messaging.driver=log.
+func TestLoad_CryptoLocalDitolakDiLuarDevelopment(t *testing.T) {
+	for _, env := range []string{"staging", "production"} {
+		dir := t.TempDir()
+		writeYAML(t, dir, env+".yaml", "env: "+env+"\ncrypto:\n  kms_driver: local\n")
+
+		_, err := config.Load(config.WithDir(dir), config.WithEnv(env))
+		if err == nil {
+			t.Errorf("env=%s: crypto.kms_driver=local harus ditolak Validate()", env)
+		}
+	}
+}
+
+// TestLoad_CryptoDriverKosongTidakMenahanBoot: selama kripto belum di-wire ke repository,
+// deployment yang tak menyetel crypto sama sekali harus tetap boot. Penolakan ada di titik
+// pemakaian (crypto.NewFromConfig), bukan di Validate — lihat komentar di schema.go.
+func TestLoad_CryptoDriverKosongTidakMenahanBoot(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "production.yaml", `env: production
+identity_db:
+  host: db
+  user: app
+db:
+  host: db
+  user: app
+auth:
+  token_secret: "0123456789012345678901234567890123"
+messaging:
+  driver: smtp
+observability:
+  log_format: json
+`)
+
+	if _, err := config.Load(config.WithDir(dir), config.WithEnv("production")); err != nil {
+		t.Fatalf("production tanpa konfigurasi crypto harus tetap boot: %v", err)
+	}
+}
+
+// TestLoad_CryptoStaticWajibMasterKey: driver static tanpa master KEK yang sah tak bisa
+// membungkus DEK — gagal saat boot, bukan saat baris pertama dienkripsi.
+func TestLoad_CryptoStaticWajibMasterKey(t *testing.T) {
+	cases := map[string]string{
+		"tanpa master key": "",
+		"bukan base64":     "\n  master_key: \"bukan base64!!\"",
+		"panjang salah":    "\n  master_key: \"c2hvcnQ=\"", // "short"
+	}
+	for name, extra := range cases {
+		dir := t.TempDir()
+		writeYAML(t, dir, "development.yaml", "env: development\ncrypto:\n  kms_driver: static"+extra+"\n")
+
+		if _, err := config.Load(config.WithDir(dir), config.WithEnv("development")); err == nil {
+			t.Errorf("%s: kms_driver=static harus ditolak Validate()", name)
+		}
+	}
+}
+
+// TestLoad_CryptoStaticMasterKeyValid memastikan aturan di atas tidak kebablasan: master key
+// base64 32-byte diterima, dan rotasi (V2 terisi) tetap sah.
+func TestLoad_CryptoStaticMasterKeyValid(t *testing.T) {
+	const key32 = "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MDE=" // 32 byte base64
+	dir := t.TempDir()
+	writeYAML(t, dir, "development.yaml", "env: development\ncrypto:\n  kms_driver: static\n  master_key: \""+key32+"\"\n  master_key_v2: \""+key32+"\"\n")
+
+	cfg, err := config.Load(config.WithDir(dir), config.WithEnv("development"))
+	if err != nil {
+		t.Fatalf("master key sah harus diterima: %v", err)
+	}
+	keys, err := cfg.Crypto.MasterKeys()
+	if err != nil {
+		t.Fatalf("MasterKeys: %v", err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("jumlah versi master key = %d, mau 2 (V1 wajib tetap ada saat rotasi)", len(keys))
+	}
+}
+
+// TestLoad_DurationDariEnv mengunci parsing field time.Duration dari env: sebelumnya
+// ParseInt selalu gagal atas "30s" dan nilainya diabaikan DIAM-DIAM — knob keamanan
+// (umur cache DEK) tampak bisa dikonfigurasi padahal tidak.
+func TestLoad_DurationDariEnv(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "development.yaml", "env: development\ncrypto:\n  dek_cache_ttl: 5m\n")
+
+	t.Setenv("GOV_CRYPTO_DEK_CACHE_TTL", "30s")
+	t.Setenv("GOV_EVENTBUS_RETRY_BACKOFF_BASE", "2s")
+
+	cfg, err := config.Load(config.WithDir(dir), config.WithEnv("development"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Crypto.DEKCacheTTL != 30*time.Second {
+		t.Errorf("crypto.dek_cache_ttl = %v, mau 30s (env harus menimpa YAML)", cfg.Crypto.DEKCacheTTL)
+	}
+	if cfg.EventBus.RetryBackoffBase != 2*time.Second {
+		t.Errorf("eventbus.retry_backoff_base = %v, mau 2s", cfg.EventBus.RetryBackoffBase)
+	}
+}
+
+// TestLoad_DurationDariYAML memastikan jalur YAML tetap jalan (sintaks Go duration).
+func TestLoad_DurationDariYAML(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "development.yaml", "env: development\ncrypto:\n  dek_cache_ttl: 90s\n")
+
+	cfg, err := config.Load(config.WithDir(dir), config.WithEnv("development"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Crypto.DEKCacheTTL != 90*time.Second {
+		t.Fatalf("crypto.dek_cache_ttl = %v, mau 90s", cfg.Crypto.DEKCacheTTL)
+	}
+}
+
+// TestCryptoConfig_DEKCacheTTLDefault menjaga default aman bila TTL tidak diset.
+func TestCryptoConfig_DEKCacheTTLDefault(t *testing.T) {
+	if got := (config.CryptoConfig{}).DEKCacheTTLOrDefault(); got != 5*time.Minute {
+		t.Fatalf("TTL default = %v, mau 5m", got)
 	}
 }

@@ -249,22 +249,46 @@ kebutuhannya dibangun (keputusan user 2026-07-27) — bukan bug aktif, tapi jang
 - Cek: hanya `personal_id`/`specific` terenkripsi; `nama_lengkap` TIDAK; field terenkripsi
   tak masuk sortable/filterable (kecuali equality); `Unique` di kolom `_bidx`, bukan `_enc`.
 
-### H2. Blind index & dictionary attack — `DEFERRED(kripto)`
+### H2. Blind index & dictionary attack — `SEBAGIAN DITUTUP (PR-3.8.2)`
 - `infra/crypto`, ADR-009
 - Cek: kunci bidx TERPISAH & di KMS (bukan DB); HMAC atas nilai ternormalisasi; ruang NIK
   16 digit kecil → kunci bidx bocor = brute-force layak, jadi kunci wajib di luar dump DB.
+- Ditutup di PR-3.8.2: kunci bidx adalah DEK `kind='bidx'` TERPISAH dari `kind='enc'`
+  (bukan turunan satu DEK), tersimpan hanya dalam bentuk ter-wrap di identity DB — dump
+  tenant DB tak memuat kunci apa pun. HMAC-SHA256 atas nilai ternormalisasi (trim; case-fold
+  untuk purpose email). Test: `TestBlindIndex_*`, `TestBlindIndex_KunciTerpisahDariKunciEnkripsi`.
+- TERSISA: nilai bidx belum dipakai kolom nyata (itu PR-3.8.3/3.8.6) — verifikasi "UNIQUE di
+  `_bidx`" ikut H1.
 
 ### H3. Jalur kebocoran samping — `DEFERRED(kripto)` (ADR-009 §6)
 - audit diff (E2), payload event (NATS stream), `gov.idempotency_keys`, staging table
   migrasi, log/trace (OTEL, query log), clone `gov.user_profiles`
 - Cek: tiap jalur tak membocorkan pengenal mentah. Enkripsi kolom saja = teater keamanan.
 
-### H4. Key custody & rotasi — `DEFERRED(kripto)` (ADR-010)
+### H4. Key custody & rotasi — `SEBAGIAN DITUTUP (PR-3.8.2)` (ADR-010)
 - `infra/crypto/envelope.go`, KeyProvider driver, KMS
 - Cek: DEK per-tenant per-purpose; DEK ter-wrap tak di tenant DB; `KeyProvider` di balik
   registry (KEK tak pernah keluar KMS); custody per-tenant (`key_custody`) diresolusi benar
   (platform vs tenant); driver `local` ditolak di production; format ciphertext self-describing
   (rotasi jalan). Untuk tenant `key_custody=platform` di Tier 3: escrow/exit kunci tertulis (kontrak).
+- Ditutup di PR-3.8.2: DEK per (tenant, purpose, kind) di `id.data_keys` (sentral, hanya blob
+  ter-wrap); `KeyProvider` ber-registry (`RegisterProvider`) dengan driver `static`/`local`;
+  blob DEK terikat KeyRef lewat AAD (baris kunci tak bisa dipindah antar tenant/purpose/kind);
+  ciphertext self-describing + rotasi KEK V1→V2 & rotasi DEK lazy teruji; `local` ditolak di
+  luar development oleh DUA gerbang (`config.Validate` + `NewFromConfig`); custody dibaca
+  per-tenant dari registry, `key_custody='tenant'` ditolak lantang (`ErrCustodyUnsupported`).
+- TERSISA: driver KMS produksi + mode custody `tenant` (PR-3.8.8); escrow/exit kunci Tier 3
+  (kontrak, bukan kode); rotasi belum punya jalur operasi (CLI re-wrap) — masih manual SQL.
+- **BATAS yang harus diperiksa saat PR-3.8.3 (jangan dianggap sudah ditutup):** AAD ciphertext
+  field hanya mengikat TENANT. purpose & key_version dibaca dari blob itu sendiri (konsekuensi
+  sadar format self-describing), sehingga ciphertext bisa dipindah antar KOLOM dalam satu
+  tenant dan tetap terbuka. Penegakan kolom = tugas repository: bandingkan `crypto.PurposeOf(ct)`
+  dengan purpose kolom sebelum `Decrypt`. Blob DEK (`id.data_keys`) TIDAK punya batas ini —
+  KeyRef-nya diberikan dari luar, jadi baris kunci memang tak bisa dipindah antar
+  tenant/purpose/kind.
+- Catatan cache: entri DEK ter-decrypt yang kedaluwarsa belum dihapus dari map (`envelope.go`)
+  — materi kunci bertahan di memori proses lebih lama dari TTL yang didokumentasikan. Bukan
+  jalur eksploitasi, tapi memperlebar jendela paparan core dump; rapikan saat 3.8.3/3.8.8.
 
 ---
 

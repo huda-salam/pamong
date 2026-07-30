@@ -549,18 +549,41 @@ pluggable + custody sebagai kebijakan per-tenant).
   - SELESAI (`fdb1a78`): `DataClass` kanonik di `core/domain` (customization di-alias); UNIQUE
     di `_bidx`; `EntityDef.Searchable` tolak field terenkripsi. Nol runtime kripto.
 
-- **PR-3.8.2** `port/crypto.go` + `infra/crypto` (AES-256-GCM + blind index) ← 3.8.1
+- **PR-3.8.2** `port/crypto.go` + `infra/crypto` (AES-256-GCM + blind index) ← 3.8.1 ✅
   - CryptoPort (Encrypt/Decrypt/BlindIndex); KeyProvider registry + envelope; DEK store
     `id.data_keys`; driver `static` (KMS-alike bawaan, master KEK ber-versi — **default
     produksi Tier 1/2**) + `local` (dev/test); format ciphertext self-describing. KMS eksternal
     (vault/aws-kms/bssn) di-plug kelak tanpa ubah kode.
   - DoD: roundtrip; ciphertext beda tiap panggilan; blind index deterministik; isolasi per
-    tenant; `static` menolak start tanpa master key valid + rotasi V1→V2 jalan.
+    tenant; `static` menolak start tanpa master key valid + rotasi V1→V2 jalan. ✅
+  - SELESAI: `port/crypto.go` (+`ErrCiphertextInvalid`) & `infra/crypto` (crypto.go/provider.go/
+    kek.go/drivers.go/dek_store.go/envelope.go/custody.go) + `testkit.MockCrypto`.
+    Ciphertext `v1|purpose|key_version|nonce|ct+tag`, AAD mengikat (tenant, purpose, versi) →
+    ciphertext tak bisa dipindah antar tenant. DEK per **(tenant, purpose, kind)** —
+    `kind` enc vs bidx SENGAJA kunci terpisah, bukan turunan satu DEK (kalau diturunkan,
+    rotasi kunci enkripsi ikut memaksa reindex bidx yang mahal). Migrasi identity 007
+    (`id.data_keys`, unique index parsial → tepat satu versi aktif) + 008 (kolom
+    `key_custody`). Kunci dibuat otomatis saat purpose dipakai pertama kali; balapan insert
+    diuji (8 goroutine → satu kunci). Custody dibaca per-tenant dari registry;
+    `key_custody='tenant'` DITOLAK LANTANG (`ErrCustodyUnsupported`) — tanpa fallback ke
+    platform; unwrap memakai provider sesuai kolom `custody` baris itu sehingga data lama
+    tetap terbaca bila custody berpindah. Driver `local` ditolak di luar development oleh dua
+    gerbang (`config.Validate` + `NewFromConfig`). **BELUM di-wire ke repository (itu 3.8.3)
+    → nol perubahan perilaku.** Config `GOV_CRYPTO_*` (default dev: `kms_driver: local`).
 
 - **PR-3.8.3** Enkripsi transparan di lapis repository ← 3.8.2, 1.2.1
   - infra/db enkripsi saat tulis + blind index + dekripsi saat baca; equality/UNIQUE → `_bidx`.
     Otomatis dari `FieldDef.Class`, bukan use case.
   - DoD: CRUD entity ber-`personal_id` bekerja; kolom `_enc` di DB bukan plaintext; lookup jalan.
+  - **WAJIB (warisan 3.8.2):** sebelum `Decrypt`, repo memeriksa `crypto.PurposeOf(ct)` sama
+    dengan purpose kolom yang dibaca, lalu menolak bila berbeda. AAD hanya mengikat TENANT —
+    purpose & versi dibaca dari blob itu sendiri (konsekuensi format self-describing), jadi
+    tanpa pemeriksaan ini ciphertext bisa dipindah antar kolom DALAM SATU tenant (mis. `nik`
+    disalin ke `no_rekening_enc`) dan tetap terbuka. Pengikatan kolom hanya bisa ditegakkan
+    di lapis yang tahu kolomnya — yaitu di sini.
+  - Celah desain yang harus diputuskan lebih dulu: `SQLRepository` generik bekerja atas
+    `Mapper[T]` (kolom = string) dan TAK tahu `FieldDef.Class`; perlu ditentukan bagaimana
+    repo/mapper belajar class per-kolom. Sekalian rekonsiliasi `CustomFieldDef.Class`.
 
 - **PR-3.8.4** Enkripsi diff audit sensitif (tutup E2) ← 3.8.2, core/audit
   - Diff class `personal_id`/`specific` terenkripsi; raw tetap bukti; read-gated

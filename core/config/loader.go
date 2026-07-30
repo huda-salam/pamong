@@ -7,9 +7,13 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+// durationType dipakai setField untuk mengenali field time.Duration (Kind-nya Int64).
+var durationType = reflect.TypeOf(time.Duration(0))
 
 // loaderOpts mengatur sumber config. Default: dir "config", env dari GOV_ENV.
 type loaderOpts struct {
@@ -120,6 +124,16 @@ func setField(field reflect.Value, raw string) {
 	case reflect.String:
 		field.SetString(raw)
 	case reflect.Int, reflect.Int64:
+		// time.Duration ber-Kind Int64 tapi ditulis manusia sebagai "30s"/"5m" (sama seperti
+		// di YAML). Tanpa cabang ini ParseInt selalu gagal dan nilainya diabaikan diam-diam —
+		// knob seolah bisa dikonfigurasi padahal tidak (mis. GOV_CRYPTO_DEK_CACHE_TTL,
+		// GOV_EVENTBUS_RETRY_BACKOFF_*).
+		if field.Type() == durationType {
+			if d, err := time.ParseDuration(raw); err == nil {
+				field.SetInt(int64(d))
+			}
+			return
+		}
 		if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
 			field.SetInt(n)
 		}

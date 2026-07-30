@@ -7,6 +7,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ type AppConfig struct {
 	EventBus    EventBusConfig      `yaml:"eventbus"`
 	Storage     StorageConfig       `yaml:"storage"`
 	Messaging   MessagingConfig     `yaml:"messaging"`
+	Crypto      CryptoConfig        `yaml:"crypto"`
 	Cache       CacheConfig         `yaml:"cache"`
 	Observ      ObservabilityConfig `yaml:"observability"`
 	Auth        AuthConfig          `yaml:"auth"`
@@ -197,6 +199,69 @@ type MessagingConfig struct {
 	FromEmail    string `yaml:"from_email" env:"GOV_MESSAGING_FROM_EMAIL"` // alamat pengirim (header From)
 }
 
+// CryptoConfig — enkripsi field selektif (ADR-009) & key management (ADR-010).
+//
+// KMS adalah DRIVER ber-registry, pola eventbus/storage/messaging (titik ekstensi #1):
+// kode kripto bergantung pada KeyProvider, bukan vendor, sehingga KMS eksternal di-plug
+// tanpa mengubah kode.
+//   - "static" — KMS-alike bawaan, DEFAULT PRODUKSI Tier 1/2. Master KEK dari MasterKey
+//     (base64 32-byte) yang WAJIB berasal dari secret store/env — JANGAN commit ke
+//     default.yaml. Ber-versi (MasterKeyV2 dst) agar rotasi KEK murah: yang di-re-wrap
+//     hanya DEK, data tak disentuh.
+//   - "local" — dev/test saja: kunci turunan tetap, tanpa versi, nol konfigurasi.
+//     DILARANG di luar development (ditolak Validate) — pola sama messaging.driver=log.
+//   - "vault"/"aws-kms"/"gcp-kms"/"bssn"/... — didaftarkan ke registry saat pengadaan
+//     menentukan; config ini tak perlu berubah selain Driver + Endpoint.
+//
+// Custody (siapa pegang KEK) BUKAN di sini: ia kebijakan per-tenant (kolom
+// id.tenant_registry.key_custody, ADR-010 §3) karena tiap pemda bisa berbeda kontrak.
+type CryptoConfig struct {
+	KMSDriver   string `yaml:"kms_driver" env:"GOV_CRYPTO_KMS_DRIVER"` // static | local | vault | ...
+	KMSEndpoint string `yaml:"kms_endpoint" env:"GOV_CRYPTO_KMS_ENDPOINT"`
+
+	// Master KEK driver "static", base64 std-encoding 32 byte. Versi tertinggi yang terisi
+	// menjadi versi AKTIF (dipakai membungkus DEK baru); versi lama tetap dibutuhkan untuk
+	// membuka DEK yang sudah ada — karena itu JANGAN hapus V1 saat mengisi V2.
+	MasterKey   string `yaml:"master_key" env:"GOV_CRYPTO_MASTER_KEY"`
+	MasterKeyV2 string `yaml:"master_key_v2" env:"GOV_CRYPTO_MASTER_KEY_V2"`
+
+	// DEKCacheTTL membatasi umur DEK ter-decrypt di cache in-process (bukan di DB/log).
+	// 0 = default 5 menit. Menghindari round-trip KMS per-baris tanpa menahan kunci selamanya.
+	DEKCacheTTL time.Duration `yaml:"dek_cache_ttl" env:"GOV_CRYPTO_DEK_CACHE_TTL"`
+}
+
+// masterKeyLen adalah panjang master KEK driver "static": 32 byte = AES-256.
+const masterKeyLen = 32
+
+// DEKCacheTTLOrDefault memberi umur cache DEK dengan default aman bila tidak diset.
+func (c CryptoConfig) DEKCacheTTLOrDefault() time.Duration {
+	if c.DEKCacheTTL <= 0 {
+		return 5 * time.Minute
+	}
+	return c.DEKCacheTTL
+}
+
+// MasterKeys mengembalikan master KEK per-versi hasil decode base64, terurut implisit lewat
+// kunci map (versi 1..N). Error bila ada nilai terisi yang bukan base64 32-byte — dipakai
+// baik oleh Validate (gagal saat boot) maupun driver static (gagal saat konstruksi).
+func (c CryptoConfig) MasterKeys() (map[int][]byte, error) {
+	out := make(map[int][]byte, 2)
+	for version, encoded := range map[int]string{1: c.MasterKey, 2: c.MasterKeyV2} {
+		if encoded == "" {
+			continue
+		}
+		raw, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return nil, fmt.Errorf("crypto.master_key versi %d bukan base64 yang sah: %w", version, err)
+		}
+		if len(raw) != masterKeyLen {
+			return nil, fmt.Errorf("crypto.master_key versi %d harus %d byte, bukan %d", version, masterKeyLen, len(raw))
+		}
+		out[version] = raw
+	}
+	return out, nil
+}
+
 // CacheConfig — driver cache.
 type CacheConfig struct {
 	Driver     string `yaml:"driver" env:"GOV_CACHE_DRIVER"` // redis | memory
@@ -275,6 +340,31 @@ func (c *AppConfig) Validate() error {
 	if c.Messaging.Driver == "log" && c.Env != "development" {
 		errs = append(errs, fmt.Sprintf(
 			"messaging.driver=log hanya untuk development (body OTP bocor ke log; env=%q butuh smtp/provider nyata)", c.Env))
+	}
+
+	// Driver KMS "local" memakai kunci turunan tetap yang ada di kode — cukup untuk dev/test,
+	// TIDAK untuk data nyata. Ditolak di luar development (ADR-010), pola sama messaging=log.
+	// Nama driver lain TIDAK divalidasi di sini: daftar driver hidup di registry infra/crypto
+	// (config tak boleh tahu infra); typo gagal saat konstruksi provider — tetap saat boot.
+	//
+	// Driver KOSONG sengaja TIDAK ditolak di sini: selama belum ada kolom terenkripsi
+	// (wiring repository = PR-3.8.3), memaksa tiap staging/production menyediakan master key
+	// hanya akan menahan boot tanpa manfaat keamanan. Penolakan tetap ada, tapi di titik
+	// pemakaian: crypto.NewFromConfig menolak driver kosong/local di luar development.
+	if c.Crypto.KMSDriver == "local" && c.Env != "development" {
+		errs = append(errs, fmt.Sprintf(
+			"crypto.kms_driver=local hanya untuk development (kunci ada di kode; env=%q butuh static/KMS nyata)", c.Env))
+	}
+	// Driver "static" tanpa master key valid = tak bisa membungkus DEK. Gagal saat boot, bukan
+	// saat baris pertama dienkripsi.
+	if c.Crypto.KMSDriver == "static" {
+		keys, err := c.Crypto.MasterKeys()
+		switch {
+		case err != nil:
+			errs = append(errs, err.Error())
+		case len(keys) == 0:
+			errs = append(errs, "crypto.master_key wajib untuk kms_driver=static (base64 32-byte, dari secret store/env — jangan di-commit)")
+		}
 	}
 
 	// Di production, koneksi sentral wajib terisi — tidak boleh jalan dengan default kosong.
