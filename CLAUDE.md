@@ -8,6 +8,10 @@ Baca seluruh file ini sebelum melakukan perubahan apapun.
 - `docs/CODE_CONVENTION.md` — standar konkret penulisan kode Go (banyak ditegakkan linter).
 - `docs/DOCUMENTATION_CONVENTION.md` — cara menulis PRD, ADR, komentar, CLAUDE.md lokal.
 
+**Rujukan struktur database:** `docs/DB_SCHEMA.md` (skema yang berlaku sekarang + penjelasan)
+dan `docs/DB_CHANGELOG.md` (riwayat tiap perubahan struktur DB). Baca sebelum menyentuh DDL,
+migrasi, atau repository — dan **perbarui keduanya di PR yang sama** saat struktur DB berubah.
+
 **Tiap komponen punya `CLAUDE.md` (panduan kerja ringkas); umumnya juga `PRD.md`
 (spesifikasi).** Pengecualian: sub-komponen yang mengimplementasi PRD komponen induk
 merujuk PRD itu alih-alih menduplikasi — mis. `tenantrole/` & `delegation/` merujuk
@@ -1369,6 +1373,17 @@ baru selama window migrasi. Breaking change butuh dua rilis.
 **Rollout per-tenant:** canary dulu, batch sisanya, throttled, rollback per-tenant
 independen.
 
+**Dokumentasi struktur DB — dua file, wajib di PR yang sama:**
+- `docs/DB_CHANGELOG.md` — **riwayat**: satu entri per PR yang mengubah struktur DB
+  (apa berubah, kapan, kenapa, reversibel atau tidak). Append; entri lama tidak diedit.
+- `docs/DB_SCHEMA.md` — **keadaan akhir**: satu file berisi seluruh skema yang berlaku
+  sekarang (topologi, tiap tabel/kolom/index/constraint) plus penjelasannya.
+
+Yang dihitung sebagai perubahan struktur DB bukan hanya file `.sql`: DDL
+*ensure-schema-on-write* di kode Go (mis. `tenantrole/adapter/db/schema.go`), perubahan
+generator DDL (`infra/db/ddl.go`), perubahan index/constraint/default, dan perubahan cara
+skema diterapkan ikut dihitung. Detail konvensi: `docs/DOCUMENTATION_CONVENTION.md` §7.
+
 ---
 
 ## Data migration pipeline (legacy import)
@@ -1704,6 +1719,8 @@ Sebelum minta review, pastikan semua item berikut terpenuhi:
 [ ] Coverage tidak turun dari baseline (lihat tabel di atas)
 [ ] Penanda baru ber-ref: TODO (PR-X.Y.Z/#issue) · FIXME (#issue) · DEFERRED (Phase-X.Y/PR-X.Y.Z)
 [ ] Setiap file migration baru punya pasangan down migration
+[ ] Jika ada perubahan struktur DB (migrasi/DDL Go/generator): entri baru di docs/DB_CHANGELOG.md
+    DAN docs/DB_SCHEMA.md sudah diselaraskan
 [ ] Jika ada perubahan event schema: versi schema dinaikkan
 [ ] Jika ada permission baru: terdaftar di manifest dan docs/contracts/
 [ ] Jika ada perubahan core framework: ADR baru atau ADR update sudah ada
@@ -1733,6 +1750,7 @@ Sebelum minta review, pastikan semua item berikut terpenuhi:
 - [ ] Permission baru sudah terdaftar di manifest
 - [ ] Event schema baru sudah di-contract test
 - [ ] Migration sudah punya down migration
+- [ ] Perubahan struktur DB tercatat di docs/DB_CHANGELOG.md + docs/DB_SCHEMA.md
 - [ ] ADR dibuat/diupdate (jika perubahan arsitektur)
 
 ## Referensi
@@ -1894,10 +1912,11 @@ ADR Accepted tidak diubah. Buat ADR baru yang supersede dengan referensi ke ADR 
 2. `pamongctl lint ./...` bersih
 3. Penanda baru ber-ref (CODE_CONVENTION §9): `TODO`=PR/#issue, `FIXME`=#issue, `DEFERRED`=Phase/PR
 4. Migration punya down migration
-5. Event schema baru punya contract test
-6. Dependency baru sudah `go mod tidy`
-7. Perubahan core sudah ada ADR-nya
-8. Permission baru sudah terdaftar di manifest dan `docs/contracts/permissions.md`
+5. Perubahan struktur DB tercatat di `docs/DB_CHANGELOG.md` & `docs/DB_SCHEMA.md` sudah selaras
+6. Event schema baru punya contract test
+7. Dependency baru sudah `go mod tidy`
+8. Perubahan core sudah ada ADR-nya
+9. Permission baru sudah terdaftar di manifest dan `docs/contracts/permissions.md`
 
 ---
 
@@ -1914,6 +1933,9 @@ ADR Accepted tidak diubah. Buat ADR baru yang supersede dengan referensi ke ADR 
 - Jika menemukan kode yang melanggar konvensi di file yang tidak sedang dikerjakan,
   catat sebagai komentar dalam respons tapi jangan ubah di luar scope task
 - Migration adalah append-only — jangan edit file yang sudah ada, buat nomor urut baru
+- Setiap kali menyentuh DDL (file migrasi, DDL ensure-on-write di Go, atau generator DDL):
+  tambah entri di `docs/DB_CHANGELOG.md` dan selaraskan `docs/DB_SCHEMA.md` sebelum commit —
+  salin tipe/constraint apa adanya dari DDL sumber, jangan mengarang
 - Ketika membuat use case baru, tulis test-nya di file yang sama sebelum pindah ke
   file berikutnya — jangan tinggalkan use case tanpa test
 - Setiap kali membuat port baru di `domain/ports.go`, langsung buat juga mock-nya

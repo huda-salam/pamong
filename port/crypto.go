@@ -34,6 +34,15 @@ type CryptoPort interface {
 	// termasuk saat ct milik tenant lain.
 	Decrypt(ctx context.Context, tenantID string, ct []byte) ([]byte, error)
 
+	// PurposeOf membaca purpose (konteks kunci) dari ciphertext TANPA mendekripsinya — tanpa
+	// kunci, tanpa I/O. Ini bagian dari kontrak port, bukan detail satu implementasi, karena
+	// lapis repository membutuhkannya untuk menegakkan pengikatan KOLOM: AAD hanya mengikat
+	// tenant (purpose & versi kunci dibaca dari blob itu sendiri, konsekuensi format
+	// self-describing), sehingga ciphertext yang dipindah antar kolom dalam SATU tenant tetap
+	// terbuka. Repo membandingkan hasil PurposeOf dengan purpose kolom yang sedang dibaca dan
+	// menolak bila berbeda. Mengembalikan ErrCiphertextInvalid untuk blob asing/rusak.
+	PurposeOf(ct []byte) (string, error)
+
 	// BlindIndex menghasilkan nilai DETERMINISTIK atas plain ternormalisasi memakai kunci
 	// blind index yang TERPISAH dari kunci enkripsi. Inilah yang menopang lookup equality
 	// dan UNIQUE pada kolom _bidx (ADR-009 §2). Konsekuensi yang disadari: rotasi kunci

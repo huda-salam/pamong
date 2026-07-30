@@ -252,6 +252,16 @@ func (c *MockCrypto) Decrypt(_ context.Context, tenantID string, ct []byte) ([]b
 	return plain, nil
 }
 
+// PurposeOf membaca purpose dari ciphertext mock — meniru kontrak port.CryptoPort agar
+// pemeriksaan "ciphertext dipindah antar kolom" di lapis repository bisa diuji tanpa KMS.
+func (c *MockCrypto) PurposeOf(ct []byte) (string, error) {
+	parts := strings.Split(string(ct), ":")
+	if len(parts) != 5 || parts[0] != mockCryptoPrefix {
+		return "", fmt.Errorf("%w: bukan ciphertext MockCrypto", port.ErrCiphertextInvalid)
+	}
+	return parts[2], nil
+}
+
 func (c *MockCrypto) BlindIndex(_ context.Context, tenantID, purpose string, plain []byte) ([]byte, error) {
 	if tenantID == "" || purpose == "" {
 		return nil, errors.New("testkit: MockCrypto butuh tenantID & purpose")

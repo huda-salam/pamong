@@ -17,6 +17,8 @@ docs/CODE_CONVENTION.md       → standar konkret penulisan kode
 docs/DOCUMENTATION_CONVENTION.md → dokumen ini
 docs/adr/NNN-*.md             → keputusan arsitektur + alasannya (append-only)
 docs/contracts/               → kontrak yang di-generate: event topology, daftar permission, OpenAPI
+docs/DB_SCHEMA.md             → struktur database yang BERLAKU SEKARANG (skema + penjelasan), satu file
+docs/DB_CHANGELOG.md          → riwayat setiap perubahan struktur database, satu entri per PR
 
 {komponen}/CLAUDE.md          → konteks LOKAL untuk Claude Code & developer (ringkas)
 {komponen}/PRD.md             → spesifikasi fungsional komponen (detail)
@@ -25,7 +27,8 @@ Komentar kode (godoc)         → mengapa kode ini begini, bukan apa yang dilaku
 ```
 
 Aturan pemilihan: **keputusan dengan trade-off → ADR. Spesifikasi apa yang dibangun →
-PRD. Cara kerja dengan satu komponen → CLAUDE.md lokal. Alasan satu potong kode → komentar.**
+PRD. Cara kerja dengan satu komponen → CLAUDE.md lokal. Alasan satu potong kode → komentar.
+Perubahan struktur DB → DB_CHANGELOG (riwayat) + DB_SCHEMA (keadaan).**
 
 ---
 
@@ -188,7 +191,40 @@ regenerate via `pamongctl`. Hasil generate ikut di-commit agar bisa di-review pe
 
 ---
 
-## 7. Bahasa & gaya
+## 7. Dokumentasi struktur database
+
+Struktur DB didokumentasikan di **dua file, dengan peran yang tegas berbeda** — jangan
+mencampurnya:
+
+| File | Isi | Sifat |
+|---|---|---|
+| `docs/DB_SCHEMA.md` | struktur yang **berlaku sekarang**: topologi, setiap schema/tabel/kolom/index/constraint + penjelasan mengapa bentuknya begitu | ditulis-ulang mengikuti keadaan; tidak memuat riwayat |
+| `docs/DB_CHANGELOG.md` | **riwayat** perubahan, satu entri per PR: apa berubah, kapan, kenapa, reversibel atau tidak | append (entri baru di atas); entri lama tidak diedit |
+
+**Aturan wajib:** setiap PR yang mengubah struktur DB memperbarui **keduanya**, di PR yang sama.
+PR yang mengubah DDL tanpa menyentuh dua file ini ditolak reviewer — sama seperti migration tanpa
+down migration.
+
+Yang dihitung sebagai "perubahan struktur DB" — bukan hanya file `.sql`:
+- migrasi ber-file (`core/*/migrations/`, `modules/*/migrations/`, `identity/migrations/`)
+- DDL *ensure-schema-on-write* di kode Go (mis. `tenantrole/adapter/db/schema.go`), termasuk
+  penambahan kolom lewat `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`
+- perubahan generator DDL (`infra/db/ddl.go`) yang mengubah bentuk tabel yang dihasilkan
+- perubahan index, constraint, CHECK, default — bukan hanya tabel & kolom
+- perubahan **cara** skema diterapkan (registrasi migrasi, runner), meski DDL-nya tetap
+
+Kedua file ditulis **tangan**, bukan di-generate: nilainya justru pada penjelasan *mengapa* sebuah
+kolom/constraint ada — informasi yang tidak bisa dibaca dari `pg_dump`. Untuk isi teknisnya,
+salin dari DDL sumber apa adanya (jangan mengarang tipe/nilai default).
+
+Format entri changelog & penanda jalur (A/B/C) didefinisikan di kepala `DB_CHANGELOG.md`.
+
+Tabel yang direncanakan tapi belum ada dicatat eksplisit di `DB_SCHEMA.md` §7 — supaya tidak ada
+yang mencari tabel yang cuma hidup di rancangan.
+
+---
+
+## 8. Bahasa & gaya
 
 - Dokumentasi & komentar: **bahasa Indonesia**.
 - Istilah domain pemerintahan tetap asli (SPM, pagu, DPA) — tidak diterjemahkan.
@@ -199,7 +235,7 @@ regenerate via `pamongctl`. Hasil generate ikut di-commit agar bisa di-review pe
 
 ---
 
-## 8. Aturan pemeliharaan
+## 9. Aturan pemeliharaan
 
 - Setiap PR yang mengubah perilaku komponen **wajib** update PRD/CLAUDE.md lokal bila
   spesifikasi berubah. Reviewer menolak PR yang mengubah perilaku tanpa update dokumen.
@@ -209,3 +245,5 @@ regenerate via `pamongctl`. Hasil generate ikut di-commit agar bisa di-review pe
   sama — komentar menyesatkan lebih berbahaya daripada tidak ada komentar.
 - Dependency baru, event baru, permission baru → otomatis tercermin di docs/contracts
   lewat regenerate; jalankan sebelum commit.
+- Setiap PR yang menyentuh struktur DB (migrasi, DDL ensure-on-write, generator DDL) **wajib**
+  menambah entri di `docs/DB_CHANGELOG.md` **dan** menyelaraskan `docs/DB_SCHEMA.md` — lihat §7.

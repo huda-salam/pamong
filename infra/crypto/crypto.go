@@ -211,11 +211,17 @@ func fieldAAD(tenantID, purpose string, version int) []byte {
 	return []byte(fmt.Sprintf("pamong/field/v1|%s|%s|%d", tenantID, purpose, version))
 }
 
-// PurposeOf membaca purpose (konteks kunci) dari ciphertext tanpa mendekripsinya — tanpa
-// kunci, tanpa I/O. Disediakan agar lapis repository bisa menegakkan pengikatan kolom yang
-// TIDAK bisa ditegakkan AAD (lihat fieldAAD): sebelum memanggil Decrypt, repo memastikan
-// blob di kolom `x_enc` memang ber-purpose `x`. Tanpa pemeriksaan itu, penyerang dengan
-// akses tulis DB bisa memindahkan nilai terenkripsi antar kolom dalam satu tenant.
+// PurposeOf — lihat port.CryptoPort. Membaca purpose dari header ciphertext tanpa kunci
+// maupun I/O, sehingga lapis repository bisa menegakkan pengikatan kolom yang TIDAK bisa
+// ditegakkan AAD (lihat fieldAAD).
+//
+// Metode pada Service (bukan sekadar fungsi paket) supaya pemanggil cukup bergantung pada
+// port.CryptoPort: pemeriksaan kolom tak boleh mengasumsikan format milik satu implementasi.
+func (s *Service) PurposeOf(ct []byte) (string, error) {
+	return PurposeOf(ct)
+}
+
+// PurposeOf versi fungsi paket — dipakai internal & alat baris perintah yang hanya punya blob.
 func PurposeOf(ct []byte) (string, error) {
 	purpose, _, _, _, err := parseCiphertext(ct)
 	return purpose, err

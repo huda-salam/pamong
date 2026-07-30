@@ -48,13 +48,38 @@ type SQLRepository[T any] struct {
 	m           Mapper[T]
 	selectCols  string          // "id, data1, data2, version"
 	allowedCols map[string]bool // kolom yang boleh dipakai untuk sort/filter
+	fc          *fieldCrypto    // nil = tak ada field terenkripsi (jalur lama, tanpa perubahan)
+}
+
+// repoOptions menampung konfigurasi opsional repo generik.
+type repoOptions struct {
+	crypto      port.CryptoPort
+	cryptoSpecs []FieldCryptoSpec
+}
+
+// RepoOption menyesuaikan perilaku SQLRepository saat konstruksi.
+type RepoOption func(*repoOptions)
+
+// WithFieldCrypto mengaktifkan enkripsi field selektif (ADR-009) untuk kolom di specs.
+// Specs SEBAIKNYA diturunkan dari EntityDef lewat FieldCryptoFromEntity, bukan ditulis
+// tangan — spec yang menyimpang dari deklarasi field membuat kolom yang seharusnya
+// terenkripsi tersimpan plaintext tanpa gejala apa pun.
+func WithFieldCrypto(c port.CryptoPort, specs []FieldCryptoSpec) RepoOption {
+	return func(o *repoOptions) {
+		o.crypto = c
+		o.cryptoSpecs = specs
+	}
 }
 
 // NewSQLRepository membuat repository generik. Identifier tabel & kolom divalidasi
 // di sini agar tidak ada celah injeksi lewat nama kolom dinamis (sort/filter).
-func NewSQLRepository[T any](conn port.DBConn, m Mapper[T]) (*SQLRepository[T], error) {
+func NewSQLRepository[T any](conn port.DBConn, m Mapper[T], opts ...RepoOption) (*SQLRepository[T], error) {
 	if !tableRe.MatchString(m.Table()) {
 		return nil, fmt.Errorf("nama tabel tidak valid: %q", m.Table())
+	}
+	var o repoOptions
+	for _, opt := range opts {
+		opt(&o)
 	}
 	allowed := map[string]bool{"id": true, "version": true, "created_at": true, "updated_at": true}
 	for _, c := range m.DataColumns() {
@@ -68,14 +93,60 @@ func NewSQLRepository[T any](conn port.DBConn, m Mapper[T]) (*SQLRepository[T], 
 			return nil, fmt.Errorf("search column %q bukan kolom yang dideklarasikan", c)
 		}
 	}
-	cols := append([]string{"id"}, m.DataColumns()...)
+
+	var fc *fieldCrypto
+	if len(o.cryptoSpecs) > 0 {
+		var err error
+		if fc, err = newFieldCrypto(o.crypto, m.DataColumns(), o.cryptoSpecs); err != nil {
+			return nil, err
+		}
+		// Pencarian ILIKE mustahil di atas ciphertext (nonce acak). Ditolak saat konstruksi
+		// agar tak menjadi hasil pencarian yang diam-diam selalu kosong.
+		for _, c := range m.SearchColumns() {
+			if _, encrypted := fc.spec(c); encrypted {
+				return nil, fmt.Errorf(
+					"kolom %q terenkripsi sehingga tak bisa jadi search column (ILIKE tak mungkin di atas ciphertext)", c)
+			}
+		}
+	}
+
+	dataCols := m.DataColumns()
+	if fc != nil {
+		dataCols = fc.readColumns()
+	}
+	cols := append([]string{"id"}, dataCols...)
 	cols = append(cols, "version")
 	return &SQLRepository[T]{
 		conn:        conn,
 		m:           m,
 		selectCols:  strings.Join(cols, ", "),
 		allowedCols: allowed,
+		fc:          fc,
 	}, nil
+}
+
+// scanner membungkus baris agar kolom terenkripsi didekripsi sebelum sampai ke Mapper.
+// Tanpa field crypto ia mengembalikan baris apa adanya (nol overhead).
+func (r *SQLRepository[T]) scanner(ctx context.Context, row port.Row) port.Row {
+	if r.fc == nil {
+		return row
+	}
+	return &decryptingScanner{row: row, fc: r.fc, ctx: ctx, columns: r.m.DataColumns()}
+}
+
+// writeCols & writeVals memberi kolom + nilai FISIK untuk INSERT/UPDATE.
+func (r *SQLRepository[T]) writeCols() []string {
+	if r.fc == nil {
+		return r.m.DataColumns()
+	}
+	return r.fc.writeColumns()
+}
+
+func (r *SQLRepository[T]) writeVals(ctx context.Context, entity *T) ([]any, error) {
+	if r.fc == nil {
+		return r.m.DataValues(entity), nil
+	}
+	return r.fc.writeValues(ctx, r.m.DataValues(entity))
 }
 
 var _ port.BaseRepository[struct{}] = (*SQLRepository[struct{}])(nil)
@@ -85,7 +156,7 @@ func (r *SQLRepository[T]) FindByID(ctx context.Context, id uuid.UUID) (*T, erro
 		"SELECT %s FROM %s WHERE id = $1 AND deleted_at IS NULL",
 		r.selectCols, r.m.Table(),
 	)
-	entity, err := r.m.Scan(r.conn.QueryRow(ctx, sql, id))
+	entity, err := r.m.Scan(r.scanner(ctx, r.conn.QueryRow(ctx, sql, id)))
 	if IsNoRows(err) {
 		return nil, core.ErrNotFound(r.m.Table(), id.String())
 	}
@@ -97,7 +168,7 @@ func (r *SQLRepository[T]) FindByID(ctx context.Context, id uuid.UUID) (*T, erro
 
 // Save menyisipkan entity baru dengan version = 1.
 func (r *SQLRepository[T]) Save(ctx context.Context, entity *T) error {
-	data := r.m.DataColumns()
+	data := r.writeCols()
 	cols := append([]string{"id"}, data...)
 	cols = append(cols, "version", "created_at", "updated_at")
 
@@ -105,7 +176,11 @@ func (r *SQLRepository[T]) Save(ctx context.Context, entity *T) error {
 	for i := range data {
 		ph = append(ph, fmt.Sprintf("$%d", i+2)) // $1 dipakai id
 	}
-	values := append([]any{r.m.ID(entity)}, r.m.DataValues(entity)...)
+	vals, err := r.writeVals(ctx, entity)
+	if err != nil {
+		return err
+	}
+	values := append([]any{r.m.ID(entity)}, vals...)
 
 	sql := fmt.Sprintf(
 		"INSERT INTO %s (%s) VALUES ($1, %s, 1, now(), now())",
@@ -121,7 +196,7 @@ func (r *SQLRepository[T]) Save(ctx context.Context, entity *T) error {
 // Update menerapkan optimistic locking: hanya berhasil jika version di DB sama
 // dengan version entity. Konflik (version bergeser / baris terhapus) -> ErrConflict.
 func (r *SQLRepository[T]) Update(ctx context.Context, entity *T) error {
-	data := r.m.DataColumns()
+	data := r.writeCols()
 	sets := make([]string, 0, len(data))
 	for i, c := range data {
 		sets = append(sets, fmt.Sprintf("%s = $%d", c, i+1))
@@ -134,10 +209,14 @@ func (r *SQLRepository[T]) Update(ctx context.Context, entity *T) error {
 			"WHERE id = $%d AND version = $%d AND deleted_at IS NULL RETURNING version",
 		r.m.Table(), strings.Join(sets, ", "), idPos, verPos,
 	)
-	args := append(r.m.DataValues(entity), r.m.ID(entity), r.m.Version(entity))
+	vals, err := r.writeVals(ctx, entity)
+	if err != nil {
+		return err
+	}
+	args := append(vals, r.m.ID(entity), r.m.Version(entity))
 
 	var newVersion int
-	err := r.conn.QueryRow(ctx, sql, args...).Scan(&newVersion)
+	err = r.conn.QueryRow(ctx, sql, args...).Scan(&newVersion)
 	if IsNoRows(err) {
 		return core.ErrConflict(fmt.Sprintf(
 			"%s id=%s telah diubah pihak lain atau tidak ada (optimistic lock)",
@@ -175,6 +254,23 @@ func (r *SQLRepository[T]) List(ctx context.Context, filter port.ListFilter) (*p
 	for col, val := range filter.Filters {
 		if !r.allowedCols[col] {
 			return nil, core.ErrValidation("filter", fmt.Sprintf("kolom filter tidak dikenal: %s", col))
+		}
+		// Kolom terenkripsi tak bisa dibandingkan langsung (nonce acak) — equality-nya
+		// dialihkan ke blind index (ADR-009 §2). Kolom biasa lewat jalur lama.
+		if r.fc != nil {
+			expr, arg, err := r.fc.filterExpr(ctx, col, val)
+			if err != nil {
+				return nil, core.ErrValidation("filter", err.Error())
+			}
+			if expr != "" {
+				if arg == nil { // "... IS NULL", tanpa argumen
+					where = append(where, expr)
+					continue
+				}
+				args = append(args, arg)
+				where = append(where, strings.Replace(expr, "?", fmt.Sprintf("$%d", len(args)), 1))
+				continue
+			}
 		}
 		args = append(args, val)
 		where = append(where, fmt.Sprintf("%s = $%d", col, len(args)))
@@ -223,7 +319,7 @@ func (r *SQLRepository[T]) List(ctx context.Context, filter port.ListFilter) (*p
 
 	items := make([]T, 0, pageSize)
 	for rows.Next() {
-		e, err := r.m.Scan(rows)
+		e, err := r.m.Scan(r.scanner(ctx, rows))
 		if err != nil {
 			return nil, err
 		}
@@ -250,6 +346,14 @@ func (r *SQLRepository[T]) orderClause(sort, order string) (string, error) {
 	}
 	if !r.allowedCols[sort] {
 		return "", core.ErrValidation("sort", fmt.Sprintf("kolom sort tidak dikenal: %s", sort))
+	}
+	// Urutan atas ciphertext tidak bermakna (nonce acak) dan blind index hanya menopang
+	// equality. Ditolak lantang — mengurutkan kolom _enc akan menghasilkan urutan acak yang
+	// tampak sah (ADR-009: range/sort hilang permanen untuk field terenkripsi).
+	if r.fc != nil {
+		if _, encrypted := r.fc.spec(sort); encrypted {
+			return "", core.ErrValidation("sort", fmt.Sprintf("kolom %s terenkripsi sehingga tidak bisa diurutkan", sort))
+		}
 	}
 	dir := "ASC"
 	switch strings.ToLower(order) {

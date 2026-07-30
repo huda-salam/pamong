@@ -165,6 +165,7 @@ Semua harus terpenuhi — CI akan menolak jika tidak:
 [ ] Coverage tidak turun dari baseline (domain ≥ 90%, usecase ≥ 85%)
 [ ] Tidak ada penanda tanpa ref (TODO: PR/#issue · FIXME: #issue · DEFERRED: Phase/PR)
 [ ] Migration baru punya down migration
+[ ] Perubahan struktur DB: entri baru di docs/DB_CHANGELOG.md + docs/DB_SCHEMA.md selaras
 [ ] Event schema baru punya contract test
 [ ] Permission baru terdaftar di manifest
 [ ] Perubahan core punya ADR baru atau ADR yang di-update
@@ -196,6 +197,7 @@ Semua harus terpenuhi — CI akan menolak jika tidak:
 - [ ] Unit test untuk kode baru
 - [ ] Integration test (jika menyentuh adapter)
 - [ ] Migration punya down migration
+- [ ] Perubahan struktur DB tercatat di docs/DB_CHANGELOG.md + docs/DB_SCHEMA.md
 - [ ] Event schema baru di-contract test
 - [ ] ADR dibuat/diupdate (jika perubahan arsitektur)
 
