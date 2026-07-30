@@ -590,14 +590,50 @@ pluggable + custody sebagai kebijakan per-tenant).
     tanpa pemeriksaan ini ciphertext bisa dipindah antar kolom DALAM SATU tenant (mis. `nik`
     disalin ke `no_rekening_enc`) dan tetap terbuka. Pengikatan kolom hanya bisa ditegakkan
     di lapis yang tahu kolomnya — yaitu di sini.
-  - Celah desain yang harus diputuskan lebih dulu: `SQLRepository` generik bekerja atas
-    `Mapper[T]` (kolom = string) dan TAK tahu `FieldDef.Class`; perlu ditentukan bagaimana
-    repo/mapper belajar class per-kolom. Sekalian rekonsiliasi `CustomFieldDef.Class`.
+  - Celah desain yang harus diputuskan lebih dulu: ~~`SQLRepository` generik bekerja atas
+    `Mapper[T]` (kolom = string) dan TAK tahu `FieldDef.Class`~~ → **DIPUTUSKAN**: spec
+    diturunkan dari `EntityDef` (`db.FieldCryptoFromEntity`) lalu diserahkan ke repo lewat
+    opsi `db.WithCrypto`/`WithFieldCrypto`. `Mapper[T]` TIDAK berubah (menambah method memaksa
+    semua mapper existing ikut berubah, dan menaruh kebijakan keamanan di kode tulis-tangan
+    Tier 3 = tempat paling mudah lupa); repo juga tidak membaca registry sendiri (kopling).
+    Rekonsiliasi `CustomFieldDef.Class` MASIH terbuka.
 
 - **PR-3.8.4** Enkripsi diff audit sensitif (tutup E2) ← 3.8.2, core/audit
   - Diff class `personal_id`/`specific` terenkripsi; raw tetap bukti; read-gated
     `audit:sensitive:baca`. Hash chain tetap verify.
   - DoD: dump `gov.audit_logs.diff` tak memuat NIK plaintext; verify integritas lulus.
+
+> **3.8.3 & 3.8.4 DIKERJAKAN SEBAGAI SATU PR.** Alasannya bukan kepraktisan: `auditedRepo`
+> mengambil snapshot diff dari ENTITY (nilai plaintext), bukan dari kolom DB — sehingga 3.8.3
+> yang mendarat sendirian akan mengenkripsi kolom sambil tetap menulis NIK plaintext ke
+> `gov.audit_logs.diff`. Itu memindahkan kebocoran, bukan menutupnya, sekaligus menciptakan
+> keyakinan keliru bahwa data sudah terlindungi.
+>
+> **Status: CHECKPOINT `e22506c`** di branch `feat/crypto-repo-transparent-3.8.3` (sudah
+> di-push, BELUM direview & BELUM di-merge). Sudah jalan + lulus unit test & gates:
+> `infra/db/field_crypto.go` (spec dari EntityDef, kolom logis→`_enc`/`_bidx`,
+> `decryptingScanner` menyisip sebelum `Mapper.Scan` sehingga Mapper tetap polos), filter
+> equality→`_bidx`, sort & search-column terenkripsi ditolak, tenant kosong gagal keras,
+> `NewRepository` menolak entity terenkripsi tanpa `CryptoPort`, dan diff audit menyimpan
+> ciphertext base64. `port.CryptoPort` bertambah `PurposeOf` (lihat butir 2 di bawah).
+>
+> **SISA PEKERJAAN — urut, karena butir 1 bisa mengubah butir lain:**
+>
+> 1. **Integration test dengan Postgres nyata** (`-tags=integration`, `-p 1`). Ini yang
+>    mengubah "seharusnya bekerja" menjadi "terbukti bekerja": unit test memakai fake conn,
+>    jadi belum ada bukti DDL `_enc`/`_bidx` (3.8.1) benar-benar cocok dengan SQL yang
+>    disusun repo. DoD: entity ber-`personal_id` di-CRUD lewat repo; `SELECT nik_enc` dari DB
+>    bukan plaintext; `List` ber-filter `nik` menemukan baris lewat `_bidx`; UNIQUE di `_bidx`
+>    menolak duplikat; audit diff tersimpan tak memuat NIK plaintext & hash chain tetap verify.
+> 2. **Amandemen ADR-009 §4** — port di ADR ditulis 3 metode, implementasi kini 4
+>    (`PurposeOf`). Alasannya masuk ADR: pengikatan KOLOM tak bisa ditegakkan AAD, dan
+>    pemeriksaannya harus lewat port agar tak mengasumsikan format satu implementasi.
+> 3. **Read-gating `audit:sensitive:baca`** — diff sudah terenkripsi, tapi belum ada permission
+>    yang mengatur siapa boleh mendekripsinya saat audit dibaca. Ini sisa DoD 3.8.4.
+> 4. **Dokumentasi** — `infra/db/CLAUDE.md` (tanggung jawab & pitfall enkripsi transparan),
+>    lalu tandai kedua PR ini SELESAI di ROADMAP.
+>
+> Setelah 1-4: `/code-review` + `/security-review` sebelum merge (HYBRID; permukaan kripto).
 
 - **PR-3.8.5** Tutup jalur kebocoran samping ← 3.8.3 (ADR-009 §6)
   - Payload event, `gov.idempotency_keys`, staging table migrasi, log/trace, clone
