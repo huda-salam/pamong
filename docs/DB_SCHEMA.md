@@ -8,7 +8,8 @@ alasan di balik bentuknya. Riwayat *bagaimana* struktur ini sampai ke sini ada d
 Aturan pemeliharaan (DOCUMENTATION_CONVENTION §7): **setiap PR yang mengubah struktur DB wajib
 memperbarui file ini dan menambah entri di `DB_CHANGELOG.md`, di PR yang sama.**
 
-> Status terakhir disinkronkan: PR-3.8.2 (`fa6e51c`) / PR-5.1.x (`aada7a2`).
+> Status terakhir disinkronkan: PR-3.8.3/3.8.4 (`e22506c`). Perubahan struktur terakhir:
+> PR-3.8.2 (`fa6e51c`).
 
 ---
 
@@ -104,8 +105,10 @@ Satu baris per manusia; anchor identitas adalah **NIK** (setiap warga punya, tid
 | `is_active` | BOOLEAN NOT NULL DEFAULT true | |
 | `created_at` / `updated_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | |
 
-`nik`, `no_hp`, `email` berkelas data `personal_id` (ADR-009) → kandidat enkripsi + blind index;
-**belum dienkripsi** (implementasi lapis repository menyusul, ROADMAP 3.8.3+).
+`nik`, `no_hp`, `email` berkelas data `personal_id` (ADR-009) → kandidat enkripsi + blind index.
+Kolomnya **masih plaintext**: mesin enkripsi transparan sudah ada di lapis repository
+(PR-3.8.3/3.8.4), tapi tabel identity ditulis lewat migrasi tangan — bukan di-generate dari
+`EntityDef` — sehingga migrasi ke bentuk `_enc`/`_bidx` belum dilakukan.
 
 ### 3.2 `id.employments` — relasi kepegawaian *(B, `001_create_identity`)*
 
@@ -757,6 +760,10 @@ fisik**, dan nilai plaintext tidak pernah disimpan:
 nilai sama). Field yang butuh `LIKE`/range search **tidak boleh** diklasifikasi terenkripsi —
 kolom terenkripsi kehilangan kemampuan itu. Repo Tier 3 dilarang menyentuh kolom `_enc` mentah
 tanpa helper framework (linter `encrypted-field-no-raw-query`).
+
+Pemetaan kolom logis → fisik ditegakkan **transparan di lapis repository** (`infra/db/field_crypto.go`,
+PR-3.8.3/3.8.4), bukan dipanggil use case: filter equality dialihkan ke `_bidx`, sort atas kolom
+terenkripsi ditolak, dan diff audit memakai bentuk yang sudah di-mask.
 
 **`tenant_id` di tenant DB**: hanya dipakai bila ada alasan spesifik (partisi hash chain audit,
 scope resolver, kompatibilitas single-DB). Default: tidak perlu.

@@ -275,6 +275,7 @@ membuka issue baru — ROADMAP sudah menjadi kontrak yang terlacak.
 ✗ if tenant.x untuk pilihan algoritma            [linter: tenant-branch-must-be-strategy]
 ✗ EntityDef tanpa Audit & Lockable eksplisit     [linter: entity-explicit-auditable]
 ✗ migration up tanpa down                        [linter: migration-needs-down]
+✗ ubah struktur DB tanpa entri DB_CHANGELOG & DB_SCHEMA selaras     [review; DOCUMENTATION_CONVENTION §7]
 ✗ menelan error tanpa alasan terdokumentasi
 ✗ TODO/FIXME tanpa ref (PR-X.Y.Z / #issue); DEFERRED tanpa Phase/PR  [review; linter markerref menyusul]
 ```
