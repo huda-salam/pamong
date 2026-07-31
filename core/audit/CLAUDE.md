@@ -23,6 +23,8 @@ kode audit. Kebutuhan paling ketat untuk sistem pemerintahan (temuan BPK).
 - engine.go — audit writer, koordinasi
 - diff.go — field-level diff calculator
 - chain.go — hash chain, verifikasi integritas
+- reader.go — jalur BACA ber-gating: `QueryStore`, `Reader`, `VisibleEntry` (PR-3.8.4)
+- permissions.go — `audit:sensitive:baca`
 - query.go — query & replay audit trail
 - middleware.go — auto-attach hook
 
@@ -31,11 +33,24 @@ kode audit. Kebutuhan paling ketat untuk sistem pemerintahan (temuan BPK).
 - Hash chain: hash(entry) = H(prev_hash + entry_content). Entry pertama pakai seed.
 - Diff hanya field yang berubah (before -> after), bukan seluruh record.
 - Audit menyimpan actor (person_id), tenant, IP, dan workflow state transition bila ada.
+- **Nilai ber-class `personal_id`/`specific` tersimpan TERENKRIPSI di diff** (ADR-002 tetap:
+  raw = bukti; ADR-009 §6: bentuknya ciphertext). Yang mengenkripsi adalah lapis repository
+  (`infra/db`), yang membuka adalah `Reader` di sini — pemisahan sengaja: enkripsi harus
+  terjadi sedekat mungkin dengan penulisan, gating sedekat mungkin dengan pembacaan.
+- `Reader` mengenali nilai sensitif dari BENTUKNYA (ciphertext framework, lewat `PurposeOf`),
+  bukan dengan membaca ulang class field. Class sebuah field bisa berubah setelah entry lama
+  tertulis; jejak audit harus diperlakukan sesuai apa yang benar-benar tersimpan.
+- Tanpa permission, entry TETAP tampil — hanya nilai pengenalnya tertutup. Menyembunyikan
+  entry utuh akan merusak fungsi audit itu sendiri.
+- `tenant_id` untuk pembacaan selalu dari AuthContext, tak pernah parameter pemanggil.
 
 ## Pitfall umum
 - Mencatat field sensitif mentah (mis. NIK lengkap) di audit -> masking bila perlu.
 - Hash chain putus karena penulisan paralel tanpa urutan -> serialize per entity/tenant.
 - Mengira audit sama dengan comment/disposisi (itu komentar manusia, terpisah).
+- **Memverifikasi chain atas hasil `Reader`.** Nilainya sudah dibuka/ditutup sehingga hash
+  tak lagi cocok → laporan tamper palsu. `VisibleEntry` sengaja tidak membawa Hash/PrevHash;
+  verifikasi selalu memakai entry mentah dari `QueryStore`.
 
 ## Test
 - Unit: diff calculator, hash chain integrity, tamper detection.

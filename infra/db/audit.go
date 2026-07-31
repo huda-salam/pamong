@@ -29,7 +29,10 @@ func NewSchemaAuditRepo(pool *Pool, schema string) *AuditRepo {
 	return &AuditRepo{pool: pool, schema: schema}
 }
 
-var _ audit.Store = (*AuditRepo)(nil)
+var (
+	_ audit.Store      = (*AuditRepo)(nil)
+	_ audit.QueryStore = (*AuditRepo)(nil) // jalur baca ber-gating (audit.Reader, PR-3.8.4)
+)
 
 var schemaIdentRe = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 

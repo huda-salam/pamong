@@ -195,13 +195,20 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
 - Properti & cek: chain immutable; tamper terdeteksi (sudah ada test); satu chain sentinel
   `tenant_id="central"` tak bisa dipalsukan untuk menyisipkan entri.
 
-### E2. PII di audit (NIK mentah) — `DEFERRED(kripto)` — mekanisme diputuskan (ADR-009)
-- `identity/adapter/db/audit_store.go`, ADR-002 (diperbarui ADR-009)
-- Status: NIK tercatat **mentah** di `diff` (JSONB). Mekanisme kini diputuskan: field class
-  `personal_id`/`specific` → diff **ikut terenkripsi** via `port.CryptoPort` (raw tetap ada
-  sebagai bukti BPK, tak terbaca tanpa kunci + `audit:sensitive:baca`); class `personal`
-  disaring saat baca. Prasyarat: sub-phase kripto (lihat §H). Cek saat dibangun: diff
-  `personal_id` tak terbaca plaintext dari dump; hash chain tetap verify.
+### E2. PII di audit (NIK mentah) — `SEBAGIAN TERTUTUP` (PR-3.8.3/3.8.4)
+- **Tertutup: jalur repository entity tenant** (`gov.audit_logs`). `infra/db.auditedRepo`
+  mengenkripsi nilai class `personal_id`/`specific` di diff sebelum persist, dan
+  `core/audit.Reader` menggerbangi pembukaannya dengan `audit:sensitive:baca`. Terbukti
+  di `infra/db/field_crypto_integration_test.go`: dump `diff` bersih dari NIK, nilainya
+  tetap dapat dipulihkan dengan kunci, hash chain tetap verify.
+- **MASIH TERBUKA: jalur audit identity** (`id.audit_logs`) —
+  `identity/adapter/db/audited_repos.go` `personFields()` menulis `"nik": p.NIK` mentah,
+  begitu pula `nip` di `employmentFields()`. Jalur ini tidak melewati `infra/db.auditedRepo`,
+  jadi enkripsi diff di sana tidak menyentuhnya.
+- Prasyarat penutupan: `CryptoPort` di-wire ke composition root identity + keputusan tenant
+  kunci untuk chain sentral (identity memakai partisi `tenant_id="central"`, sementara
+  hierarki DEK ADR-010 ber-tenant). Cek: dump `id.audit_logs.diff` tak memuat NIK/NIP
+  plaintext; hash chain tetap verify; pembacaan lewat `audit.Reader` yang sama.
 
 ---
 

@@ -1,7 +1,8 @@
 # ADR-009: Klasifikasi data & enkripsi field selektif (blind index)
 
 ## Status
-Accepted
+Accepted — keputusan tetap berlaku; **seam `CryptoPort` di §4 diperluas oleh ADR-015**
+(metode keempat `PurposeOf`, untuk mengikat ciphertext ke kolomnya). Tidak di-supersede.
 
 ## Konteks
 Regulasi pemerintah (UU 27/2022 PDP, PP 71/2019 PSTE, arahan kriptografi BSSN/SPBE)
@@ -116,6 +117,11 @@ type CryptoPort interface {
     BlindIndex(ctx context.Context, tenantID, purpose string, plain []byte) ([]byte, error)
 }
 ```
+
+> **Diperluas oleh ADR-015:** port ini kini punya metode keempat, `PurposeOf(ct []byte)`.
+> Alasannya lahir dari §3: karena purpose dibaca dari blob dan AAD hanya mengikat tenant,
+> ciphertext yang dipindah antar kolom dalam satu tenant tetap terbuka — pengikatan kolom
+> hanya bisa ditegakkan di lapis repository, dan lapis itu perlu tahu purpose tanpa kunci.
 
 Implementasi di `infra/crypto/` (vault-transit, local-dev untuk test/dev, KMS lain kelak).
 Domain & use case tetap nol-dependency kripto — mengikuti pola `OTPCodec`/`PasswordVerifier`

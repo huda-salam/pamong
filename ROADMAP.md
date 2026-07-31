@@ -609,31 +609,56 @@ pluggable + custody sebagai kebijakan per-tenant).
 > `gov.audit_logs.diff`. Itu memindahkan kebocoran, bukan menutupnya, sekaligus menciptakan
 > keyakinan keliru bahwa data sudah terlindungi.
 >
-> **Status: CHECKPOINT `e22506c`** di branch `feat/crypto-repo-transparent-3.8.3` (sudah
-> di-push, BELUM direview & BELUM di-merge). Sudah jalan + lulus unit test & gates:
-> `infra/db/field_crypto.go` (spec dari EntityDef, kolom logis→`_enc`/`_bidx`,
-> `decryptingScanner` menyisip sebelum `Mapper.Scan` sehingga Mapper tetap polos), filter
-> equality→`_bidx`, sort & search-column terenkripsi ditolak, tenant kosong gagal keras,
-> `NewRepository` menolak entity terenkripsi tanpa `CryptoPort`, dan diff audit menyimpan
-> ciphertext base64. `port.CryptoPort` bertambah `PurposeOf` (lihat butir 2 di bawah).
+> **Status: ✅ SELESAI** di branch `feat/crypto-repo-transparent-3.8.3` (checkpoint `e22506c`
+> + penyelesaian sisa pekerjaan). BELUM direview & BELUM di-merge.
 >
-> **SISA PEKERJAAN — urut, karena butir 1 bisa mengubah butir lain:**
+> Yang berdiri sekarang: `infra/db/field_crypto.go` (spec dari EntityDef, kolom
+> logis→`_enc`/`_bidx`, `decryptingScanner` menyisip sebelum `Mapper.Scan` sehingga Mapper
+> tetap polos), filter equality→`_bidx`, sort & search-column terenkripsi ditolak, tenant
+> kosong gagal keras, `NewRepository` menolak entity terenkripsi tanpa `CryptoPort`, diff
+> audit menyimpan ciphertext base64, dan `core/audit.Reader` menggerbangi pembukaannya.
 >
-> 1. **Integration test dengan Postgres nyata** (`-tags=integration`, `-p 1`). Ini yang
->    mengubah "seharusnya bekerja" menjadi "terbukti bekerja": unit test memakai fake conn,
->    jadi belum ada bukti DDL `_enc`/`_bidx` (3.8.1) benar-benar cocok dengan SQL yang
->    disusun repo. DoD: entity ber-`personal_id` di-CRUD lewat repo; `SELECT nik_enc` dari DB
->    bukan plaintext; `List` ber-filter `nik` menemukan baris lewat `_bidx`; UNIQUE di `_bidx`
->    menolak duplikat; audit diff tersimpan tak memuat NIK plaintext & hash chain tetap verify.
-> 2. **Amandemen ADR-009 §4** — port di ADR ditulis 3 metode, implementasi kini 4
->    (`PurposeOf`). Alasannya masuk ADR: pengikatan KOLOM tak bisa ditegakkan AAD, dan
->    pemeriksaannya harus lewat port agar tak mengasumsikan format satu implementasi.
-> 3. **Read-gating `audit:sensitive:baca`** — diff sudah terenkripsi, tapi belum ada permission
->    yang mengatur siapa boleh mendekripsinya saat audit dibaca. Ini sisa DoD 3.8.4.
-> 4. **Dokumentasi** — `infra/db/CLAUDE.md` (tanggung jawab & pitfall enkripsi transparan),
->    lalu tandai kedua PR ini SELESAI di ROADMAP.
+> **Sisa pekerjaan yang dicatat sebelumnya — semuanya tuntas:**
 >
-> Setelah 1-4: `/code-review` + `/security-review` sebelum merge (HYBRID; permukaan kripto).
+> 1. ✅ **Integration test Postgres nyata** (`infra/db/field_crypto_integration_test.go`,
+>    7 test). Tabel dibangun dari `GenerateMigration` — yang diuji SAMBUNGAN generator DDL ↔
+>    repo, bukan repo sendirian. Terbukti: kolom plaintext `nik`/`no_rekening` tidak ada di
+>    katalog; `SELECT nik_enc` bukan plaintext; `List` ber-filter `nik` menemukan baris lewat
+>    `_bidx`; UNIQUE di `nik_bidx` menolak duplikat (23505) sementara `no_rekening` non-Unique
+>    tetap menerima; ciphertext yang dipindah antar kolom lewat SQL ditolak; dump
+>    `gov.audit_logs.diff` bersih dari NIK & hash chain verify. Tiga mutasi kode produksi
+>    (matikan enkripsi diff / matikan cek purpose / simpan plaintext) diverifikasi MEMBUAT
+>    test gagal — hijau di sini bukan hijau kosong.
+> 2. ✅ **ADR-015** (`docs/adr/015-pengikatan-kolom-ciphertext-purposeof.md`) — memperluas
+>    ADR-009 §4 dengan metode keempat `PurposeOf`, berikut tiga alternatif yang ditolak
+>    (AAD ber-kolom, parsing header di repo, mengandalkan hak akses DB). ADR-009 diberi
+>    pointer di Status + §4; tidak di-supersede (pola yang sama dipakai ADR-002→ADR-009).
+> 3. ✅ **Read-gating** — `core/audit/reader.go` + `permissions.go`: `Reader` membuka nilai
+>    terenkripsi hanya untuk pemegang `audit:sensitive:baca`, mengenali nilai sensitif dari
+>    BENTUKNYA (`PurposeOf`) bukan dari class yang dibaca ulang, `tenant_id` selalu dari
+>    AuthContext, dan `VisibleEntry` tak membawa Hash/PrevHash agar chain tak pernah
+>    diverifikasi atas nilai hasil baca.
+> 4. ✅ **Dokumentasi** — `infra/db/CLAUDE.md` (§Enkripsi field transparan + pitfall),
+>    `core/audit/CLAUDE.md`, `docs/contracts/permissions.md` (§audit).
+>
+> **Perbaikan hasil `/code-review` (31 Jul 2026, sebelum merge):** penyegelan diff audit
+> semula mengenkripsi sisi before & after sendiri-sendiri. Karena nonce acak, `audit.Diff`
+> (`reflect.DeepEqual`) melaporkan SETIAP kolom terenkripsi sebagai berubah pada SETIAP
+> update — jejak mengarang "NIK berubah A→A" dan supresi no-op update ikut mati; di jalur
+> gagal, penanda kegagalan yang sama di kedua sisi justru MENGHAPUS perubahan nyata (bila
+> ia satu-satunya yang berubah, baris ter-commit tanpa entry audit sama sekali). Diperbaiki
+> dengan membandingkan plaintext SEBELUM menyegel (`auditedRepo.sealPair`): nilai tak
+> berubah disegel sekali untuk kedua sisi, nilai berubah disegel per sisi dengan penanda
+> gagal yang berbeda. Ditutup 8 unit test (`infra/db/audit_diff_crypto_test.go`) +
+> `TestFieldCrypto_AuditDiffHanyaFieldYangBerubah`, ketiganya diverifikasi lewat mutasi.
+>
+> **Yang TIDAK ikut tertutup di sini — jangan dibaca sebagai "PII di audit sudah beres":**
+> jalur audit **identity** masih menulis NIK mentah (`identity/adapter/db/audited_repos.go`
+> `personFields`, kolom `id.audit_logs.diff`). Yang tertutup adalah jalur repository entity
+> tenant (`gov.audit_logs`). Menutup jalur identity butuh `CryptoPort` di-wire ke identity +
+> keputusan tenant kunci untuk chain sentral (`tenant_id="central"`) — lihat REVIEW_BACKLOG E2.
+>
+> Berikutnya: `/code-review` + `/security-review` sebelum merge (HYBRID; permukaan kripto).
 
 - **PR-3.8.5** Tutup jalur kebocoran samping ← 3.8.3 (ADR-009 §6)
   - Payload event, `gov.idempotency_keys`, staging table migrasi, log/trace, clone
@@ -648,6 +673,21 @@ pluggable + custody sebagai kebijakan per-tenant).
 - **PR-3.8.7** Generator `docs/contracts/data-inventory.md` (pamongctl) ← 3.8.1
   - Inventaris field ber-`Class` dari manifest — artefak kepatuhan UU PDP yang tak basi.
   - DoD: `pamongctl` regenerate; diff PR menampilkan perubahan klasifikasi.
+
+- **PR-3.8.9** Pengikatan BARIS ke AAD ← 3.8.3 (sisa risiko ADR-015) — **gerbang keras:
+  sebelum tenant produksi pertama**
+  - ADR-015 menutup perpindahan ciphertext antar KOLOM lewat `PurposeOf`. Antar BARIS masih
+    lolos: menukar `nik_enc`+`nik_bidx` dua pegawai dalam tenant yang sama mendekripsi bersih,
+    dan NIK seseorang terbaca sebagai milik orang lain. Sebabnya sama — AAD hanya mengikat
+    tenant.
+  - Menyentuh kontrak `Encrypt`/`Decrypt` (identitas baris masuk AAD) → merambat ke seluruh
+    driver KMS, `testkit.MockCrypto`, `decryptingScanner`, dan jalur baca audit (`Reader`
+    harus membawa `EntityID`). Butuh ADR sendiri; bukan tambalan di lapis repo.
+  - **Penjadwalannya bukan selera:** retrofit murah hanya selama DB masih kosong. Sesudah ada
+    data produksi ia berarti re-enkripsi seluruh baris berpengenal di semua tenant.
+  - DoD: menukar pasangan `_enc`/`_bidx` antar baris lewat SQL langsung membuat pembacaan
+    GAGAL (test integrasi, bukan unit); blind index tetap row-independent agar pencarian &
+    UNIQUE tak rusak.
 
 > KMS = driver ber-registry (`GOV_CRYPTO_KMS_DRIVER`); custody = kebijakan per-tenant
 > (`key_custody`) — ADR-010. Enkripsi jalan penuh dengan driver `local` (dev/test); driver

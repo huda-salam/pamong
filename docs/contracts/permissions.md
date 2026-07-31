@@ -78,3 +78,17 @@ aktor tak bisa menulis pilihan template tenant lain. `template_id` divalidasi te
 milik slot yang dituju — format `{slot}.{varian}` dengan varian satu segmen (bukan sekadar
 prefix string, agar slot bertingkat seperti "keuangan.spm" vs "keuangan.spm.lanjutan" tidak
 saling lolos). Penyimpanan append-only ber-versi; pilihan lama tetap terbaca untuk audit/rollback.
+
+## audit (lintas-modul)
+
+Kontrol akses pada pembacaan jejak audit. Konstanta di `core/audit/permissions.go`;
+ditegakkan di `core/audit.Reader` (bukan di tiap pemanggil).
+
+| Permission | Use case | Keterangan |
+|---|---|---|
+| `audit:sensitive:baca` | Reader.ByEntity / Reader.ByTenant | Buka nilai diff ber-class `personal_id`/`specific` yang tersimpan terenkripsi (PR-3.8.4, ADR-009/ADR-002) |
+
+Catatan: ketiadaan permission ini TIDAK menyembunyikan entry — pemeriksa tetap melihat siapa
+mengubah apa dan kapan; hanya nilai pengenalnya (NIK, no rekening) yang tertutup dengan penanda
+eksplisit. `tenant_id` selalu dari AuthContext, bukan parameter, sehingga jejak tenant lain tak
+terjangkau. Nilai yang gagal didekripsi tampil sebagai penanda, tidak pernah sebagai blob mentah.

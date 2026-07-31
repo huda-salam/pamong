@@ -27,7 +27,10 @@ var _ port.AuthContext = (*TestContext)(nil)
 
 type Option func(*TestContext)
 
-// WithTenant menyetel tenant_id konteks.
+// WithTenant menyetel tenant_id konteks. Nilainya juga disuntikkan sebagai value context
+// lewat port.WithTenant (lihat NewContext) — persis seperti gateway.Context.SetTenantID di
+// runtime, sehingga driven adapter yang membaca port.TenantFrom (routing DB per-tenant,
+// enkripsi field per-tenant) berperilaku sama di test dan di produksi.
 func WithTenant(id string) Option {
 	return func(c *TestContext) { c.tenantID = id }
 }
@@ -63,6 +66,13 @@ func NewContext(t *testing.T, opts ...Option) *TestContext {
 	}
 	for _, o := range opts {
 		o(c)
+	}
+	// Tenant disuntikkan ke value context, bukan hanya ke field TenantID(): itulah satu-satunya
+	// sumber yang dibaca port.TenantFrom sejak fallback assertion AuthContext dihapus. Tanpa
+	// ini, test yang memakai TestContext akan melihat tenant kosong di lapis repository
+	// (enkripsi field gagal / audit ter-redaksi) padahal runtime menyediakannya.
+	if c.tenantID != "" {
+		c.Context = port.WithTenant(c.Context, c.tenantID)
 	}
 	return c
 }

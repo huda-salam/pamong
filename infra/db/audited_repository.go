@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -34,7 +35,9 @@ func NewRepository[T any](pool *Pool, m Mapper[T], def domain.EntityDef, engine 
 				"entity %q punya field terenkripsi (%d kolom) tapi CryptoPort tidak diberikan — pakai db.WithCrypto(...)",
 				def.Name, len(specs))
 		}
-		opts = append(opts, WithFieldCrypto(o.crypto, specs))
+		// Salin dulu: append langsung ke slice variadic bisa menulis ke backing array milik
+		// pemanggil bila ia meneruskan slice-nya sendiri dengan kapasitas sisa.
+		opts = append(append(make([]RepoOption, 0, len(opts)+1), opts...), WithFieldCrypto(o.crypto, specs))
 	}
 
 	base, err := NewSQLRepository[T](pool, m, opts...)
@@ -93,7 +96,9 @@ func (r *auditedRepo[T]) Save(ctx context.Context, entity *T) error {
 	if err := r.inner.Save(ctx, entity); err != nil {
 		return err
 	}
-	return r.record(ctx, audit.ActionCreate, r.mapper.ID(entity), nil, r.fields(ctx, entity))
+	after := r.snapshot(entity)
+	r.sealPair(ctx, nil, after)
+	return r.record(ctx, audit.ActionCreate, r.mapper.ID(entity), nil, after)
 }
 
 func (r *auditedRepo[T]) Update(ctx context.Context, entity *T) error {
@@ -104,7 +109,9 @@ func (r *auditedRepo[T]) Update(ctx context.Context, entity *T) error {
 	if err := r.inner.Update(ctx, entity); err != nil {
 		return err
 	}
-	return r.record(ctx, audit.ActionUpdate, r.mapper.ID(entity), r.fields(ctx, before), r.fields(ctx, entity))
+	b, a := r.snapshot(before), r.snapshot(entity)
+	r.sealPair(ctx, b, a)
+	return r.record(ctx, audit.ActionUpdate, r.mapper.ID(entity), b, a)
 }
 
 func (r *auditedRepo[T]) SoftDelete(ctx context.Context, id uuid.UUID) error {
@@ -115,60 +122,92 @@ func (r *auditedRepo[T]) SoftDelete(ctx context.Context, id uuid.UUID) error {
 	if err := r.inner.SoftDelete(ctx, id); err != nil {
 		return err
 	}
-	return r.record(ctx, audit.ActionDelete, id, r.fields(ctx, before), nil)
+	b := r.snapshot(before)
+	r.sealPair(ctx, b, nil)
+	return r.record(ctx, audit.ActionDelete, id, b, nil)
 }
 
-// fields membangun snapshot map dari kolom bisnis entity (lewat Mapper).
-//
-// Nilai kolom terenkripsi TIDAK pernah masuk snapshot dalam bentuk plaintext: ia diganti
-// ciphertext (base64) sehingga diff tetap menjadi bukti before/after untuk pemeriksa
-// (ADR-002) tapi tak terbaca tanpa kunci. Bila enkripsi gagal, nilainya diganti penanda
-// kegagalan — audit TETAP tercatat, tapi tak pernah dengan pengenal mentah.
-func (r *auditedRepo[T]) fields(ctx context.Context, e *T) map[string]any {
+// snapshot membangun map kolom bisnis entity (lewat Mapper). Nilainya masih PLAINTEXT —
+// penyegelan terjadi belakangan, di sealPair, karena perbandingan before/after harus
+// mendahului enkripsi.
+func (r *auditedRepo[T]) snapshot(e *T) map[string]any {
 	cols := r.mapper.DataColumns()
 	vals := r.mapper.DataValues(e)
 	out := make(map[string]any, len(cols))
 	for i, c := range cols {
 		out[c] = vals[i]
 	}
-	if len(r.diffEnc) == 0 || r.crypto == nil {
-		return out
-	}
+	return out
+}
 
+// sealPair mengganti nilai kolom terenkripsi pada KEDUA sisi snapshot dengan ciphertext
+// base64, sehingga diff tetap menjadi bukti before/after bagi pemeriksa (ADR-002) tapi tak
+// terbaca tanpa kunci. Sisi yang tidak ada (create/delete) dilewati.
+//
+// Kedua sisi diproses bersama, dan itu bukan kerapian belaka: Encrypt memakai nonce acak,
+// jadi satu nilai plaintext yang sama menghasilkan ciphertext berbeda tiap panggilan. Bila
+// tiap sisi disegel sendiri-sendiri, audit.Diff (reflect.DeepEqual) melaporkan SETIAP kolom
+// terenkripsi sebagai berubah pada SETIAP update — jejak audit mengarang perubahan pengenal
+// dan supresi no-op update ikut mati. Karena itu nilai yang tidak berubah disegel SEKALI
+// lalu dipasang di kedua sisi (Diff membuangnya), yang berubah disegel per sisi.
+func (r *auditedRepo[T]) sealPair(ctx context.Context, before, after map[string]any) {
+	if len(r.diffEnc) == 0 || r.crypto == nil {
+		return
+	}
 	tenantID := port.TenantFrom(ctx)
 	for _, s := range r.diffEnc {
-		raw, ok := out[s.Column]
-		if !ok {
-			continue
-		}
-		plain, isNull, err := plaintextOf(s.Column, raw)
-		if isNull && err == nil {
-			out[s.Column] = nil
-			continue
-		}
 		purpose := s.Purpose
 		if purpose == "" {
 			purpose = s.Column
 		}
-		if err != nil || tenantID == "" {
-			out[s.Column] = auditRedacted
+		bRaw, bOK := before[s.Column]
+		aRaw, aOK := after[s.Column]
+		bPlain, bNull, bErr := plaintextOf(s.Column, bRaw)
+		aPlain, aNull, aErr := plaintextOf(s.Column, aRaw)
+
+		if bOK && aOK && bErr == nil && aErr == nil && bNull == aNull && bytes.Equal(bPlain, aPlain) {
+			v := r.seal(ctx, tenantID, purpose, bPlain, bNull, nil, auditRedacted)
+			before[s.Column], after[s.Column] = v, v
 			continue
 		}
-		ct, err := r.crypto.Encrypt(ctx, tenantID, purpose, plain)
-		if err != nil {
-			out[s.Column] = auditRedacted
-			continue
+		if bOK {
+			before[s.Column] = r.seal(ctx, tenantID, purpose, bPlain, bNull, bErr, auditRedactedBefore)
 		}
-		out[s.Column] = base64.StdEncoding.EncodeToString(ct)
+		if aOK {
+			after[s.Column] = r.seal(ctx, tenantID, purpose, aPlain, aNull, aErr, auditRedactedAfter)
+		}
 	}
-	return out
 }
 
-// auditRedacted dipakai bila nilai sensitif tak bisa dienkripsi (mis. tenant tak diketahui).
-// Sengaja menjadi penanda yang mencolok: lebih baik diff kehilangan satu nilai daripada
-// menyimpan pengenal mentah, dan penanda ini membuat kondisi tersebut terlihat saat audit
-// dibaca alih-alih menyamar sebagai nilai kosong.
-const auditRedacted = "[terenkripsi: gagal — nilai tidak dicatat]"
+// seal menyegel satu nilai. Kegagalan TIDAK membatalkan pencatatan — nilainya diganti
+// penanda, karena kehilangan satu nilai lebih baik daripada menyimpan pengenal mentah.
+func (r *auditedRepo[T]) seal(ctx context.Context, tenantID, purpose string, plain []byte, isNull bool, parseErr error, marker string) any {
+	if parseErr == nil && isNull {
+		return nil
+	}
+	if parseErr != nil || tenantID == "" {
+		return marker
+	}
+	ct, err := r.crypto.Encrypt(ctx, tenantID, purpose, plain)
+	if err != nil {
+		return marker
+	}
+	return base64.StdEncoding.EncodeToString(ct)
+}
+
+// Penanda nilai sensitif yang gagal disegel (mis. tenant tak diketahui atau KMS sedang
+// gagal). Sengaja mencolok agar kondisi ini terlihat saat audit dibaca alih-alih menyamar
+// sebagai nilai kosong.
+//
+// Penanda before & after WAJIB berbeda: penanda yang sama di kedua sisi membuat perubahan
+// nyata (A→B) tampak tidak berubah bagi Diff lalu terbuang — dan bila itu satu-satunya field
+// yang berubah, mutasi ter-commit tanpa entry audit sama sekali. Penanda tunggal hanya boleh
+// dipakai untuk nilai yang memang terbukti sama di kedua sisi.
+const (
+	auditRedacted       = "[terenkripsi: gagal — nilai tidak dicatat]"
+	auditRedactedBefore = "[terenkripsi: gagal — nilai lama tidak dicatat]"
+	auditRedactedAfter  = "[terenkripsi: gagal — nilai baru tidak dicatat]"
+)
 
 // record menyusun konteks audit. Mutasi entity Auditable wajib punya AuthContext
 // (actor + tenant) — caller use case selalu meneruskannya.
