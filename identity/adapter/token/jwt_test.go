@@ -2,6 +2,7 @@ package token
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"reflect"
 	"strings"
@@ -175,12 +176,19 @@ func TestJWTCodec_Verify_TamperedSignature(t *testing.T) {
 	if len(parts) != 3 {
 		t.Fatalf("token bukan 3 segmen: %q", raw)
 	}
-	last := parts[2][len(parts[2])-1]
-	repl := byte('A')
-	if last == 'A' {
-		repl = 'B'
+	// Perusakan dilakukan di ranah BYTE, sebelum encoding. Mengubah karakter base64
+	// TERAKHIR tidak cukup: tanda tangan HMAC-SHA256 (32 byte) menjadi 43 karakter, dan
+	// karakter ke-43 hanya membawa 4 bit bermakna — 'A'..'D' men-decode ke byte yang sama,
+	// sehingga "token yang dirusak" ternyata identik dengan aslinya dan test lulus tanpa
+	// menguji apa pun. XOR juga menjamin nilainya berubah, tanpa cabang "kecuali kalau
+	// kebetulan sama".
+	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		t.Fatalf("segmen tanda tangan bukan base64url: %v", err)
 	}
-	parts[2] = parts[2][:len(parts[2])-1] + string(repl)
+	sig[len(sig)-1] ^= 0xFF
+	parts[2] = base64.RawURLEncoding.EncodeToString(sig)
+
 	_, err = c.Verify(context.Background(), strings.Join(parts, "."))
 	assertUnauthorized(t, err)
 }
