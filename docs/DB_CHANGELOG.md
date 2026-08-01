@@ -32,7 +32,7 @@ Jalur A/B/C merujuk tiga cara pembuatan skema yang dijelaskan di `DB_SCHEMA.md` 
 
 ---
 
-### 2026-08-01 · PR-3.8.6 + E2 · `(belum di-commit)`
+### 2026-08-01 · PR-3.8.6 + E2 · `05875c4`
 **DB:** identity · **Jalur:** B (identity, `009_encrypt_identity_identifiers`) · **Down:** ada
 (bentuk saja — lihat catatan)
 
