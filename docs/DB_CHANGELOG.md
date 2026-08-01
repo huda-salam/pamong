@@ -32,6 +32,71 @@ Jalur A/B/C merujuk tiga cara pembuatan skema yang dijelaskan di `DB_SCHEMA.md` 
 
 ---
 
+### 2026-08-01 · PR-3.8.6 + E2 · `(belum di-commit)`
+**DB:** identity · **Jalur:** B (identity, `009_encrypt_identity_identifiers`) · **Down:** ada
+(bentuk saja — lihat catatan)
+
+Pengenal identity berpindah ke `_enc` + `_bidx`, dan UNIQUE-nya ikut pindah ke blind index
+(ADR-009 §2, ADR-017). Kunci berasal dari **realm sentral** `_central`, bukan dari tenant mana
+pun: data identity tak punya tenant, dan `UNIQUE(nik)` berlaku global se-identity-DB sehingga
+kunci blind index per-tenant akan membuatnya berhenti menangkap duplikat.
+
+- `~ id.persons` — `- nik`, `- no_hp`, `- email` (kolom plaintext DI-DROP, bukan dibiarkan
+  berdampingan); `+ nik_enc BYTEA NOT NULL`, `+ nik_bidx BYTEA NOT NULL`,
+  `+ no_hp_enc/no_hp_bidx BYTEA`, `+ email_enc/email_bidx BYTEA`.
+  `UNIQUE (nik)` → `uq_persons_nik_bidx (nik_bidx)`;
+  `+ idx_persons_no_hp_bidx`, `+ idx_persons_email_bidx` (non-unik, seperti sebelumnya).
+- `~ id.employments` — `- nip`; `+ nip_enc BYTEA`, `+ nip_bidx BYTEA`.
+  `UNIQUE (nip)` → `uq_employments_nip_bidx (nip_bidx)`.
+  CHECK tanpa nama `employments_check` diganti `employments_nip_status_check`, kini menuntut
+  **kedua** kolom konsisten dengan `status` — agar tak ada baris ber-indeks tanpa nilai.
+- `~ id.credentials` — `- cred_value`; `+ cred_value_enc BYTEA NOT NULL`,
+  `+ cred_value_bidx BYTEA NOT NULL`.
+  `UNIQUE (cred_type, cred_value)` → `uq_credentials_type_value_bidx (cred_type, cred_value_bidx)`.
+  `cred_type` **tetap plaintext** — jenis kredensial, bukan pengenal orang; itulah yang menjaga
+  keunikan tetap per-tipe dan `FindByTypeValue` tetap satu query.
+- `~ id.data_keys` — **tanpa DDL**: kolom `tenant_id` kini juga memuat identitas realm non-tenant
+  `_central` (ADR-017 §1). Kolom itu memang sejak awal tanpa FK ke `id.tenant_registry`.
+- `~ id.audit_logs` — **tanpa DDL**: (a) partisi hash chain identity berubah nilai dari
+  `"central"` menjadi `_central`; (b) nilai `personal_id` di kolom `diff` kini tersimpan
+  terenkripsi (base64 ciphertext) untuk `identity.Person` & `identity.Employment` — penutupan
+  REVIEW_BACKLOG E2.
+
+**Kompatibilitas:** **breaking**, dan sengaja tanpa jalur backfill. Diverifikasi 1 Agu 2026
+bahwa identity DB kosong di SELURUH environment (tak ada deployment staging/production; dev &
+CI tanpa schema `id`), jadi tak ada satu baris pun untuk dimigrasi. Sesudah ada data, perubahan
+yang sama menuntut pipeline bertahap (tambah kolom → backfill ber-kunci → tukar constraint →
+drop) dengan window kompatibilitas dua rilis, DAN migrasi hash chain audit karena nilai partisi
+ikut berubah.
+
+**Penggantian sentinel chain audit `"central"` → `_central` ikut bersandar pada premis kosong
+itu — dan itu perlu dinyatakan tersendiri.** Premis "identity DB kosong" di atas ditulis untuk
+dua hal lain: backfill pengenal dan down-migration. Penggantian sentinel adalah perubahan
+KETIGA yang menumpang padanya, tanpa DDL dan karena itu tanpa file migrasi yang menandainya.
+`id.audit_logs` dipartisi hash chain per `tenant_id`, dan identity memakai satu nilai sentinel
+karena datanya tak ber-tenant; mengganti nilai itu memulai chain BARU dan meninggalkan chain
+lama menggantung. Selama tabelnya kosong, "chain lama" tidak ada — tak ada baris, tak ada head,
+tak ada yang putus. Aman karena FAKTA (nol baris), bukan karena penggantian sentinel itu sendiri
+tak berbahaya.
+
+Pada identity DB BERISI, urutannya terbalik: repartisi chain lebih dulu, baru pengenal. Menjalankan
+migrasi ini apa adanya akan membuat verifikasi chain melaporkan diskontinuitas pada batas
+`"central"`→`_central` — persis gejala yang dirancang untuk berarti "audit log dirusak", sehingga
+kegagalannya bukan hanya teknis tapi merusak arti sinyal integritasnya. Alasan nilainya harus
+`_central` dan bukan `"central"` ada di ADR-017 §1 (token ber-`_` mustahil bertabrakan dengan
+tenant nyata, yang wajib cocok `^[a-z]…`); yang tak boleh dilakukan adalah menggantinya diam-diam
+di atas data yang sudah ada.
+
+**Down mengembalikan BENTUK, bukan DATA.** Kolom plaintext dibuat ulang kosong; nilai di `_enc`
+tak dipulihkan (memulihkannya butuh kunci dari KeyProvider — bukan urusan migrasi SQL). Pada DB
+berisi data ia gagal sejak awal karena `NOT NULL`. Aman hanya selama identity DB kosong, yaitu
+kondisi yang membuat migrasi up ini murah sejak awal.
+
+**Perubahan semantik yang menumpang di sini** (bukan struktur, tapi menentukan siapa bisa
+login): purpose kunci kredensial diturunkan dari `cred_type`, sehingga kredensial email masuk
+tabel normalisasi framework → **login lewat email menjadi case-insensitive** dan `UNIQUE` mulai
+menangkap `Budi@x.id` vs `budi@x.id` sebagai duplikat (ADR-017 §4). `oauth` tidak ikut di-fold.
+
 ### 2026-08-01 · PR-3.8.9 · `4f5ee87`
 **DB:** tenant · **Jalur:** — (tidak ada DDL) · **Down:** tidak berlaku
 

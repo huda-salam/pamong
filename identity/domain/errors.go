@@ -2,6 +2,9 @@ package domain
 
 import "github.com/huda-salam/pamong/core"
 
+// pesanBentukPengenal dipakai bersama oleh cred_value/email/no_hp — satu aturan, satu kalimat.
+const pesanBentukPengenal = "tidak boleh mengandung control character atau spasi di awal/akhir"
+
 // Domain error identity memakai error types framework agar auto-map ke HTTP status
 // (CODE_CONVENTION #3). Konflik unik (NIK/NIP duplikat) dihasilkan adapter via
 // core.ErrConflict saat pelanggaran unique constraint terdeteksi.
@@ -15,6 +18,12 @@ var (
 	ErrPersonIDKosong  = core.ErrValidation("person_id", "tidak boleh kosong")
 	ErrCredTypeInvalid = core.ErrValidation("cred_type", "tidak dikenal")
 	ErrCredValueKosong = core.ErrValidation("cred_value", "tidak boleh kosong")
+
+	// Bentuk pengenal — lihat bentukPengenalRusak di entity.go. Pesannya menyebut ATURAN,
+	// bukan nilai yang ditolak: pesan validasi ikut ke body HTTP & log (ADR-009 §6).
+	ErrCredValueFormat = core.ErrValidation("cred_value", pesanBentukPengenal)
+	ErrEmailFormat     = core.ErrValidation("email", pesanBentukPengenal)
+	ErrNoHPFormat      = core.ErrValidation("no_hp", pesanBentukPengenal)
 
 	ErrTenantIDInvalid   = core.ErrValidation("tenant_id", "harus lowercase, mulai huruf, 3-100 char (a-z0-9-)")
 	ErrTenantNamaKosong  = core.ErrValidation("nama", "tidak boleh kosong")

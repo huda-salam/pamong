@@ -24,6 +24,8 @@ schema-per-module. Migration runner. Koneksi dikelola berdasarkan tenant_registr
 - ddl.go — generator DDL dari EntityDef (termasuk kolom `_enc`/`_bidx`)
 - field_crypto.go — terjemahan kolom logis ↔ kolom fisik terenkripsi + `decryptingScanner`
 - audited_repository.go — factory `NewRepository` (auto-attach audit + kripto), enkripsi diff
+  (`SealAuditDiff`, **diekspor** — jalur audit identity memakai penyegelan yang sama dengan
+  realm kunci berbeda; aturannya terlalu mudah salah untuk ditulis dua kali)
 
 ## Konvensi khusus
 - DB-per-tenant: tiap tenant DB sendiri. Schema-per-module di dalamnya.
@@ -82,6 +84,10 @@ Alur & aturan yang menopangnya:
   menyebut id baris agar tetap bisa ditindak.
 - `NewRepository` MENOLAK entity ber-field terenkripsi bila `CryptoPort` tak diberikan, dan
   enkripsi gagal keras bila tenant tak ada di context (`port.WithTenant`).
+- `SealAuditDiff` menerima **realm** kunci sebagai parameter, bukan membaca tenant dari context
+  sendiri: `auditedRepo.sealPair` menyuplai `port.TenantFrom(ctx)`, jalur identity menyuplai
+  `crypto.RealmCentral` (ADR-017). Menambahkannya kembali sebagai pembacaan context akan
+  mematahkan jalur identity, yang memang tak punya tenant.
 - Diff audit ikut terenkripsi (`auditedRepo.snapshot` → `sealPair`) — snapshot diambil dari
   ENTITY (plaintext), jadi mengenkripsi kolom saja hanya MEMINDAHKAN kebocoran ke
   `audit_logs.diff`. Sisi bacanya: `core/audit.Reader` + permission `audit:sensitive:baca`.

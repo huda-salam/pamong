@@ -90,27 +90,37 @@ DB sentral `gov_identity`. Berisi identitas manusia, kepegawaian, kredensial, re
 role sentral, dan kunci enkripsi ter-wrap. Modul bisnis **dilarang** menyentuh DB ini —
 aksesnya lewat port `UserResolver` dan event sinkronisasi.
 
-### 3.1 `id.persons` — master identitas *(B, `001_create_identity`)*
+### 3.1 `id.persons` — master identitas *(B, `001_create_identity` + `009`)*
 
 Satu baris per manusia; anchor identitas adalah **NIK** (setiap warga punya, tidak hanya ASN).
 
 | Kolom | Tipe | Catatan |
 |---|---|---|
 | `id` | UUID PK | app-generated (bukan `gen_random_uuid()`) — id dibuat di domain agar event bisa memuatnya sebelum commit |
-| `nik` | VARCHAR(16) UNIQUE NOT NULL | anchor global |
-| `nama_lengkap` | VARCHAR(255) NOT NULL | perubahannya (termasuk gelar) hanya lewat use case identity → event → clone |
+| `nik_enc` | BYTEA NOT NULL | NIK terenkripsi (AES-256-GCM, nonce acak per-nilai) |
+| `nik_bidx` | BYTEA NOT NULL | blind index NIK — **di sinilah keunikan global ditegakkan** |
+| `nama_lengkap` | VARCHAR(255) NOT NULL | class `personal`, **tidak** dienkripsi (harus dapat dicari); perubahannya (termasuk gelar) hanya lewat use case identity → event → clone |
 | `tgl_lahir` | DATE | |
-| `no_hp` | VARCHAR(15) | |
-| `email` | VARCHAR(255) | |
+| `no_hp_enc` / `no_hp_bidx` | BYTEA | NULL bila tak ada nomor |
+| `email_enc` / `email_bidx` | BYTEA | NULL bila tak ada email |
 | `is_active` | BOOLEAN NOT NULL DEFAULT true | |
 | `created_at` / `updated_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | |
 
-`nik`, `no_hp`, `email` berkelas data `personal_id` (ADR-009) → kandidat enkripsi + blind index.
-Kolomnya **masih plaintext**: mesin enkripsi transparan sudah ada di lapis repository
-(PR-3.8.3/3.8.4), tapi tabel identity ditulis lewat migrasi tangan — bukan di-generate dari
-`EntityDef` — sehingga migrasi ke bentuk `_enc`/`_bidx` belum dilakukan.
+Unique: `uq_persons_nik_bidx (nik_bidx)` — menggantikan `UNIQUE (nik)` lama.
+Index: `idx_persons_no_hp_bidx`, `idx_persons_email_bidx` (non-unik: dua orang boleh berbagi
+nomor rumah tangga / email keluarga, persis seperti sebelum enkripsi).
 
-### 3.2 `id.employments` — relasi kepegawaian *(B, `001_create_identity`)*
+`nik`, `no_hp`, `email` berkelas data `personal_id` (ADR-009) → terenkripsi + blind index sejak
+PR-3.8.6. **Kolom plaintext-nya tidak ada lagi**, bukan sekadar berhenti diisi: kolom yang
+tertinggal akan mengundang query baru yang mengisinya. Kunci berasal dari **realm sentral**
+`_central` (ADR-017), bukan dari tenant mana pun — `UNIQUE(nik_bidx)` berlaku global
+se-identity-DB, dan kunci blind index per-tenant akan membuatnya berhenti menangkap duplikat.
+
+Enkripsi/dekripsinya ditangani `identity/adapter/db/field_crypto.go` — repo identity ditulis
+tangan, bukan di-generate dari `EntityDef`, karena skema ini punya invariant yang tak bisa
+diungkapkan `EntityDef` (CHECK silang `nip`↔`status`, UNIQUE majemuk pada credential).
+
+### 3.2 `id.employments` — relasi kepegawaian *(B, `001_create_identity` + `009`)*
 
 Opsional dan bisa lebih dari satu sepanjang waktu: tidak semua person adalah pegawai.
 
@@ -119,18 +129,24 @@ Opsional dan bisa lebih dari satu sepanjang waktu: tidak semua person adalah peg
 | `id` | UUID PK | |
 | `person_id` | UUID NOT NULL → `id.persons(id)` | |
 | `status` | VARCHAR(10) NOT NULL | CHECK `('asn','non_asn')` |
-| `nip` | VARCHAR(18) UNIQUE | wajib bila `asn`, NULL bila `non_asn` (CHECK gabungan) |
+| `nip_enc` | BYTEA | NIP terenkripsi; NULL bila `non_asn` |
+| `nip_bidx` | BYTEA | blind index NIP — pemikul UNIQUE |
 | `instansi_asal` | VARCHAR(255) | instansi induk pegawai |
 | `is_active` | BOOLEAN NOT NULL DEFAULT true | |
 | `valid_from` / `valid_until` | TIMESTAMPTZ | `valid_until` NULL = berlaku terus |
 | `created_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | |
 
+Unique: `uq_employments_nip_bidx (nip_bidx)` — menggantikan `UNIQUE (nip)` lama. Banyak baris
+NULL tetap diizinkan Postgres, jadi non-ASN tak saling menabrak seperti sebelumnya.
 Index: `idx_employments_person (person_id)`.
 
-CHECK gabungan `(status='asn' AND nip IS NOT NULL) OR (status='non_asn' AND nip IS NULL)` menegakkan
-invariant "NIP hanya milik ASN" di level DB, bukan hanya di kode.
+CHECK `employments_nip_status_check`:
+`(status='asn' AND nip_enc IS NOT NULL AND nip_bidx IS NOT NULL) OR (status='non_asn' AND nip_enc IS NULL AND nip_bidx IS NULL)`.
+Ia menggantikan CHECK gabungan lama atas kolom `nip` dan menegakkan invariant "NIP hanya milik
+ASN" di level DB, bukan hanya di kode — kini atas **kedua** kolom, agar tak ada baris yang punya
+indeks tanpa nilai (atau sebaliknya).
 
-### 3.3 `id.credentials` — jalur login *(B, `001_create_identity`)*
+### 3.3 `id.credentials` — jalur login *(B, `001_create_identity` + `009`)*
 
 Banyak credential per person; semuanya resolve ke person yang sama (ASN yang login lewat portal
 publik tetap orang yang sama, hanya personanya berbeda).
@@ -139,14 +155,24 @@ publik tetap orang yang sama, hanya personanya berbeda).
 |---|---|---|
 | `id` | UUID PK | |
 | `person_id` | UUID NOT NULL → `id.persons(id)` | |
-| `cred_type` | VARCHAR(20) NOT NULL | CHECK `('nip','nik','email','no_hp','oauth')` |
-| `cred_value` | VARCHAR(255) NOT NULL | UNIQUE bersama `cred_type` |
+| `cred_type` | VARCHAR(20) NOT NULL | CHECK `('nip','nik','email','no_hp','oauth')`; **tetap plaintext** — jenis kredensial, bukan pengenal orang |
+| `cred_value_enc` | BYTEA NOT NULL | nilai kredensial terenkripsi |
+| `cred_value_bidx` | BYTEA NOT NULL | blind index — jalur resolusi login |
 | `secret_hash` | VARCHAR(255) | bcrypt; NULL bila SSO/OTP-only |
 | `is_primary` | BOOLEAN NOT NULL DEFAULT false | |
 | `last_used_at` | TIMESTAMPTZ | |
 | `created_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | |
 
-Constraint: `UNIQUE (cred_type, cred_value)`. Index: `idx_credentials_person (person_id)`.
+Unique: `uq_credentials_type_value_bidx (cred_type, cred_value_bidx)` — menggantikan
+`UNIQUE (cred_type, cred_value)` lama. Keunikan majemuk tetap majemuk karena `cred_type`
+sengaja dibiarkan terbuka; itu pula yang membuat `FindByTypeValue` tetap satu query.
+Index: `idx_credentials_person (person_id)`.
+
+Purpose kunci diturunkan dari **`cred_type`** (`nik`/`nip`/`email`/`no_hp`/`oauth`), bukan satu
+purpose gabungan (ADR-017 §4) — sehingga kredensial email ikut kebijakan normalisasi framework.
+Konsekuensi yang disengaja: **login lewat email case-insensitive** (sebelum PR-3.8.6 ia equality
+SQL atas VARCHAR, case-sensitive), dan `UNIQUE` menangkap `Budi@x.id` vs `budi@x.id` sebagai
+duplikat. `oauth` tidak ikut di-case-fold (subject provider bersifat opaque).
 
 ### 3.4 `id.tenant_registry` — registry tenant *(B, `002` + `008`)*
 
@@ -269,7 +295,7 @@ apa pun untuk membukanya.
 
 | Kolom | Tipe | Catatan |
 |---|---|---|
-| `tenant_id` | VARCHAR(100) NOT NULL | isolasi per-tenant: satu tenant bocor tak membuka tenant lain |
+| `tenant_id` | VARCHAR(100) NOT NULL | identitas **realm kunci** (ADR-017): `<tenant_id>` untuk data tenant, `_central` untuk data identity. Isolasi per-tenant: satu tenant bocor tak membuka tenant lain |
 | `purpose` | VARCHAR(50) NOT NULL | konteks kunci (`nik`, `no_rekening`, …) — membatasi blast radius |
 | `kind` | VARCHAR(10) NOT NULL | CHECK `('enc','bidx')` |
 | `key_version` | INTEGER NOT NULL | CHECK `> 0` |
@@ -283,6 +309,14 @@ PK `(tenant_id, purpose, kind, key_version)`.
 Unique partial: `uq_data_keys_active (tenant_id, purpose, kind) WHERE is_active` — tepat satu versi
 aktif, agar "versi aktif" tak pernah ambigu saat dua proses menulis paralel.
 
+Kolom `tenant_id` **sengaja tanpa FK** ke `id.tenant_registry`, dan sejak PR-3.8.6 ia memang
+memuat nilai non-tenant: realm sentral `_central` (ADR-017 §1) untuk kunci data identity.
+Token itu diawali garis bawah sehingga gagal `identity/domain.tenantIDRe` (`^[a-z]…`) dan
+mustahil bertabrakan dengan tenant nyata. Custody realm sentral **selalu** `platform` dan
+ditegakkan di kode (`crypto.WithCentralRealm`), bukan dibaca dari registry — identity DB adalah
+DB platform yang memuat data seluruh pemda, jadi tak ada satu pemda yang berwenang memegang
+KEK-nya.
+
 `kind` sengaja memisahkan kunci enkripsi dari kunci blind index (bukan diturunkan dari satu DEK):
 rotasi kunci `enc` murah & lazy, sedangkan rotasi `bidx` memaksa reindex seluruh baris. Menurunkan
 keduanya dari satu DEK akan menyeret reindex mahal setiap rotasi (ADR-009 §2).
@@ -292,6 +326,17 @@ KEK sendiri **tidak pernah** masuk DB — ia hidup di KeyProvider (KMS/master ke
 
 Struktur **identik** dengan `gov.audit_logs` (lihat §4.2); yang berbeda hanya schema-nya dan
 partisi hash chain-nya (identity memakai partisi konstan → satu chain tunggal, ADR-003).
+
+Nilai partisi itu adalah `_central` — **realm kunci yang sama** dengan `id.data_keys`
+(ADR-017 §2), bukan sekadar string yang mirip. Kolom `tenant_id` pada entry audit adalah
+koordinat yang dipakai `core/audit.Reader` untuk membuka nilai diff terenkripsi
+(`RowRef.TenantID` diambil dari `entry.TenantID`), jadi dua nilai berbeda di dua tempat akan
+menghasilkan nilai tersegel yang tak bisa dibuka lagi oleh jalur bacanya sendiri.
+
+Sejak PR-3.8.6 nilai `personal_id` di kolom `diff` tersimpan **terenkripsi** (base64 ciphertext)
+untuk `identity.Person` (`nik`, `no_hp`, `email`) dan `identity.Employment` (`nip`) —
+menutup REVIEW_BACKLOG E2. Nilai mentah tetap menjadi bukti sebagaimana keputusan ADR-002,
+hanya tak terbaca tanpa kunci; jalur bacanya digerbangi permission `audit:sensitive:baca`.
 
 ---
 

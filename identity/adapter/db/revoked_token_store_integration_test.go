@@ -30,10 +30,10 @@ func applyRevokedTokensMigration(t *testing.T, pool *infradb.Pool, ctx context.C
 // TestRevokedTokenStore_RevokeAndCheck membuktikan migrasi 005 + SQL store benar:
 // denylist jti round-trip, jti lain tak terdampak, dan Revoke idempoten.
 func TestRevokedTokenStore_RevokeAndCheck(t *testing.T) {
-	pool, ctx := setupIdentityDB(t)
+	pool, cr, ctx := setupIdentityDB(t)
 	applyRevokedTokensMigration(t, pool, ctx)
 
-	persons := db.NewPersonRepo(pool)
+	persons := mustPersonRepo(t, pool, cr)
 	store := db.NewRevokedTokenStore(pool)
 
 	// Person sebagai target FK person_id.

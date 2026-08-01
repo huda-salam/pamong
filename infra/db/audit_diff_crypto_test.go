@@ -116,7 +116,7 @@ func TestSealPair_EnkripsiGagalTidakMenghapusPerubahan(t *testing.T) {
 	if len(diff) != 1 || diff[0].Field != "nik" {
 		t.Fatalf("perubahan nik harus tetap tercatat meski enkripsi gagal, dapat %+v", diff)
 	}
-	if diff[0].Before != auditRedactedBefore || diff[0].After != auditRedactedAfter {
+	if diff[0].Before != AuditRedactedBefore || diff[0].After != AuditRedactedAfter {
 		t.Fatalf("penanda kedua sisi harus berbeda, dapat before=%v after=%v", diff[0].Before, diff[0].After)
 	}
 	for _, v := range []any{diff[0].Before, diff[0].After} {
@@ -186,7 +186,7 @@ func TestSealPair_TanpaEntityIDTidakPernahPlaintext(t *testing.T) {
 	after := map[string]any{"nama": "Budi", "nik": "3578010101010002"}
 	sealRepo(testkit.NewMockCrypto()).sealPair(tenantCtx(), uuid.Nil, before, after)
 
-	if before["nik"] != auditRedactedBefore || after["nik"] != auditRedactedAfter {
+	if before["nik"] != AuditRedactedBefore || after["nik"] != AuditRedactedAfter {
 		t.Fatalf("tanpa entity id harus jadi penanda gagal, dapat before=%v after=%v", before["nik"], after["nik"])
 	}
 }

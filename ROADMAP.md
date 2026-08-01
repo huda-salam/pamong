@@ -665,10 +665,102 @@ pluggable + custody sebagai kebijakan per-tenant).
     `gov.user_profiles`.
   - DoD: tiap jalur tak membocorkan pengenal mentah (test per-jalur).
 
-- **PR-3.8.6** Migrasi identity UNIQUE→blind index ← 3.8.3
+- **PR-3.8.6** Migrasi identity UNIQUE→blind index ← 3.8.3 ✅ *(dikerjakan bersama E2)*
   - `nik`/`nip`/`cred_value`/`no_hp`/`email` → `_enc`+`_bidx`; UNIQUE pindah; backfill (dev
     kosong = gratis). SENSITIF (identity) — review ekstra.
-  - DoD: login & resolve by NIK/NIP/email tetap jalan lewat blind index; UNIQUE ditegakkan di `_bidx`.
+  - DoD: login & resolve by NIK/NIP/email tetap jalan lewat blind index; UNIQUE ditegakkan di `_bidx`. ✅
+  - **Keputusan yang mendahului kode: kunci mana untuk data sentral.** Hierarki DEK ADR-010
+    ber-tenant, sedangkan identity tak punya tenant — dan yang mengunci pilihan bukan estetika
+    melainkan `UNIQUE(nik)` yang berlaku **global se-identity-DB**: kunci bidx per-tenant
+    membuat NIK yang sama menghasilkan bidx berbeda, sehingga UNIQUE berhenti menangkap
+    duplikat dan `FindByNIK` harus menyebut tenant yang ia tak punya. → **ADR-017**: sumbu
+    partisi `id.data_keys.tenant_id` dibaca ulang sebagai **key realm**, dengan token cadangan
+    `_central` yang **tak bisa dipalsukan** (gagal `^[a-z]` di `tenantIDRe`, jadi mustahil jadi
+    tenant_id). Custody realm sentral = `platform` sebagai **invarian kode**
+    (`crypto.WithCentralRealm`), bukan baris `id.tenant_registry` yang bisa di-`UPDATE`.
+    Skema `id.data_keys` & kontrak `port.CryptoPort` TIDAK berubah.
+  - **Backfill diverifikasi benar-benar nol** sebelum menulis kode: tak ada manifest deploy di
+    repo, remote hanya Gitea lokal, dev & CI tanpa schema `id` sama sekali. Window ini tidak
+    terulang.
+  - Yang berdiri: migrasi `009_encrypt_identity_identifiers` (kolom plaintext **DI-DROP**, bukan
+    dibiarkan berdampingan; UNIQUE pindah ke `_bidx`; CHECK `nip`↔`status` ikut pindah & kini
+    menuntut kedua kolom konsisten); `identity/adapter/db/field_crypto.go` (seal/open/index,
+    pemeriksaan `PurposeOf` ADR-015, AAD ber-baris ADR-016 dari `id` BARIS ITU SENDIRI);
+    ketiga repo identity menolak `CryptoPort` nil saat konstruksi.
+  - **Cacat laten yang ikut tertutup:** sentinel chain audit identity dulu bernilai `"central"`,
+    string yang **LOLOS** `tenantIDRe` — pemda yang kebetulan didaftarkan dengan nama itu akan
+    melebur audit-nya ke chain sentral, dan sejak PR ini juga berbagi ruang kunci. Kini ia
+    memakai `crypto.RealmCentral` yang sama dengan realm kunci, jadi keduanya tak bisa menyimpang.
+  - **Perubahan semantik auth yang disengaja:** purpose kunci kredensial diturunkan dari
+    `cred_type`, bukan satu purpose gabungan — sehingga kredensial email masuk tabel normalisasi
+    framework. Akibatnya **login lewat email menjadi case-insensitive** dan UNIQUE menangkap
+    `Budi@x.id` vs `budi@x.id` sebagai duplikat. Gratis sekarang, mahal sesudah ada akun.
+    `oauth` sengaja tidak ikut di-fold (subject provider opaque).
+  - **E2 (REVIEW_BACKLOG) ikut tertutup di PR yang sama, dan itu bukan kepraktisan:**
+    `personFields()`/`employmentFields()` mengambil snapshot dari ENTITY (plaintext), jadi
+    mengenkripsi kolom `id.persons` sendirian hanya **memindahkan** kebocoran ke
+    `id.audit_logs.diff` — sekaligus menciptakan keyakinan keliru bahwa NIK sudah terlindungi.
+    Penyegelannya memakai mesin yang sama dengan jalur tenant (`infra/db.SealAuditDiff`,
+    diekspor dari `auditedRepo.sealPair`) agar aturan "bandingkan plaintext dulu, segel
+    sesudahnya, penanda gagal per sisi berbeda" tak ditulis dua kali.
+  - DoD terbukti di DB nyata (`identity/adapter/db/field_crypto_integration_test.go`, 8 test):
+    kolom plaintext hilang dari katalog; dump `_enc`/`_bidx` bersih dari NIK/NIP/email;
+    resolve by NIK/NIP/email utuh lewat `_bidx`; UNIQUE menolak duplikat NIK/NIP/kredensial
+    sementara nilai sama pada `cred_type` berbeda tetap diterima; ciphertext yang dipindah
+    antar BARIS & antar KOLOM ditolak; DEK realm sentral terbentuk **tanpa satu baris pun** di
+    `id.tenant_registry`; dump `id.audit_logs.diff` bersih dari pengenal sementara nilai
+    non-sensitif tetap ada dan hash chain tetap verify.
+  - **Sembilan mutasi kode produksi diverifikasi MEMBUAT test gagal:** (1) blind index ikut
+    ber-baris; (2) buang pemeriksaan `PurposeOf`; (3) `RecordID` konstan (pengikatan baris mati);
+    (4) `audited_repos` berhenti menyegel diff; (5) buang `WithCentralRealm` dari `NewFromConfig`;
+    (6) `RealmCentral` kembali ke `"central"`; (7) purpose kredensial digabung jadi `cred_value`;
+    (8) migrasi tak men-DROP kolom `nik`; (9) konstruktor menerima `CryptoPort` nil.
+  - **Temuan review yang diperbaiki di PR yang sama** (`/code-review` + `/security-review`):
+    - **Kuota OTP lumpuh oleh normalisasi blind index** (HIGH — REVIEW_BACKLOG A7). Lookup kini
+      trim + case-fold, jadi `budi@x.id`/`Budi@x.id`/`" budi@x.id"` adalah SATU kredensial dengan
+      tiga bucket rate limiter — kuota bisa dilipatgandakan tanpa batas, menyisakan hanya cap
+      per-OTP yang memang dirancang sebagai setengah proteksi. Kuota dipecah dua lapis: lapis
+      mentah pra-lookup (menjaga enumeration-resistance) + lapis **ID kredensial** pasca-lookup
+      (kuota sebenarnya, kanonik by construction), dengan habisnya lapis kedua dibuat tak bisa
+      dibedakan dari jalur normal agar tak jadi orakel keberadaan akun. Empat test baru, lima
+      mutasi diverifikasi — termasuk "perbaikan" yang salah (key lapis-2 kembali ke nilai mentah).
+    - **NIK/NIP masih dikutip pesan `ErrNotFound`** — jalur samping ADR-009 §6 yang sama yang
+      ditutup PR ini di tempat lain (pesan mengalir ke log & body HTTP). Referensi error kini
+      menyebut jenis pencarian, bukan nilainya.
+    - **OTP dikirim ke nilai permintaan, bukan alamat terdaftar** (HIGH — REVIEW_BACKLOG A7, akar
+      yang sama dengan temuan pertama, ditemukan putaran review kedua). `normalize()` ber-`TrimSpace`
+      ikut membuang CR/LF, jadi `"victim@x.id\n"` me-resolve ke kredensial nyata → OTP dibuat, lalu
+      SMTP menolak alamatnya sebagai header injection (500) sementara alamat asing menjawab 200:
+      orakel keberadaan akun satu-probe-per-target, yang sekalian menimpa OTP korban yang sedang
+      berjalan. Tujuan kirim kini `cred.CredValue` (hasil dekripsi kolom `_enc`). Ini regresi yang
+      PR ini perkenalkan — sebelumnya lookup eksak membuat kedua nilai selalu identik.
+    - **Tak ada yang mengkanonikalisasi nilai yang MASUK** (HIGH — akar yang sama, putaran review
+      ketiga). Dua temuan di atas menutup jalur BACA; tapi `seal()` mengenkripsi verbatim sementara
+      `index()` menormalkan, dan `Credential.Validate()` hanya menolak nilai kosong — jadi kredensial
+      ber-CRLF bisa TERSIMPAN, dan sesudah itu alamat kanonik hasil dekripsi sendiri yang ditolak
+      SMTP. Orakel yang sama, pindah ke jalur tulis dan bertahan permanen di baris DB.
+      **Diperbaiki di DOMAIN, bukan di `seal()`**: `bentukPengenalRusak` (control character + spasi
+      tepi) di `Credential.Validate` (`cred_value`) dan `Person.Validate` (`email`/`no_hp` — keduanya
+      ikut ke clone lalu jadi alamat kirim notifikasi). Menormalkan di `seal()` ditolak: nilai
+      terdekripsi jadi ≠ nilai yang didaftarkan, dan kebijakan `infra/crypto` tersalin ke lapis repo.
+      Tiga mutasi diverifikasi.
+    - **Penggantian sentinel chain audit `"central"`→`_central` menumpang pada premis "DB kosong"
+      yang ditulis untuk hal lain** (putaran ketiga). Faktual aman (nol baris di seluruh env), tapi
+      premisnya ditulis untuk backfill pengenal & down-migration — sentinel adalah pemakaian ketiga,
+      tanpa DDL yang menandainya. Kode tak berubah; DB_CHANGELOG 009 kini menyatakannya eksplisit
+      plus urutan yang dituntut DB berisi (repartisi chain dulu, kalau tidak verifikasi chain
+      melaporkan diskontinuitas — gejala yang justru berarti "audit log dirusak").
+    - **Entri audit identity belum punya jalur baca ber-permission** — `_central` by construction
+      tak akan pernah cocok dengan tenant aktor di `audit.Reader`. **Tidak ditambal**: pertanyaannya
+      "siapa berwenang membaca audit sentral" (kemungkinan central role platform), dan laten sampai
+      `audit.NewReader` dirakit di Phase 5.x. Dicatat di REVIEW_BACKLOG E1.
+  - **Yang TIDAK ikut tertutup di sini:** clone `gov.user_profiles` masih membawa pengenal plaintext
+    lewat fat event — **`nik`/`nip`, bukan hanya email/no_hp** (PR-N3b/ADR-013). Jadi NIK terenkripsi
+    di identity DB & `id.audit_logs`, tapi tersalin apa adanya ke setiap tenant DB yang punya
+    penugasan person itu; jalur samping, cakupan **PR-3.8.5**. Dicatat pula dua temuan review yang
+    sengaja tidak ditambal di sini: kanal OTP `no_hp` tanpa driver SMS (REVIEW_BACKLOG A8 —
+    pra-existing, butuh keputusan konfigurasi) dan `CryptoPort` typed-nil yang lolos konstruktor
+    (H6 — gagalnya berisik, bukan plaintext diam-diam).
 
 - **PR-3.8.7** Generator `docs/contracts/data-inventory.md` (pamongctl) ← 3.8.1
   - Inventaris field ber-`Class` dari manifest — artefak kepatuhan UU PDP yang tak basi.

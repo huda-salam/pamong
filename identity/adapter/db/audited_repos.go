@@ -7,29 +7,79 @@ import (
 	"github.com/huda-salam/pamong/core"
 	"github.com/huda-salam/pamong/core/audit"
 	"github.com/huda-salam/pamong/identity/domain"
+	"github.com/huda-salam/pamong/infra/crypto"
+	infradb "github.com/huda-salam/pamong/infra/db"
 	"github.com/huda-salam/pamong/port"
 )
 
 // Dekorator audit untuk repo identity (ADR-003 / auto-attach). Membungkus port domain
 // dan mencatat audit pada mutasi, tanpa kode audit di use case. Operasi baca diteruskan.
+//
+// Diff audit menyimpan snapshot dari ENTITY (nilai plaintext), bukan dari kolom DB —
+// sehingga mengenkripsi id.persons.nik_enc saja hanya MEMINDAHKAN kebocoran ke
+// id.audit_logs.diff. Karena itu nilai pengenal disegel di sini sebelum dicatat
+// (REVIEW_BACKLOG E2), dengan mesin & aturan yang sama persis dengan jalur tenant
+// (infra/db.SealAuditDiff) dan realm kunci sentral (ADR-017).
+
+// sensitiveFields memetakan kolom diff yang wajib disegel ke purpose kuncinya. Purpose
+// SENGAJA sama dengan kolom asalnya di id.persons/id.employments (ADR-017 §4): keduanya
+// nilai yang sama pada baris yang sama.
+var (
+	personSensitiveFields = []infradb.FieldCryptoSpec{
+		{Column: "nik", Purpose: "nik"},
+		{Column: "no_hp", Purpose: "no_hp"},
+		{Column: "email", Purpose: "email"},
+	}
+	employmentSensitiveFields = []infradb.FieldCryptoSpec{
+		{Column: "nip", Purpose: "nip"},
+	}
+)
+
+// sealIdentityDiff menyegel nilai sensitif pada sepasang snapshot diff identity.
+func sealIdentityDiff(ctx context.Context, c port.CryptoPort, specs []infradb.FieldCryptoSpec,
+	entityID uuid.UUID, before, after map[string]any) {
+	infradb.SealAuditDiff(ctx, c, crypto.RealmCentral, entityID, specs, before, after)
+}
+
+// requireCrypto menolak CryptoPort nil pada dekorator audit yang menyentuh pengenal.
+//
+// Gagal saat konstruksi, bukan saat entry pertama ditulis: SealAuditDiff yang menerima
+// nil akan mengembalikan snapshot APA ADANYA — yaitu NIK/NIP plaintext ke
+// id.audit_logs.diff, persis kebocoran yang ditutup PR-3.8.6, tanpa satu pun gejala.
+// Cermin penolakan yang sama di NewPersonRepo & infra/db.NewRepository.
+func requireCrypto(c port.CryptoPort, decorator string) error {
+	if c == nil {
+		return core.ErrValidation("crypto",
+			decorator+" butuh port.CryptoPort (diff memuat pengenal, REVIEW_BACKLOG E2)")
+	}
+	return nil
+}
 
 // --- Person ---
 
 type auditedPersonRepo struct {
 	inner  domain.PersonRepository
 	engine *audit.Engine
+	crypto port.CryptoPort
 }
 
-// NewAuditedPersonRepo membungkus PersonRepository dengan pencatatan audit.
-func NewAuditedPersonRepo(inner domain.PersonRepository, engine *audit.Engine) domain.PersonRepository {
-	return &auditedPersonRepo{inner: inner, engine: engine}
+// NewAuditedPersonRepo membungkus PersonRepository dengan pencatatan audit. CryptoPort
+// WAJIB: ia menyegel NIK/no HP/email pada diff — tanpa itu, enkripsi kolom di id.persons
+// hanya memindahkan kebocoran ke id.audit_logs.
+func NewAuditedPersonRepo(inner domain.PersonRepository, engine *audit.Engine, c port.CryptoPort) (domain.PersonRepository, error) {
+	if err := requireCrypto(c, "NewAuditedPersonRepo"); err != nil {
+		return nil, err
+	}
+	return &auditedPersonRepo{inner: inner, engine: engine, crypto: c}, nil
 }
 
 func (r *auditedPersonRepo) Save(ctx context.Context, p *domain.Person) error {
 	if err := r.inner.Save(ctx, p); err != nil {
 		return err
 	}
-	return recordAudit(ctx, r.engine, "identity.Person", p.ID, audit.ActionCreate, nil, personFields(p))
+	after := personFields(p)
+	sealIdentityDiff(ctx, r.crypto, personSensitiveFields, p.ID, nil, after)
+	return recordAudit(ctx, r.engine, "identity.Person", p.ID, audit.ActionCreate, nil, after)
 }
 
 func (r *auditedPersonRepo) FindByID(ctx context.Context, id uuid.UUID) (*domain.Person, error) {
@@ -56,18 +106,25 @@ func personFields(p *domain.Person) map[string]any {
 type auditedEmploymentRepo struct {
 	inner  domain.EmploymentRepository
 	engine *audit.Engine
+	crypto port.CryptoPort
 }
 
 // NewAuditedEmploymentRepo membungkus EmploymentRepository dengan pencatatan audit.
-func NewAuditedEmploymentRepo(inner domain.EmploymentRepository, engine *audit.Engine) domain.EmploymentRepository {
-	return &auditedEmploymentRepo{inner: inner, engine: engine}
+// CryptoPort WAJIB: ia menyegel NIP pada diff (REVIEW_BACKLOG E2).
+func NewAuditedEmploymentRepo(inner domain.EmploymentRepository, engine *audit.Engine, c port.CryptoPort) (domain.EmploymentRepository, error) {
+	if err := requireCrypto(c, "NewAuditedEmploymentRepo"); err != nil {
+		return nil, err
+	}
+	return &auditedEmploymentRepo{inner: inner, engine: engine, crypto: c}, nil
 }
 
 func (r *auditedEmploymentRepo) Save(ctx context.Context, e *domain.Employment) error {
 	if err := r.inner.Save(ctx, e); err != nil {
 		return err
 	}
-	return recordAudit(ctx, r.engine, "identity.Employment", e.ID, audit.ActionCreate, nil, employmentFields(e))
+	after := employmentFields(e)
+	sealIdentityDiff(ctx, r.crypto, employmentSensitiveFields, e.ID, nil, after)
+	return recordAudit(ctx, r.engine, "identity.Employment", e.ID, audit.ActionCreate, nil, after)
 }
 
 func (r *auditedEmploymentRepo) FindByID(ctx context.Context, id uuid.UUID) (*domain.Employment, error) {

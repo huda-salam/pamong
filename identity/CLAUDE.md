@@ -36,19 +36,89 @@ setiap perubahan butuh review ekstra (lihat aturan PR).
 - ASN = masyarakat yang punya employment. Bisa login publik sebagai citizen (token tanpa
   role internal). Persona ditentukan portal, bukan tipe orang.
 - NIK anchor global unik. NIP di employment (unik, wajib untuk ASN).
+- **Pengenal tersimpan TERENKRIPSI + blind index** (PR-3.8.6, ADR-009/015/016/017) — lihat
+  §Enkripsi pengenal di bawah.
 - Cross-tenant assignment (is_home_tenant=false) butuh permission khusus.
 - Identity DB selalu sentral; tenant (termasuk dedicated server) tetap connect untuk auth.
+
+## Enkripsi pengenal (PR-3.8.6 · ADR-017)
+`nik`, `nip`, `cred_value`, `no_hp`, `email` tersimpan sebagai `{f}_enc` + `{f}_bidx`.
+Kolom plaintext-nya **tidak ada** — bukan sekadar berhenti diisi.
+
+- **Realm kunci = `crypto.RealmCentral` (`_central`), bukan tenant.** Data identity tak punya
+  tenant, dan `UNIQUE(nik)` berlaku global se-identity-DB: kunci bidx per-tenant membuat NIK
+  yang sama menghasilkan bidx berbeda → UNIQUE berhenti menangkap duplikat. Token `_central`
+  gagal `tenantIDRe` (`^[a-z]…`) sehingga mustahil bertabrakan dengan tenant nyata.
+- **Lookup equality WAJIB lewat `_bidx`.** `{f}_enc` memakai nonce acak — `WHERE nik_enc = $1`
+  tak akan pernah cocok. `FindByNIK`/`FindByNIP`/`FindByTypeValue` menghitung bidx dulu.
+- **Purpose kredensial diturunkan dari `cred_type`**, bukan satu purpose `cred_value`
+  (ADR-017 §4) — supaya kredensial email ikut normalisasi framework. Akibat yang disengaja:
+  login lewat email **case-insensitive**. `oauth` tidak di-fold.
+- **Identitas baris untuk AAD diambil dari BARIS ITU SENDIRI** (`p.ID` hasil scan), tak pernah
+  dari argumen pemanggil — itulah yang membuat pemindahan ciphertext antar baris gagal.
+- **`PurposeOf` diperiksa sebelum `Decrypt`** (ADR-015): AAD tak mengikat kolom, jadi tanpa itu
+  `no_hp_enc` bisa disalin ke `email_enc` pada baris yang sama dan tetap terbuka.
+- **Diff audit ikut disegel** (`sealIdentityDiff` → `infra/db.SealAuditDiff`, realm sentral).
+  Snapshot diambil dari ENTITY (plaintext), jadi mengenkripsi kolom saja hanya MEMINDAHKAN
+  kebocoran ke `id.audit_logs.diff`.
+- **Semua konstruktor repo & dekorator audit MENOLAK `CryptoPort` nil.** Jangan longgarkan:
+  nil membuat pengenal mendarat plaintext tanpa satu pun gejala.
+- **Pengenal tak ikut ke pesan error.** `ErrConflict`/`ErrNotFound` menyebut JENIS pencarian
+  (`"nik"`, `"nip"`, `"email"`), bukan nilainya: pesan `FrameworkError` mengalir ke log DAN body
+  HTTP — jalur samping yang sama (ADR-009 §6).
+- **Normalisasi blind index mengubah arti "nilai yang sama" bagi SELURUH sistem.** Lookup kini
+  trim + case-fold (`email`), jadi beberapa ejaan me-resolve ke satu baris. Apa pun yang di-key
+  pada nilai pencarian — rate limiter, cache, idempotency — harus di-key ulang pada hasil
+  resolusi (ID), bukan pada nilai mentah. Lihat REVIEW_BACKLOG A7.
+- **Nilai yang MASUK wajib sudah kanonik — ditegakkan di DOMAIN.** `Credential.Validate` &
+  `Person.Validate` menolak control character + spasi tepi (`bentukPengenalRusak`), karena `seal()`
+  mengenkripsi verbatim sementara `index()` menormalkan. Tanpa aturan ini nilai ber-CRLF bisa
+  TERSIMPAN, dan alamat kanonik hasil dekripsi pun menjadi alamat yang ditolak SMTP. Jangan
+  memindahkan aturan ini ke `seal()`: nilai terdekripsi jadi ≠ nilai yang didaftarkan, dan
+  kebijakan `infra/crypto` tersalin ke lapis repo.
+- **Sesudah lookup, yang kanonik adalah BARIS yang ditemukan — bukan nilai permintaan.** Nilai
+  permintaan berhenti layak dipakai sebagai alamat tujuan, parameter kirim, atau apa pun yang
+  mengalir ke sistem luar. `TrimSpace` di `normalize()` ikut membuang CR/LF, jadi ejaan yang
+  me-resolve dengan sukses bisa tetap ditolak transport di hilir — perbedaan respons itulah
+  yang menjadi orakel. Pakai nilai hasil dekripsi (`cred.CredValue`).
 
 ## Pitfall umum
 - Memodelkan user_type sebagai properti person (SALAH). Yang ada: employment (opsional)
   + persona (konteks login).
 - Mengira citizen butuh tenant assignment (TIDAK). Hanya employee yang butuh.
 - ASN login publik membawa role internal (SALAH, harus tanpa role internal).
+- Menambah query baru yang menyaring/mengurutkan atas pengenal (`WHERE ... LIKE`, `ORDER BY nik`)
+  — kolomnya tak ada lagi, dan `_bidx` hanya melayani equality. Butuh partial/range search =
+  sinyal klasifikasi field-nya salah, bukan izin membuka kolom plaintext.
+- Menyelipkan id baris ke `BlindIndex` "supaya konsisten dengan Encrypt". Ia mematikan lookup
+  DAN UNIQUE tanpa satu pun error — hanya hasil yang salah (ADR-016 §3).
+- **Meng-key kuota/limiter OTP pada nilai kredensial mentah.** Sejak lookup lewat blind index,
+  `budi@x.id` / `Budi@x.id` / `" budi@x.id"` adalah SATU kredensial dengan tiga bucket limiter —
+  kuota bisa dilipatgandakan tanpa batas dan anti-brute-force OTP praktis lumpuh. Pakai ID
+  kredensial hasil resolusi (`otpCredRequestKey`/`otpCredVerifyKey`). Menormalkan nilai di lapis
+  use case BUKAN jalan keluar: itu menyalin tabel kebijakan `infra/crypto` ke tempat yang memang
+  tak boleh menyentuh kripto.
+- Membuat habisnya kuota per-kredensial menjawab 429. Lapis itu berjalan SESUDAH lookup, jadi
+  respons yang berbeda menjadikannya orakel keberadaan akun — habisnya harus meniru jalur normal
+  (request → nil senyap, verify → 401 seragam).
+- **Mengirim OTP ke `in.CredValue`.** Sebelum blind index nilai itu selalu identik dengan yang
+  terdaftar; sekarang tidak. `"victim@x.id\n"` me-resolve ke kredensial nyata lalu ditolak SMTP
+  sebagai header injection (500), sedangkan alamat asing menjawab 200 — satu probe per target,
+  dan probe-nya sekalian menimpa OTP korban yang sedang berjalan.
+- Menuliskan literal `"central"`/`"_central"` alih-alih `crypto.RealmCentral`. Partisi chain
+  audit dan realm kunci HARUS nilai yang sama: `audit.Reader` membangun `RowRef.TenantID` dari
+  `entry.TenantID` untuk membuka diff.
 
 ## Test
 - Unit: resolve by NIK/NIP, persona resolution, central role scope, cross-tenant otorisasi.
-- Integration: clone sync via event -> tenant punya data user.
+- Integration: clone sync via event -> tenant punya data user; enkripsi pengenal ujung-ke-ujung
+  (`adapter/db/field_crypto_integration_test.go`) — tabel dibangun dari file migrasi NYATA,
+  jadi yang diuji SAMBUNGAN migrasi ↔ repo. Unit test tak bisa membuktikan bentuk tabel,
+  UNIQUE yang ditegakkan Postgres, maupun isi dump.
 - go test ./identity/... -race
+- `PAMONG_TEST_DB_DSN=... go test ./identity/... -tags=integration -p 1`
 
 ## Rujukan
 - PRD.md, core/permission/PRD.md, port/user.go, port/auth.go
+- ADR-003 (audit identity), ADR-009 (klasifikasi & enkripsi field), ADR-015 (`PurposeOf`),
+  ADR-016 (pengikatan baris), **ADR-017 (realm kunci sentral)**

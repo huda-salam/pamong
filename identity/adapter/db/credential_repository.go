@@ -7,41 +7,70 @@ import (
 	"github.com/huda-salam/pamong/core"
 	"github.com/huda-salam/pamong/identity/domain"
 	"github.com/huda-salam/pamong/infra/db"
+	"github.com/huda-salam/pamong/port"
 )
 
 var _ domain.CredentialRepository = (*CredentialRepo)(nil)
 
 // CredentialRepo mengakses id.credentials pada identity DB.
+//
+// cred_value (NIP/NIK/email/no HP yang dipakai login) tersimpan terenkripsi; cred_type
+// TETAP plaintext — ia jenis kredensial, bukan pengenal orang. Justru itulah yang membuat
+// UNIQUE (cred_type, cred_value_bidx) tetap menegakkan keunikan per-tipe seperti sebelumnya
+// dan FindByTypeValue tetap satu query (ADR-017 §4).
 type CredentialRepo struct {
 	conn db.Conn
+	fc   identityCrypto
 }
 
-func NewCredentialRepo(conn db.Conn) *CredentialRepo { return &CredentialRepo{conn: conn} }
+// NewCredentialRepo merakit repo credential. CryptoPort WAJIB — lihat NewPersonRepo.
+func NewCredentialRepo(conn db.Conn, c port.CryptoPort) (*CredentialRepo, error) {
+	fc, err := newIdentityCrypto(c)
+	if err != nil {
+		return nil, err
+	}
+	return &CredentialRepo{conn: conn, fc: fc}, nil
+}
 
-const credentialCols = `id, person_id, cred_type, cred_value, secret_hash, is_primary, last_used_at, created_at`
+const credentialCols = `id, person_id, cred_type, cred_value_enc, secret_hash, is_primary, last_used_at, created_at`
 
 func (r *CredentialRepo) Save(ctx context.Context, c *domain.Credential) error {
 	var secret any
 	if c.SecretHash != "" {
 		secret = c.SecretHash
 	}
+	valEnc, valBidx, err := r.fc.seal(ctx, purposeOfCredType(c.CredType), c.ID, c.CredValue)
+	if err != nil {
+		return err
+	}
+
 	const q = `INSERT INTO id.credentials
-	    (id, person_id, cred_type, cred_value, secret_hash, is_primary)
-	    VALUES ($1,$2,$3,$4,$5,$6)`
-	_, err := r.conn.Exec(ctx, q, c.ID, c.PersonID, string(c.CredType), c.CredValue, secret, c.IsPrimary)
+	    (id, person_id, cred_type, cred_value_enc, cred_value_bidx, secret_hash, is_primary)
+	    VALUES ($1,$2,$3,$4,$5,$6,$7)`
+	_, err = r.conn.Exec(ctx, q, c.ID, c.PersonID, string(c.CredType), valEnc, valBidx, secret, c.IsPrimary)
 	if db.IsUniqueViolation(err) {
-		return core.ErrConflict("credential sudah terdaftar: " + string(c.CredType) + "/" + c.CredValue)
+		// Nilai kredensialnya tak diikutkan ke pesan (ADR-009 §6 jalur log/trace); tipenya
+		// aman disebut dan itulah yang menjelaskan konfliknya.
+		return core.ErrConflict("credential sudah terdaftar untuk tipe " + string(c.CredType))
 	}
 	return err
 }
 
+// FindByTypeValue adalah jalur resolusi login (NIP/NIK/email/no HP → person). Equality atas
+// nilai kredensial berjalan di blind index; cred_type tetap dibandingkan langsung.
 func (r *CredentialRepo) FindByTypeValue(ctx context.Context, t domain.CredType, value string) (*domain.Credential, error) {
+	bidx, err := r.fc.index(ctx, purposeOfCredType(t), value)
+	if err != nil {
+		return nil, err
+	}
 	row := r.conn.QueryRow(ctx,
-		`SELECT `+credentialCols+` FROM id.credentials WHERE cred_type = $1 AND cred_value = $2`,
-		string(t), value)
-	c, err := scanCredential(row)
+		`SELECT `+credentialCols+` FROM id.credentials WHERE cred_type = $1 AND cred_value_bidx = $2`,
+		string(t), bidx)
+	c, err := r.scanCredential(ctx, row)
 	if db.IsNoRows(err) {
-		return nil, core.ErrNotFound("Credential", string(t)+"/"+value)
+		// Referensi error hanya menyebut TIPE, bukan nilainya — pesan not-found ikut
+		// mengalir ke log & respons.
+		return nil, core.ErrNotFound("Credential", string(t))
 	}
 	return c, err
 }
@@ -56,7 +85,7 @@ func (r *CredentialRepo) ListByPerson(ctx context.Context, personID uuid.UUID) (
 
 	var out []*domain.Credential
 	for rows.Next() {
-		c, err := scanCredential(rows)
+		c, err := r.scanCredential(ctx, rows)
 		if err != nil {
 			return nil, err
 		}
@@ -65,12 +94,17 @@ func (r *CredentialRepo) ListByPerson(ctx context.Context, personID uuid.UUID) (
 	return out, rows.Err()
 }
 
-// scanCredential memetakan satu baris ke domain.Credential. secret_hash NULL → kosong.
-func scanCredential(row interface{ Scan(...any) error }) (*domain.Credential, error) {
-	var c domain.Credential
-	var credType string
-	var secret *string
-	if err := row.Scan(&c.ID, &c.PersonID, &credType, &c.CredValue, &secret,
+// scanCredential memetakan satu baris ke domain.Credential lalu membuka nilai kredensial.
+// secret_hash NULL → kosong. Identitas baris untuk AAD diambil dari BARIS ITU SENDIRI
+// (c.ID hasil scan), tak pernah dari parameter pemanggil (ADR-016).
+func (r *CredentialRepo) scanCredential(ctx context.Context, row interface{ Scan(...any) error }) (*domain.Credential, error) {
+	var (
+		c        domain.Credential
+		credType string
+		secret   *string
+		valEnc   []byte
+	)
+	if err := row.Scan(&c.ID, &c.PersonID, &credType, &valEnc, &secret,
 		&c.IsPrimary, &c.LastUsedAt, &c.CreatedAt); err != nil {
 		return nil, err
 	}
@@ -78,5 +112,13 @@ func scanCredential(row interface{ Scan(...any) error }) (*domain.Credential, er
 	if secret != nil {
 		c.SecretHash = *secret
 	}
+
+	// Purpose diturunkan dari cred_type BARIS ITU (hasil scan), bukan dari argumen pemanggil —
+	// sehingga ciphertext yang dipindah antar tipe kredensial pun tertangkap PurposeOf.
+	value, err := r.fc.open(ctx, purposeOfCredType(c.CredType), c.ID, valEnc)
+	if err != nil {
+		return nil, err
+	}
+	c.CredValue = value
 	return &c, nil
 }

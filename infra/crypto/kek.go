@@ -33,8 +33,8 @@ const (
 
 // kekAAD mengikat blob ter-wrap ke KeyRef-nya. Tanpa ini, baris id.data_keys milik tenant A
 // bisa dipindah ke baris tenant B dan tetap terbuka — isolasi per-tenant hilang. Pemisah "|"
-// aman: tenant_id dibatasi [a-z0-9-] (identity/domain.Tenant) dan purpose ditentukan
-// framework (nama field), bukan input pengguna.
+// aman: identitas realm terbatas pada tenant_id [a-z0-9-] (identity/domain.Tenant) atau
+// RealmCentral (ADR-017), dan purpose ditentukan framework (nama field), bukan input pengguna.
 func kekAAD(ref KeyRef) []byte {
 	return []byte(strings.Join([]string{
 		"pamong/kek/v1", ref.TenantID, ref.Purpose, string(ref.Kind), string(ref.Custody),

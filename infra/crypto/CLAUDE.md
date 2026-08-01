@@ -46,9 +46,33 @@ format `0x02`, blob `0x01` ditolak `Decrypt`). Custody `tenant` + KMS eksternal 
 - envelope.go — `keyManager`: hierarki KEK→DEK, pembuatan kunci saat pemakaian pertama,
   cache DEK ter-decrypt (in-proc, TTL)
 - custody.go — `CustodyResolver`: baca id.tenant_registry.key_custody (cache TTL) → KeyProvider
+- realm.go — `RealmCentral` + `WithCentralRealm` (ADR-017): sumbu partisi kunci adalah **realm**,
+  bukan selalu tenant
 
 Driver KMS eksternal (vault/aws-kms/bssn) masuk sebagai file/paket baru yang memanggil
 `RegisterProvider` — tanpa menyentuh file di atas.
+
+## Key realm (ADR-017)
+Sumbu partisi kunci (`id.data_keys.tenant_id`, `port.FieldRef.TenantID`) memuat identitas
+**realm**, bukan selalu identitas tenant:
+
+    realm tenant  = <tenant_id>          → data tenant; hierarki ADR-010 §2, tak berubah
+    realm sentral = crypto.RealmCentral  → data identity + chain audit identity
+
+- Realm sentral ada karena data identity memang tak punya tenant, dan yang mengunci pilihan
+  itu `UNIQUE(nik_bidx)` yang berlaku global se-identity-DB — kunci bidx per-tenant membuat
+  UNIQUE berhenti menangkap duplikat.
+- Nilainya `_central` (garis bawah) SENGAJA: ia gagal `identity/domain.tenantIDRe` (`^[a-z]…`)
+  sehingga tak bisa dipalsukan jadi tenant_id. Sentinel polos `"central"` ditolak justru karena
+  ia nama tenant yang SAH.
+- **Custody realm sentral = `platform`, invarian kode, tanpa menyentuh registry.** Identity DB
+  adalah DB platform yang memuat data seluruh pemda; tak ada satu pemda yang berwenang memegang
+  KEK-nya. Dipasang di `NewFromConfig` lewat `WithCentralRealm` — dan itu load-bearing:
+  `DBCustodyResolver` fail-closed untuk identitas tak terdaftar, jadi tanpa dekorator itu realm
+  sentral DITOLAK.
+- Konstanta ini dipakai bersama jalur kripto identity DAN sentinel chain `id.audit_logs`. Kedua
+  tempat HARUS memakai nilai yang sama: `core/audit.Reader` membangun `RowRef.TenantID` dari
+  `entry.TenantID` untuk membuka diff.
 
 ## Konvensi khusus
 - `purpose` memisahkan konteks kunci (mis. "nik" vs "no_rekening") tanpa ubah port.
@@ -87,6 +111,11 @@ Driver KMS eksternal (vault/aws-kms/bssn) masuk sebagai file/paket baru yang mem
   mengamankan apa pun (ADR-016 §Alternatif), hanya memindahkan pemeriksaan ke lapis
   aplikasi yang bisa dilangkahi jalur tulis mana pun yang lupa memeriksanya.
 - Menyimpan DEK ter-wrap di tenant DB (dump membuka jalan) — DEK di sentral/KMS.
+- Menyisipkan baris tenant palsu `_central` ke `id.tenant_registry` "supaya custody resolver
+  tak perlu dekorator". Itu mengubah custody yang TIDAK bisa dinegosiasikan menjadi baris data
+  yang bisa di-`UPDATE` (`SET key_custody='tenant'` → identity DB tak terbaca, gejalanya baru
+  muncul saat kripto dipakai) dan membocorkan tenant palsu ke `TenantRegistry.List` &
+  `pamongctl tenant provision`. Ditolak eksplisit di ADR-017 §Alternatif.
 - Lupa menutup jalur kebocoran samping (audit diff, event, idempotency, log) — enkripsi
   kolom saja = teater keamanan (ADR-009 §6).
 

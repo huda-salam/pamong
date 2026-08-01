@@ -142,9 +142,23 @@ func (r *auditedRepo[T]) snapshot(e *T) map[string]any {
 	return out
 }
 
-// sealPair mengganti nilai kolom terenkripsi pada KEDUA sisi snapshot dengan ciphertext
-// base64, sehingga diff tetap menjadi bukti before/after bagi pemeriksa (ADR-002) tapi tak
-// terbaca tanpa kunci. Sisi yang tidak ada (create/delete) dilewati.
+// sealPair menyegel snapshot diff milik repo ini. Realm kunci = tenant dari context
+// (ADR-010 §2); jalur identity memakai realm sentral dan memanggil SealAuditDiff langsung
+// (ADR-017 §1).
+func (r *auditedRepo[T]) sealPair(ctx context.Context, entityID uuid.UUID, before, after map[string]any) {
+	if r.crypto == nil {
+		return
+	}
+	SealAuditDiff(ctx, r.crypto, port.TenantFrom(ctx), entityID, r.diffEnc, before, after)
+}
+
+// SealAuditDiff mengganti nilai kolom terenkripsi pada KEDUA sisi snapshot audit dengan
+// ciphertext base64, sehingga diff tetap menjadi bukti before/after bagi pemeriksa (ADR-002)
+// tapi tak terbaca tanpa kunci. Sisi yang tidak ada (create/delete) dilewati.
+//
+// Diekspor karena jalur audit identity (id.audit_logs) memakai penyegelan yang sama persis
+// dengan realm kunci berbeda — dan aturan di bawah ini terlalu mudah salah untuk ditulis
+// dua kali (lihat pitfall di infra/db/CLAUDE.md).
 //
 // Kedua sisi diproses bersama, dan itu bukan kerapian belaka: Encrypt memakai nonce acak,
 // jadi satu nilai plaintext yang sama menghasilkan ciphertext berbeda tiap panggilan. Bila
@@ -152,63 +166,66 @@ func (r *auditedRepo[T]) snapshot(e *T) map[string]any {
 // terenkripsi sebagai berubah pada SETIAP update — jejak audit mengarang perubahan pengenal
 // dan supresi no-op update ikut mati. Karena itu nilai yang tidak berubah disegel SEKALI
 // lalu dipasang di kedua sisi (Diff membuangnya), yang berubah disegel per sisi.
-// entityID mengikat nilai diff ke baris yang dimutasi (ADR-016 §7), sama seperti kolom
-// aslinya — jalur bacanya (core/audit.Reader) menyuplai AuditEntry.EntityID.
-func (r *auditedRepo[T]) sealPair(ctx context.Context, entityID uuid.UUID, before, after map[string]any) {
-	if len(r.diffEnc) == 0 || r.crypto == nil {
+//
+// realm memilih hierarki kunci: tenant_id untuk data tenant, crypto.RealmCentral untuk data
+// identity. entityID mengikat nilai diff ke baris yang dimutasi (ADR-016 §7), sama seperti
+// kolom aslinya — jalur bacanya (core/audit.Reader) menyuplai AuditEntry.EntityID.
+func SealAuditDiff(ctx context.Context, c port.CryptoPort, realm string, entityID uuid.UUID,
+	specs []FieldCryptoSpec, before, after map[string]any) {
+	if len(specs) == 0 || c == nil {
 		return
 	}
-	tenantID := port.TenantFrom(ctx)
-	// Entity tanpa id tak punya koordinat baris; RecordID dibiarkan kosong agar seal
+	// Entity tanpa id tak punya koordinat baris; RecordID dibiarkan kosong agar sealValue
 	// memperlakukannya sebagai kegagalan, bukan menyegel nilai yang tak terikat apa pun.
 	var recordID string
 	if entityID != uuid.Nil {
 		recordID = entityID.String()
 	}
-	for _, s := range r.diffEnc {
+	for _, s := range specs {
 		purpose := s.Purpose
 		if purpose == "" {
 			purpose = s.Column
 		}
-		ref := port.FieldRef{TenantID: tenantID, Purpose: purpose, RecordID: recordID}
+		ref := port.FieldRef{TenantID: realm, Purpose: purpose, RecordID: recordID}
 		bRaw, bOK := before[s.Column]
 		aRaw, aOK := after[s.Column]
 		bPlain, bNull, bErr := plaintextOf(s.Column, bRaw)
 		aPlain, aNull, aErr := plaintextOf(s.Column, aRaw)
 
 		if bOK && aOK && bErr == nil && aErr == nil && bNull == aNull && bytes.Equal(bPlain, aPlain) {
-			v := r.seal(ctx, ref, bPlain, bNull, nil, auditRedacted)
+			v := sealValue(ctx, c, ref, bPlain, bNull, nil, AuditRedacted)
 			before[s.Column], after[s.Column] = v, v
 			continue
 		}
 		if bOK {
-			before[s.Column] = r.seal(ctx, ref, bPlain, bNull, bErr, auditRedactedBefore)
+			before[s.Column] = sealValue(ctx, c, ref, bPlain, bNull, bErr, AuditRedactedBefore)
 		}
 		if aOK {
-			after[s.Column] = r.seal(ctx, ref, aPlain, aNull, aErr, auditRedactedAfter)
+			after[s.Column] = sealValue(ctx, c, ref, aPlain, aNull, aErr, AuditRedactedAfter)
 		}
 	}
 }
 
-// seal menyegel satu nilai. Kegagalan TIDAK membatalkan pencatatan — nilainya diganti
+// sealValue menyegel satu nilai. Kegagalan TIDAK membatalkan pencatatan — nilainya diganti
 // penanda, karena kehilangan satu nilai lebih baik daripada menyimpan pengenal mentah.
-// Ref tak lengkap (tenant/entity tak diketahui) diperlakukan sebagai kegagalan yang sama:
+// Ref tak lengkap (realm/entity tak diketahui) diperlakukan sebagai kegagalan yang sama:
 // menyegel tanpa pengikatan akan menghasilkan nilai audit yang bisa dipindah ke entry lain.
-func (r *auditedRepo[T]) seal(ctx context.Context, ref port.FieldRef, plain []byte, isNull bool, parseErr error, marker string) any {
+func sealValue(ctx context.Context, c port.CryptoPort, ref port.FieldRef,
+	plain []byte, isNull bool, parseErr error, marker string) any {
 	if parseErr == nil && isNull {
 		return nil
 	}
 	if parseErr != nil || ref.TenantID == "" || ref.RecordID == "" {
 		return marker
 	}
-	ct, err := r.crypto.Encrypt(ctx, ref, plain)
+	ct, err := c.Encrypt(ctx, ref, plain)
 	if err != nil {
 		return marker
 	}
 	return base64.StdEncoding.EncodeToString(ct)
 }
 
-// Penanda nilai sensitif yang gagal disegel (mis. tenant tak diketahui atau KMS sedang
+// Penanda nilai sensitif yang gagal disegel (mis. realm tak diketahui atau KMS sedang
 // gagal). Sengaja mencolok agar kondisi ini terlihat saat audit dibaca alih-alih menyamar
 // sebagai nilai kosong.
 //
@@ -217,9 +234,9 @@ func (r *auditedRepo[T]) seal(ctx context.Context, ref port.FieldRef, plain []by
 // yang berubah, mutasi ter-commit tanpa entry audit sama sekali. Penanda tunggal hanya boleh
 // dipakai untuk nilai yang memang terbukti sama di kedua sisi.
 const (
-	auditRedacted       = "[terenkripsi: gagal — nilai tidak dicatat]"
-	auditRedactedBefore = "[terenkripsi: gagal — nilai lama tidak dicatat]"
-	auditRedactedAfter  = "[terenkripsi: gagal — nilai baru tidak dicatat]"
+	AuditRedacted       = "[terenkripsi: gagal — nilai tidak dicatat]"
+	AuditRedactedBefore = "[terenkripsi: gagal — nilai lama tidak dicatat]"
+	AuditRedactedAfter  = "[terenkripsi: gagal — nilai baru tidak dicatat]"
 )
 
 // record menyusun konteks audit. Mutasi entity Auditable wajib punya AuthContext

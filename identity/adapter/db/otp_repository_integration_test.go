@@ -29,11 +29,11 @@ func applyOTPMigration(t *testing.T, pool *infradb.Pool, ctx context.Context) {
 // TestOTPRepo_RoundTrip membuktikan migrasi 006 + SQL repo benar: Create → FindLatestByCredential
 // (yang terbaru menang), RecordAttempt mempersist, Consume idempoten & membuat OTP tak usable.
 func TestOTPRepo_RoundTrip(t *testing.T) {
-	pool, ctx := setupIdentityDB(t)
+	pool, cr, ctx := setupIdentityDB(t)
 	applyOTPMigration(t, pool, ctx)
 
-	persons := db.NewPersonRepo(pool)
-	creds := db.NewCredentialRepo(pool)
+	persons := mustPersonRepo(t, pool, cr)
+	creds := mustCredentialRepo(t, pool, cr)
 	otps := db.NewOTPRepo(pool)
 
 	p := &domain.Person{ID: uuid.New(), NIK: "3578010101900050", NamaLengkap: "Warga", IsActive: true}
@@ -94,7 +94,7 @@ func TestOTPRepo_RoundTrip(t *testing.T) {
 
 // TestOTPRepo_FindLatest_NotFound: credential tanpa OTP → core.ErrNotFound.
 func TestOTPRepo_FindLatest_NotFound(t *testing.T) {
-	pool, ctx := setupIdentityDB(t)
+	pool, _, ctx := setupIdentityDB(t)
 	applyOTPMigration(t, pool, ctx)
 
 	otps := db.NewOTPRepo(pool)

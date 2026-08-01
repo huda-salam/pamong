@@ -3,8 +3,6 @@
 package db_test
 
 import (
-	"context"
-	"os"
 	"testing"
 
 	"github.com/google/uuid"
@@ -12,25 +10,11 @@ import (
 	"github.com/huda-salam/pamong/identity/adapter/db"
 	"github.com/huda-salam/pamong/identity/domain"
 	"github.com/huda-salam/pamong/identity/usecase"
-	infradb "github.com/huda-salam/pamong/infra/db"
 	"github.com/huda-salam/pamong/testkit"
 )
 
-// applyTenantMigration menerapkan migrasi 002 (tenant_registry) di atas schema id.
-func applyTenantMigration(t *testing.T, pool *infradb.Pool) {
-	t.Helper()
-	sql, err := os.ReadFile("../../migrations/002_create_tenant_registry.up.sql")
-	if err != nil {
-		t.Fatalf("baca migrasi 002: %v", err)
-	}
-	if _, err := pool.Exec(context.Background(), string(sql)); err != nil {
-		t.Fatalf("apply migrasi 002: %v", err)
-	}
-}
-
 func TestTenantRegistry_CRUD_Aktif(t *testing.T) {
-	pool, ctx := setupIdentityDB(t)
-	applyTenantMigration(t, pool)
+	pool, _, ctx := setupIdentityDB(t)
 
 	registry := db.NewTenantRepo(pool)
 	actx := testkit.Ctx(t,
@@ -72,8 +56,7 @@ func TestTenantRegistry_CRUD_Aktif(t *testing.T) {
 }
 
 func TestTenantRegistry_Mutasi_TerAudit(t *testing.T) {
-	pool, ctx := setupIdentityDB(t)
-	applyTenantMigration(t, pool)
+	pool, _, ctx := setupIdentityDB(t)
 
 	auditStore := db.NewAuditStore(pool)
 	if err := auditStore.EnsureSchema(ctx); err != nil {
@@ -118,8 +101,7 @@ func TestTenantRegistry_Mutasi_TerAudit(t *testing.T) {
 }
 
 func TestTenantResolverAdapter_Resolve(t *testing.T) {
-	pool, ctx := setupIdentityDB(t)
-	applyTenantMigration(t, pool)
+	pool, _, ctx := setupIdentityDB(t)
 
 	registry := db.NewTenantRepo(pool)
 	actx := testkit.Ctx(t, testkit.WithPersonID(uuid.New()), testkit.WithPermission(domain.PermTenantDaftar))

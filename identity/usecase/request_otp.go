@@ -18,8 +18,14 @@ import (
 //
 // Enumeration-resistance: untuk credential yang tak dikenal / person non-aktif, Execute
 // mengembalikan nil (seolah sukses) TANPA mengirim apa pun — tidak membocorkan apakah email/no_hp
-// terdaftar. Rate limit diterapkan SEBELUM lookup sehingga endpoint ini tak bisa dipakai membanjiri
-// kanal maupun menyelidiki keberadaan akun lewat laju.
+// terdaftar.
+//
+// Rate limit BERLAPIS DUA, dan keduanya diperlukan (lihat otpCredRequestKey):
+//   - Lapis 1, per nilai mentah, SEBELUM lookup — menjaga enumeration-resistance: nilai yang tak
+//     dikenal pun ikut tertahan, sehingga keberadaan akun tak terbaca dari laju.
+//   - Lapis 2, per kredensial TER-RESOLVE, SESUDAH lookup — inilah kuota penerbitan yang sebenarnya.
+//     Habisnya lapis ini berperilaku sama persis dengan credential tak dikenal (diam, nil), agar
+//     tak menjadi orakel keberadaan akun.
 type RequestOTP struct {
 	creds     domain.CredentialRepository
 	persons   domain.PersonRepository
@@ -65,7 +71,7 @@ func (uc *RequestOTP) Execute(ctx context.Context, in RequestOTPInput) error {
 		return errInvalidCredential()
 	}
 
-	// Rate limit penerbitan per kredensial — sebelum lookup (cegah flooding & probing-by-rate).
+	// Lapis 1: per nilai mentah, sebelum lookup (probing-by-rate & flooding nilai tak dikenal).
 	allowed, err := uc.limiter.Allow(ctx, otpRequestKey(in.CredType, in.CredValue),
 		uc.policy.RequestLimit, uc.policy.RequestWindow)
 	if err != nil {
@@ -82,6 +88,18 @@ func (uc *RequestOTP) Execute(ctx context.Context, in RequestOTPInput) error {
 		}
 		return err
 	}
+
+	// Lapis 2: kuota penerbitan per kredensial ter-resolve. Diam saat habis — jalur ini HARUS
+	// tak bisa dibedakan dari "credential tak dikenal" di atas.
+	allowed, err = uc.limiter.Allow(ctx, otpCredRequestKey(cred.ID),
+		uc.policy.RequestLimit, uc.policy.RequestWindow)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return nil
+	}
+
 	person, err := uc.persons.FindByID(ctx, cred.PersonID)
 	if err != nil {
 		if isNotFound(err) {
@@ -109,7 +127,16 @@ func (uc *RequestOTP) Execute(ctx context.Context, in RequestOTPInput) error {
 		return err
 	}
 
-	if err := uc.send(ctx, in.CredType, in.CredValue, code); err != nil {
+	// Tujuan kirim diambil dari KREDENSIAL TER-RESOLVE, tak pernah dari nilai permintaan —
+	// alasan yang sama persis dengan kunci kuota di atas. Lookup berjalan di atas blind index
+	// yang menormalkan lebih dulu, jadi in.CredValue boleh berbeda dari alamat yang sebenarnya
+	// terdaftar: "victim@x.id\n" me-resolve ke kredensial "victim@x.id" karena TrimSpace ikut
+	// membuang CR/LF. Mengirim ke nilai mentah membuat driver SMTP menolaknya sebagai header
+	// injection (errOTPSendFailed → 500) sementara alamat tak dikenal menjawab nil (200) —
+	// orakel keberadaan akun, satu probe per target. cred.CredValue adalah alamat kanonik
+	// sebagaimana didaftarkan, sehingga jalur ini juga tak lagi patah untuk warga yang
+	// menempelkan alamat berspasi.
+	if err := uc.send(ctx, cred.CredType, cred.CredValue, code); err != nil {
 		return errOTPSendFailed()
 	}
 	return nil
@@ -130,10 +157,30 @@ func (uc *RequestOTP) send(ctx context.Context, t domain.CredType, value, code s
 	}
 }
 
-// otpRequestKey merakit key rate limiter penerbitan, ber-scope per (jenis kanal, nilai kredensial).
+// otpRequestKey merakit key rate limiter LAPIS 1, ber-scope per (jenis kanal, nilai MENTAH).
+// Sengaja mentah: lapis ini berjalan sebelum lookup, jadi belum ada kredensial untuk dijadikan
+// acuan — tugasnya cuma menahan laju nilai yang belum tentu ada.
 func otpRequestKey(t domain.CredType, value string) string {
 	return "otp:request:" + string(t) + ":" + value
 }
+
+// otpCredRequestKey / otpCredVerifyKey merakit key rate limiter LAPIS 2 dari ID kredensial —
+// KANONIK by construction, dan itulah intinya.
+//
+// Nilai mentah TIDAK BOLEH jadi acuan kuota: pencarian kredensial berjalan di atas blind index
+// yang menormalkan nilainya lebih dulu (trim untuk semua purpose, case-fold untuk `email` —
+// kebijakan framework di infra/crypto). Akibatnya "budi@x.id", "Budi@x.id", dan " budi@x.id "
+// menunjuk SATU kredensial yang sama, sementara ketiganya menghasilkan key yang berbeda. Kuota
+// yang di-key pada nilai mentah karena itu bisa dilipatgandakan tanpa batas hanya dengan
+// mengubah huruf besar/kecil atau menambah spasi — dan yang tersisa cuma cap per-OTP
+// (domain.MaxOTPAttempts), yang justru dirancang sebagai SETENGAH dari proteksi.
+//
+// Menormalkan nilai di sini bukan jalan keluar: itu menyalin tabel kebijakan infra/crypto ke
+// lapis use case (yang memang tak boleh menyentuh kripto), menciptakan sumber kebenaran kedua
+// yang bisa menyimpang diam-diam. ID kredensial tak punya masalah itu — ia sudah hasil resolusi.
+func otpCredRequestKey(credID uuid.UUID) string { return "otp:request:cred:" + credID.String() }
+
+func otpCredVerifyKey(credID uuid.UUID) string { return "otp:verify:cred:" + credID.String() }
 
 // isNotFound true bila err adalah core.FrameworkError NOT_FOUND (credential/person tak ada).
 func isNotFound(err error) bool {

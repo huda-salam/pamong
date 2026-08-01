@@ -3,6 +3,7 @@
 package db_test
 
 import (
+	"encoding/base64"
 	"testing"
 
 	"github.com/google/uuid"
@@ -10,11 +11,13 @@ import (
 	"github.com/huda-salam/pamong/identity/adapter/db"
 	"github.com/huda-salam/pamong/identity/domain"
 	"github.com/huda-salam/pamong/identity/usecase"
+	"github.com/huda-salam/pamong/infra/crypto"
+	"github.com/huda-salam/pamong/port"
 	"github.com/huda-salam/pamong/testkit"
 )
 
 func TestIdentityAudit_AutoRecordedAndChained(t *testing.T) {
-	pool, ctx := setupIdentityDB(t)
+	pool, cr, ctx := setupIdentityDB(t)
 
 	auditStore := db.NewAuditStore(pool)
 	if err := auditStore.EnsureSchema(ctx); err != nil {
@@ -23,8 +26,8 @@ func TestIdentityAudit_AutoRecordedAndChained(t *testing.T) {
 	engine := audit.NewEngine(auditStore)
 
 	// Repo identity dibungkus dekorator audit (use case tak menulis kode audit).
-	persons := db.NewAuditedPersonRepo(db.NewPersonRepo(pool), engine)
-	employments := db.NewAuditedEmploymentRepo(db.NewEmploymentRepo(pool), engine)
+	persons := mustAuditedPersonRepo(t, mustPersonRepo(t, pool, cr), engine, cr)
+	employments := mustAuditedEmploymentRepo(t, mustEmploymentRepo(t, pool, cr), engine, cr)
 
 	actor := uuid.New()
 	actx := testkit.Ctx(t,
@@ -55,15 +58,36 @@ func TestIdentityAudit_AutoRecordedAndChained(t *testing.T) {
 	if len(pEntries) != 1 || pEntries[0].Action != audit.ActionCreate || pEntries[0].ActorID != actor {
 		t.Fatalf("audit person salah: %+v", pEntries)
 	}
-	// Diff create mencatat NIK.
-	var nikRecorded bool
+	// Diff create TETAP mencatat NIK sebagai bukti (ADR-002) — tapi tersegel, bukan mentah
+	// (REVIEW_BACKLOG E2). Dua sisi yang harus sama-sama benar: tak terbaca tanpa kunci,
+	// dan tetap dapat dipulihkan DENGAN kunci. Salah satunya saja = teater keamanan atau
+	// bukti yang hilang.
+	var nikDiff string
 	for _, d := range pEntries[0].Diff {
-		if d.Field == "nik" && d.After == "3578010101900001" {
-			nikRecorded = true
+		if d.Field == "nik" {
+			s, ok := d.After.(string)
+			if !ok {
+				t.Fatalf("nilai nik di diff harus string tersegel, dapat %T: %+v", d.After, d.After)
+			}
+			nikDiff = s
 		}
 	}
-	if !nikRecorded {
+	if nikDiff == "" {
 		t.Fatalf("create person harus mencatat NIK di diff: %+v", pEntries[0].Diff)
+	}
+	if nikDiff == "3578010101900001" {
+		t.Fatal("NIK tersimpan MENTAH di id.audit_logs.diff — E2 belum tertutup")
+	}
+	ct, err := base64.StdEncoding.DecodeString(nikDiff)
+	if err != nil {
+		t.Fatalf("nilai diff harus ciphertext base64, dapat %q: %v", nikDiff, err)
+	}
+	plain, err := cr.Decrypt(ctx, port.RowRef{TenantID: crypto.RealmCentral, RecordID: p.ID.String()}, ct)
+	if err != nil {
+		t.Fatalf("diff tersegel harus bisa dibuka dengan kunci realm sentral: %v", err)
+	}
+	if string(plain) != "3578010101900001" {
+		t.Fatalf("NIK hasil buka salah: %q", plain)
 	}
 
 	// Chain identity (person + employment) utuh.

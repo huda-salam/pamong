@@ -11,8 +11,10 @@ import (
 // VerifyOTP memverifikasi kode OTP untuk credential publik (email/no_hp) lalu menerbitkan token
 // persona=citizen — TANPA role internal (resolver role tak pernah dipanggil; invariant 2.4.3).
 //
-// Dua lapis proteksi tebakan: (1) cap percobaan per-OTP (domain.MaxOTPAttempts) yang menghanguskan
-// OTP saat habis; (2) rate limit verifikasi per-kredensial (lintas OTP) untuk mencegah rapid-fire.
+// Proteksi tebakan: (1) cap percobaan per-OTP (domain.MaxOTPAttempts) yang menghanguskan OTP saat
+// habis; (2) rate limit verifikasi per nilai mentah, sebelum lookup; (3) rate limit verifikasi per
+// kredensial TER-RESOLVE (lintas OTP maupun lintas ejaan nilai) — lapis inilah yang sebenarnya
+// membatasi rapid-fire, lihat otpCredVerifyKey.
 // Semua kegagalan dikembalikan SERAGAM (errInvalidOTP, 401) agar tak membocorkan tahap yang gagal.
 type VerifyOTP struct {
 	creds   domain.CredentialRepository
@@ -59,7 +61,7 @@ func (uc *VerifyOTP) Execute(ctx context.Context, in VerifyOTPInput) (string, er
 		return "", errInvalidOTP()
 	}
 
-	// Rate limit verifikasi per kredensial (lintas OTP) — sebelum lookup.
+	// Lapis 1: per nilai mentah, sebelum lookup (menahan laju nilai yang belum tentu ada).
 	allowed, err := uc.limiter.Allow(ctx, otpVerifyKey(in.CredType, in.CredValue),
 		uc.policy.VerifyLimit, uc.policy.VerifyWindow)
 	if err != nil {
@@ -75,6 +77,17 @@ func (uc *VerifyOTP) Execute(ctx context.Context, in VerifyOTPInput) (string, er
 			return "", errInvalidOTP()
 		}
 		return "", err
+	}
+
+	// Lapis 2: kuota tebakan per kredensial ter-resolve. Kegagalannya ikut seragam (401) —
+	// seluruh jalur ini memang tak boleh membedakan tahap mana yang menolak.
+	allowed, err = uc.limiter.Allow(ctx, otpCredVerifyKey(cred.ID),
+		uc.policy.VerifyLimit, uc.policy.VerifyWindow)
+	if err != nil {
+		return "", err
+	}
+	if !allowed {
+		return "", errInvalidOTP()
 	}
 
 	otp, err := uc.otps.FindLatestByCredential(ctx, cred.ID)

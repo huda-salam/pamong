@@ -102,6 +102,11 @@ func New(store DEKStore, custody CustodyResolver, ttl time.Duration, provs ...Cu
 // PR-3.8.2 memasang provider untuk custody `platform` saja. Tenant ber-key_custody='tenant'
 // akan ditolak lantang (ErrCustodyUnsupported) sampai driver pemda didaftarkan di PR-3.8.8 —
 // penambahan itu tidak menyentuh kode kripto, cukup satu CustodyProvider tambahan di sini.
+//
+// Resolver custody dibungkus WithCentralRealm (ADR-017 §3) sehingga realm sentral —
+// data identity, yang memang tak punya tenant — dijawab CustodyPlatform tanpa menyentuh
+// registry. Tanpa pembungkus itu realm sentral akan DITOLAK, karena DBCustodyResolver
+// fail-closed untuk identitas yang tak ada di id.tenant_registry.
 func NewFromConfig(cfg *config.AppConfig, identityConn port.DBConn) (*Service, error) {
 	if cfg == nil || identityConn == nil {
 		return nil, fmt.Errorf("crypto: NewFromConfig butuh config & koneksi identity DB")
@@ -124,7 +129,7 @@ func NewFromConfig(cfg *config.AppConfig, identityConn port.DBConn) (*Service, e
 	ttl := cfg.Crypto.DEKCacheTTLOrDefault()
 	return New(
 		NewDBDEKStore(identityConn),
-		NewDBCustodyResolver(identityConn, ttl),
+		WithCentralRealm(NewDBCustodyResolver(identityConn, ttl)),
 		ttl,
 		CustodyProvider{Custody: CustodyPlatform, Driver: driver, Provider: provider},
 	)

@@ -5,13 +5,25 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/huda-salam/pamong/core/audit"
+	"github.com/huda-salam/pamong/infra/crypto"
 	infradb "github.com/huda-salam/pamong/infra/db"
 )
 
 // identityChainPartition adalah nilai partisi chain untuk audit identity. Karena operasi
 // identity sentral (tak ada tenant), seluruh entry dirantai jadi satu chain lewat
 // sentinel ini di kolom tenant_id (ADR-003).
-const identityChainPartition = "central"
+//
+// Nilainya = realm kunci sentral (ADR-017), bukan sekadar string yang mirip. Menyatukannya
+// bukan kerapian: kolom tenant_id pada entry audit identity adalah koordinat yang SAMA yang
+// dipakai core/audit.Reader untuk membuka nilai diff terenkripsi (RowRef.TenantID dari
+// e.TenantID). Dua nilai berbeda di dua tempat = nilai tersegel yang tak bisa dibuka lagi
+// oleh jalur bacanya sendiri.
+//
+// Ia juga menutup cacat laten sentinel lama `"central"`: string itu LOLOS
+// identity/domain.tenantIDRe, sehingga pemda yang kebetulan didaftarkan dengan tenant_id
+// itu akan melebur audit-nya ke chain sentral — dan, sejak PR-3.8.6, berbagi ruang kunci.
+// `_central` gagal `^[a-z]` sehingga mustahil menjadi tenant_id.
+const identityChainPartition = crypto.RealmCentral
 
 // AuditStore adalah audit.Store untuk mutasi identity, menulis ke id.audit_logs (identity
 // DB sentral). Reuse penuh engine & hash chain via infra/db.AuditRepo schema "id".

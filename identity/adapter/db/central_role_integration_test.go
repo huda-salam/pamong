@@ -14,6 +14,7 @@ import (
 	"github.com/huda-salam/pamong/identity/domain"
 	"github.com/huda-salam/pamong/identity/usecase"
 	infradb "github.com/huda-salam/pamong/infra/db"
+	"github.com/huda-salam/pamong/port"
 	"github.com/huda-salam/pamong/testkit"
 )
 
@@ -43,7 +44,7 @@ const (
 //   - Role GLOBAL berlaku di SEMUA tenant.
 //   - Role SCOPED hanya berlaku di tenant dalam tenant_scope-nya.
 func TestCentralRole_GlobalVsScoped_EndToEnd(t *testing.T) {
-	pool, ctx := setupIdentityDB(t)
+	pool, cr, ctx := setupIdentityDB(t)
 	applyCentralRoleMigration(t, pool, ctx)
 
 	roleRepo := db.NewCentralRoleRepo(pool)
@@ -51,8 +52,8 @@ func TestCentralRole_GlobalVsScoped_EndToEnd(t *testing.T) {
 	resolver := db.NewCentralRoleResolver(pool)
 
 	// Actor (admin platform) + subjek penerima role — keduanya person nyata (FK).
-	actor := seedPerson(t, pool, ctx, "3500000000000001", "Admin Platform")
-	subject := seedPerson(t, pool, ctx, "3578010101900001", "Budi")
+	actor := seedPerson(t, pool, cr, ctx, "3500000000000001", "Admin Platform")
+	subject := seedPerson(t, pool, cr, ctx, "3578010101900001", "Budi")
 
 	actx := testkit.Ctx(t,
 		testkit.WithPersonID(actor),
@@ -122,7 +123,7 @@ func TestCentralRole_GlobalVsScoped_EndToEnd(t *testing.T) {
 // TestCentralRole_Audited membuktikan pembuatan & penugasan role sentral ter-audit otomatis
 // (ADR-003), tanpa kode audit di use case.
 func TestCentralRole_Audited(t *testing.T) {
-	pool, ctx := setupIdentityDB(t)
+	pool, cr, ctx := setupIdentityDB(t)
 	applyCentralRoleMigration(t, pool, ctx)
 
 	auditStore := db.NewAuditStore(pool)
@@ -134,8 +135,8 @@ func TestCentralRole_Audited(t *testing.T) {
 	roleRepo := db.NewAuditedCentralRoleRepo(db.NewCentralRoleRepo(pool), engine)
 	assignRepo := db.NewAuditedCentralRoleAssignmentRepo(db.NewCentralRoleAssignmentRepo(pool), engine)
 
-	actor := seedPerson(t, pool, ctx, "3500000000000001", "Admin Platform")
-	subject := seedPerson(t, pool, ctx, "3578010101900001", "Budi")
+	actor := seedPerson(t, pool, cr, ctx, "3500000000000001", "Admin Platform")
+	subject := seedPerson(t, pool, cr, ctx, "3578010101900001", "Budi")
 	actx := testkit.Ctx(t,
 		testkit.WithPersonID(actor),
 		testkit.WithPermission(domain.PermCentralRoleBuat),
@@ -177,10 +178,10 @@ func TestCentralRole_Audited(t *testing.T) {
 // disuntik via SQL langsung, mensimulasikan migrasi/bulk-import) TIDAK berlaku di tenant mana
 // pun. Otoritas global vs scoped = scope_type role, bukan kekosongan tenant_scope (fail-closed).
 func TestCentralRoleResolver_ScopedTanpaScope_FailClosed(t *testing.T) {
-	pool, ctx := setupIdentityDB(t)
+	pool, cr, ctx := setupIdentityDB(t)
 	applyCentralRoleMigration(t, pool, ctx)
 
-	subject := seedPerson(t, pool, ctx, "3578010101900099", "Subjek Cacat")
+	subject := seedPerson(t, pool, cr, ctx, "3578010101900099", "Subjek Cacat")
 	roleID := uuid.New()
 	// Sengaja lewati use case: role 'scoped' + assignment TANPA tenant_scope (NULL).
 	if _, err := pool.Exec(ctx,
@@ -207,7 +208,7 @@ func TestCentralRoleResolver_ScopedTanpaScope_FailClosed(t *testing.T) {
 // permission duplikat pada Save tidak menggagalkan transaksi (ON CONFLICT DO NOTHING) dan
 // hanya tersimpan satu baris — batas pertahanan repo untuk caller non-use-case.
 func TestCentralRoleRepo_DuplicatePermissionIdempoten(t *testing.T) {
-	pool, ctx := setupIdentityDB(t)
+	pool, _, ctx := setupIdentityDB(t)
 	applyCentralRoleMigration(t, pool, ctx)
 
 	repo := db.NewCentralRoleRepo(pool)
@@ -228,10 +229,10 @@ func TestCentralRoleRepo_DuplicatePermissionIdempoten(t *testing.T) {
 }
 
 // seedPerson menyimpan satu person minimal sebagai target FK dan mengembalikan id-nya.
-func seedPerson(t *testing.T, pool *infradb.Pool, ctx context.Context, nik, nama string) uuid.UUID {
+func seedPerson(t *testing.T, pool *infradb.Pool, cr port.CryptoPort, ctx context.Context, nik, nama string) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
-	if err := db.NewPersonRepo(pool).Save(ctx, &domain.Person{
+	if err := mustPersonRepo(t, pool, cr).Save(ctx, &domain.Person{
 		ID: id, NIK: nik, NamaLengkap: nama, IsActive: true,
 	}); err != nil {
 		t.Fatalf("seed person %s: %v", nama, err)

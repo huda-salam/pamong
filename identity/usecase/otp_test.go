@@ -163,6 +163,20 @@ func (fx *otpFixture) seedCitizen(t *testing.T) (*domain.Person, *domain.Credent
 	return p, c
 }
 
+// aliasCredential mendaftarkan EJAAN LAIN yang me-resolve ke credential yang sama persis.
+//
+// Ini memodelkan apa yang dilakukan repo sungguhan setelah PR-3.8.6: pencarian berjalan di atas
+// blind index yang menormalkan nilai lebih dulu (trim; case-fold untuk purpose `email`), sehingga
+// "warga@example.com", "Warga@Example.COM", dan " warga@example.com " adalah SATU baris. Alias
+// dipasang langsung ke map — sengaja tidak menyalin tabel normalisasi infra/crypto ke sini, sebab
+// dua salinan kebijakan yang bisa menyimpang adalah persis cacat yang test ini jaga.
+func (fx *otpFixture) aliasCredential(t *testing.T, c *domain.Credential, ejaan ...string) {
+	t.Helper()
+	for _, v := range ejaan {
+		fx.creds.byTypeValue[credKey(c.CredType, v)] = c
+	}
+}
+
 func assertTooManyRequests(t *testing.T, err error) {
 	t.Helper()
 	var fe *core.FrameworkError
@@ -432,6 +446,121 @@ func TestVerifyOTP_RateLimited(t *testing.T) {
 		CredType: domain.CredEmail, CredValue: "warga@example.com", Code: "123456",
 	})
 	assertTooManyRequests(t, err)
+}
+
+// --- Kuota ber-kredensial (kanonik) ---
+//
+// Sejak PR-3.8.6 pencarian kredensial berjalan di atas blind index yang menormalkan nilai, jadi
+// beberapa EJAAN me-resolve ke satu kredensial. Kuota yang di-key pada nilai mentah karena itu
+// bisa dilipatgandakan tanpa batas — anti-brute-force OTP praktis lumpuh. Test di bawah menjaga
+// bahwa kuota di-key pada ID kredensial hasil resolusi.
+
+func TestRequestOTP_EjaanBerbedaBerbagiKuotaKredensial(t *testing.T) {
+	fx := newOTPFixture()
+	_, cred := fx.seedCitizen(t)
+	fx.aliasCredential(t, cred, "Warga@Example.COM", " warga@example.com ")
+	fx.limiter.allowN[usecase.OTPCredRequestKeyForTest(cred.ID)] = 1
+
+	for _, ejaan := range []string{"warga@example.com", "Warga@Example.COM", " warga@example.com "} {
+		err := fx.requestOTP().Execute(context.Background(), usecase.RequestOTPInput{
+			CredType: domain.CredEmail, CredValue: ejaan,
+		})
+		if err != nil {
+			t.Fatalf("ejaan %q: kuota habis harus diam (nil), dapat: %v", ejaan, err)
+		}
+	}
+
+	if len(fx.messaging.sent) != 1 {
+		t.Fatalf("kuota penerbitan 1 harus berlaku lintas ejaan; terkirim %d kali (mengubah "+
+			"huruf besar/kecil melipatgandakan kuota)", len(fx.messaging.sent))
+	}
+}
+
+// Habisnya kuota per-kredensial harus TAK BISA DIBEDAKAN dari credential tak dikenal — kalau ia
+// menjawab 429 sementara nilai asing menjawab nil, endpoint ini jadi orakel keberadaan akun.
+func TestRequestOTP_KuotaKredensialHabis_DiamSepertiTakDikenal(t *testing.T) {
+	fx := newOTPFixture()
+	_, cred := fx.seedCitizen(t)
+	fx.limiter.allowN[usecase.OTPCredRequestKeyForTest(cred.ID)] = 0
+
+	errAda := fx.requestOTP().Execute(context.Background(), usecase.RequestOTPInput{
+		CredType: domain.CredEmail, CredValue: "warga@example.com",
+	})
+	errTakAda := fx.requestOTP().Execute(context.Background(), usecase.RequestOTPInput{
+		CredType: domain.CredEmail, CredValue: "asing@example.com",
+	})
+
+	if errAda != nil || errTakAda != nil {
+		t.Fatalf("keduanya harus diam (nil); ada=%v takAda=%v", errAda, errTakAda)
+	}
+	if len(fx.messaging.sent) != 0 {
+		t.Fatalf("kuota habis tak boleh mengirim apa pun, terkirim %d", len(fx.messaging.sent))
+	}
+}
+
+// --- Tujuan kirim kanonik ---
+
+// Alamat tujuan harus berasal dari kredensial TER-RESOLVE, bukan dari nilai permintaan. Bila ia
+// memakai nilai mentah, ejaan yang tetap me-resolve lewat blind index (normalisasi ber-TrimSpace
+// ikut membuang CR/LF) sampai ke driver SMTP dan ditolak sebagai header injection → 500,
+// sementara alamat tak dikenal menjawab nil → 200: orakel keberadaan akun, satu probe per target.
+// Sekaligus menjaga warga yang menempelkan alamat berspasi tetap menerima kodenya.
+func TestRequestOTP_KirimKeAlamatKanonikBukanNilaiPermintaan(t *testing.T) {
+	for _, ejaan := range []string{"Warga@Example.COM", " warga@example.com ", "warga@example.com\r\n"} {
+		t.Run(ejaan, func(t *testing.T) {
+			fx := newOTPFixture()
+			_, cred := fx.seedCitizen(t)
+			fx.aliasCredential(t, cred, ejaan)
+
+			if err := fx.requestOTP().Execute(context.Background(), usecase.RequestOTPInput{
+				CredType: domain.CredEmail, CredValue: ejaan,
+			}); err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if len(fx.messaging.sent) != 1 {
+				t.Fatalf("harus kirim 1 email: %+v", fx.messaging.sent)
+			}
+			if got := fx.messaging.sent[0].to; got != cred.CredValue {
+				t.Fatalf("tujuan harus alamat kanonik %q, dapat %q — nilai permintaan bocor ke transport",
+					cred.CredValue, got)
+			}
+		})
+	}
+}
+
+func TestVerifyOTP_EjaanBerbedaBerbagiKuotaKredensial(t *testing.T) {
+	fx := newOTPFixture()
+	_, cred := fx.seedCitizen(t)
+	otp := fx.seedOTP(cred)
+	fx.aliasCredential(t, cred, "Warga@Example.COM")
+	fx.limiter.allowN[usecase.OTPCredVerifyKeyForTest(cred.ID)] = 1
+
+	for _, ejaan := range []string{"warga@example.com", "Warga@Example.COM"} {
+		_, err := fx.verifyOTP().Execute(context.Background(), usecase.VerifyOTPInput{
+			CredType: domain.CredEmail, CredValue: ejaan, Code: "000000", // salah
+		})
+		assertUnauthorized(t, err)
+	}
+
+	// Tebakan kedua ditolak SEBELUM menyentuh OTP: kalau ia lolos, ejaan lain memberi
+	// tebakan gratis dan cap per-OTP jadi satu-satunya penahan.
+	if otp.Attempts != 1 {
+		t.Fatalf("kuota verifikasi 1 harus berlaku lintas ejaan; attempts=%d (ejaan kedua "+
+			"mendapat tebakan tambahan)", otp.Attempts)
+	}
+}
+
+// Kegagalan kuota lapis-2 ikut seragam 401 — jalur verifikasi tak boleh membedakan tahap.
+func TestVerifyOTP_KuotaKredensialHabis_SeragamUnauthorized(t *testing.T) {
+	fx := newOTPFixture()
+	_, cred := fx.seedCitizen(t)
+	fx.seedOTP(cred)
+	fx.limiter.allowN[usecase.OTPCredVerifyKeyForTest(cred.ID)] = 0
+
+	_, err := fx.verifyOTP().Execute(context.Background(), usecase.VerifyOTPInput{
+		CredType: domain.CredEmail, CredValue: "warga@example.com", Code: "123456",
+	})
+	assertUnauthorized(t, err)
 }
 
 var _ port.OTPCodec = fakeCodec{}

@@ -30,11 +30,11 @@ func applyAssignmentMigration(t *testing.T, pool *infradb.Pool, ctx context.Cont
 }
 
 func TestTenantAssignmentRepo_SaveAndList(t *testing.T) {
-	pool, ctx := setupIdentityDB(t)
+	pool, cr, ctx := setupIdentityDB(t)
 	applyAssignmentMigration(t, pool, ctx)
 
-	persons := db.NewPersonRepo(pool)
-	employments := db.NewEmploymentRepo(pool)
+	persons := mustPersonRepo(t, pool, cr)
+	employments := mustEmploymentRepo(t, pool, cr)
 	assignments := db.NewTenantAssignmentRepo(pool)
 
 	// Person + employment (FK target untuk assignment).
@@ -69,11 +69,10 @@ func TestTenantAssignmentRepo_SaveAndList(t *testing.T) {
 // TestTenantAssignment_Audited membuktikan penugasan ke tenant lewat use case ter-audit
 // otomatis (ADR-003: semua mutasi identity ter-audit), tanpa kode audit di use case.
 func TestTenantAssignment_Audited(t *testing.T) {
-	pool, ctx := setupIdentityDB(t)
+	pool, cr, ctx := setupIdentityDB(t)
 	applyAssignmentMigration(t, pool, ctx)
 	// Registry tenant dibutuhkan sejak PR-2.4.5: validateAssignment menolak penugasan
 	// ke tenant yang tidak terdaftar atau tidak aktif.
-	applyTenantMigration(t, pool)
 
 	auditStore := db.NewAuditStore(pool)
 	if err := auditStore.EnsureSchema(ctx); err != nil {
@@ -83,8 +82,8 @@ func TestTenantAssignment_Audited(t *testing.T) {
 
 	// Repo dibungkus dekorator audit.
 	pub := testkit.NewMockPublisher()
-	persons := db.NewAuditedPersonRepo(db.NewPersonRepo(pool), engine)
-	employments := db.NewAuditedEmploymentRepo(db.NewEmploymentRepo(pool), engine)
+	persons := mustAuditedPersonRepo(t, mustPersonRepo(t, pool, cr), engine, cr)
+	employments := mustAuditedEmploymentRepo(t, mustEmploymentRepo(t, pool, cr), engine, cr)
 	assignments := db.NewAuditedTenantAssignmentRepo(db.NewTenantAssignmentRepo(pool), engine)
 	registry := db.NewTenantRepo(pool)
 
@@ -98,7 +97,7 @@ func TestTenantAssignment_Audited(t *testing.T) {
 
 	// Actor penugasan harus eksis sebagai person (FK assigned_by → id.persons).
 	actor := uuid.New()
-	if err := db.NewPersonRepo(pool).Save(ctx, &domain.Person{
+	if err := mustPersonRepo(t, pool, cr).Save(ctx, &domain.Person{
 		ID: actor, NIK: "3500000000000001", NamaLengkap: "Admin BKD", IsActive: true,
 	}); err != nil {
 		t.Fatalf("seed actor person: %v", err)
