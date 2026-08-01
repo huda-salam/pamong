@@ -687,7 +687,7 @@ pluggable + custody sebagai kebijakan per-tenant).
   - DoD: menukar pasangan `_enc`/`_bidx` antar baris lewat SQL langsung membuat pembacaan
     GAGAL (test integrasi, bukan unit); blind index tetap row-independent agar pencarian &
     UNIQUE tak rusak. ✅
-  - **SELESAI (ADR-016).** Dikerjakan MENDAHULUI 3.8.5/3.8.6 secara sadar: ia mengubah
+  - **SELESAI (`4f5ee87`, ADR-016).** Dikerjakan MENDAHULUI 3.8.5/3.8.6 secara sadar: ia mengubah
     kontrak port, sedangkan kedua PR itu justru MENAMBAH pemanggil kontrak tersebut
     (identity, payload event, idempotency). Saat mendarat, pemanggil produksinya tepat empat.
   - Yang berdiri: `port.FieldRef`/`port.RowRef` menggantikan parameter string di

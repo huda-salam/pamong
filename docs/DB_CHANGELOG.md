@@ -32,6 +32,29 @@ Jalur A/B/C merujuk tiga cara pembuatan skema yang dijelaskan di `DB_SCHEMA.md` 
 
 ---
 
+### 2026-08-01 · PR-3.8.9 · `4f5ee87`
+**DB:** tenant · **Jalur:** — (tidak ada DDL) · **Down:** tidak berlaku
+
+Dicatat meski **bukan perubahan struktur**: tak ada tabel, kolom, index, constraint, maupun
+generator DDL yang berubah. Yang berubah adalah **isi** kolom yang sudah ada, secara tidak
+kompatibel — dan operator yang menemukan blob lama berhenti terbuka harus bisa menemukan
+sebabnya di sini, bukan menebak antara "kunci hilang" dan "data rusak".
+
+- `~` isi `{field}_enc` (semua schema modul) dan nilai sensitif di `gov.audit_logs.diff` —
+  format ciphertext naik `0x01` → `0x02` dan AAD kini mengikat **identitas baris**
+  (`record_id`) di samping tenant/purpose/versi kunci (ADR-016). `record_id` ada di AAD saja,
+  tidak disimpan di dalam blob.
+- `~` `{field}_bidx` **tidak berubah** — blind index wajib row-independent, kalau tidak
+  `WHERE {f}_bidx = $1` berhenti cocok dan `UNIQUE` berhenti menangkap duplikat.
+
+**Kompatibilitas:** **breaking untuk data yang sudah tertulis.** Blob format `0x01` dikenali
+parser (agar `PurposeOf` menjawab dan jalur baca audit menampilkan penanda, bukan blob mentah)
+tapi ditolak `Decrypt` dengan pesan yang menyebut re-enkripsi. Tidak ada backfill yang
+disediakan karena belum ada tenant produksi — itulah gerbang keras ROADMAP 3.8 untuk PR ini.
+Bila ada DB dev berisi entity ber-field terenkripsi, buang/isi ulang datanya.
+
+---
+
 ### 2026-07-30 · PR-3.8.2 · `fa6e51c`
 **DB:** identity · **Jalur:** B · **Down:** ada
 
