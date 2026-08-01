@@ -48,6 +48,11 @@ format `0x02`, blob `0x01` ditolak `Decrypt`). Custody `tenant` + KMS eksternal 
 - custody.go — `CustodyResolver`: baca id.tenant_registry.key_custody (cache TTL) → KeyProvider
 - realm.go — `RealmCentral` + `WithCentralRealm` (ADR-017): sumbu partisi kunci adalah **realm**,
   bukan selalu tenant
+- field_sealer.go — `FieldSealer`: kebijakan "satu field logis = dua kolom fisik" untuk repo yang
+  ditulis TANGAN (identity, clone `gov.user_profiles`). Realm dipatri saat konstruksi. Ini
+  SATU-SATUNYA tempat aturan "kosong → NULL", pengikatan baris wajib, dan pemeriksaan `PurposeOf`
+  sebelum `Decrypt` ditulis — repo generik `infra/db` punya jalurnya sendiri (`fieldCrypto`) yang
+  digerakkan `EntityDef`.
 
 Driver KMS eksternal (vault/aws-kms/bssn) masuk sebagai file/paket baru yang memanggil
 `RegisterProvider` — tanpa menyentuh file di atas.

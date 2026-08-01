@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/huda-salam/pamong/identity/domain"
@@ -14,12 +13,13 @@ import (
 // terenkripsi = dua kolom fisik: {f}_enc (AES-256-GCM, nonce acak) + {f}_bidx (HMAC
 // deterministik) — yang kedua itulah yang menopang lookup equality & UNIQUE.
 //
-// Kenapa ditulis di sini alih-alih memakai infra/db.fieldCrypto: repo identity ditulis
-// TANGAN (bukan SQLRepository di atas Mapper[T]/EntityDef), karena skema identity punya
-// invariant yang tak bisa diungkapkan EntityDef — NIP NULL untuk non-ASN dengan CHECK
-// silang ke kolom status, dan UNIQUE majemuk (cred_type, cred_value_bidx). Yang dipakai
-// bersama adalah KEBIJAKANNYA (port.CryptoPort + purpose = nama kolom + pemeriksaan
-// PurposeOf), bukan mesin repo generiknya.
+// Kenapa repo ini tidak memakai mesin infra/db.fieldCrypto: repo identity ditulis TANGAN
+// (bukan SQLRepository di atas Mapper[T]/EntityDef), karena skema identity punya invariant
+// yang tak bisa diungkapkan EntityDef — NIP NULL untuk non-ASN dengan CHECK silang ke kolom
+// status, dan UNIQUE majemuk (cred_type, cred_value_bidx). Yang dipakai bersama adalah
+// KEBIJAKANNYA — dan sejak PR-3.8.5 kebijakan itu punya SATU implementasi,
+// crypto.FieldSealer, yang juga dipakai jalur clone tenant. Aturan "kosong → NULL",
+// pengikatan baris, dan pemeriksaan PurposeOf tak lagi ditulis dua kali.
 
 // Purpose = konteks kunci, satu per kolom logis, mengikuti default framework (nama kolom).
 // Kolom dan diff audit-nya SENGAJA berbagi purpose (ADR-017 §4): keduanya nilai yang sama
@@ -51,84 +51,32 @@ const (
 // (nip|nik|email|no_hp|oauth), jadi tak ada nilai bebas yang bisa menyelinap jadi purpose.
 func purposeOfCredType(t domain.CredType) string { return string(t) }
 
-// identityCrypto membungkus CryptoPort dengan realm sentral yang selalu sama, sehingga tak
-// ada satu pun pemanggil di paket ini yang perlu (atau bisa) menyebut realm sendiri.
-// Data identity tak punya tenant; lihat ADR-017 §1.
+// identityCrypto mematri realm SENTRAL pada sealer bersama, sehingga tak ada satu pun
+// pemanggil di paket ini yang perlu (atau bisa) menyebut realm sendiri. Data identity tak
+// punya tenant; lihat ADR-017 §1.
 type identityCrypto struct {
-	crypto port.CryptoPort
+	sealer *crypto.FieldSealer
 }
 
-// newIdentityCrypto menolak CryptoPort nil. Gagal saat konstruksi, bukan saat baris pertama
-// ditulis: repo identity tanpa kripto akan menyimpan NIK/NIP plaintext tanpa satu pun gejala
-// sampai seseorang membuka dump — cermin penolakan yang sama di infra/db.NewRepository.
+// newIdentityCrypto menolak CryptoPort nil (lewat NewFieldSealer). Gagal saat konstruksi,
+// bukan saat baris pertama ditulis: repo identity tanpa kripto akan menyimpan NIK/NIP
+// plaintext tanpa satu pun gejala sampai seseorang membuka dump.
 func newIdentityCrypto(c port.CryptoPort) (identityCrypto, error) {
-	if c == nil {
-		return identityCrypto{}, fmt.Errorf(
-			"identity/db: repo pengenal butuh port.CryptoPort (nik/nip/cred_value terenkripsi, ADR-009)")
+	s, err := crypto.NewFieldSealer(c, crypto.RealmCentral, "identity/db")
+	if err != nil {
+		return identityCrypto{}, err
 	}
-	return identityCrypto{crypto: c}, nil
+	return identityCrypto{sealer: s}, nil
 }
 
-// seal menghasilkan pasangan kolom fisik untuk satu nilai.
-//
-// Nilai kosong menghasilkan (nil, nil) yang tersimpan sebagai NULL, BUKAN ciphertext dari
-// string kosong: nilai yang absen tak punya apa pun untuk dirahasiakan, dan bidx dari ""
-// akan menjadi satu nilai konstan yang dibagi semua baris tanpa nilai — menumpuk di satu
-// bucket index tanpa manfaat. NULL juga yang dituntut CHECK silang nip↔status.
 func (c identityCrypto) seal(ctx context.Context, purpose string, recordID uuid.UUID, plain string) (enc, bidx []byte, err error) {
-	if plain == "" {
-		return nil, nil, nil
-	}
-	if recordID == uuid.Nil {
-		// Tanpa identitas baris, ciphertext tak terikat ke mana pun dan bisa dipindah
-		// diam-diam (ADR-016 §6). Gagal keras, jangan pakai nilai default.
-		return nil, nil, fmt.Errorf("identity/db: seal %q butuh id baris (pengikatan baris, ADR-016)", purpose)
-	}
-	ref := port.FieldRef{TenantID: crypto.RealmCentral, Purpose: purpose, RecordID: recordID.String()}
-	enc, err = c.crypto.Encrypt(ctx, ref, []byte(plain))
-	if err != nil {
-		return nil, nil, fmt.Errorf("identity/db: enkripsi %q: %w", purpose, err)
-	}
-	bidx, err = c.index(ctx, purpose, plain)
-	if err != nil {
-		return nil, nil, err
-	}
-	return enc, bidx, nil
+	return c.sealer.Seal(ctx, purpose, recordID, plain)
 }
 
-// index menghitung blind index untuk lookup & UNIQUE. Sengaja TIDAK menerima recordID: ia
-// wajib row-independent (ADR-016 §3), kalau tidak `WHERE nik_bidx = $1` tak akan pernah
-// cocok dan UNIQUE tak akan pernah menangkap duplikat.
 func (c identityCrypto) index(ctx context.Context, purpose, plain string) ([]byte, error) {
-	bidx, err := c.crypto.BlindIndex(ctx, crypto.RealmCentral, purpose, []byte(plain))
-	if err != nil {
-		return nil, fmt.Errorf("identity/db: blind index %q: %w", purpose, err)
-	}
-	return bidx, nil
+	return c.sealer.Index(ctx, purpose, plain)
 }
 
-// open membuka satu kolom terenkripsi. NULL → string kosong (kebalikan seal).
-//
-// Purpose blob diperiksa SEBELUM Decrypt (ADR-015): AAD hanya mengikat realm & baris, dan
-// purpose dibaca dari blob itu sendiri (format self-describing), sehingga tanpa pemeriksaan
-// ini ciphertext bisa dipindah antar KOLOM pada baris yang sama — mis. `no_hp_enc` disalin
-// ke `email_enc` — dan tetap terbuka. Pengikatan kolom hanya bisa ditegakkan di lapis yang
-// tahu kolomnya, yaitu di sini.
 func (c identityCrypto) open(ctx context.Context, purpose string, recordID uuid.UUID, ct []byte) (string, error) {
-	if len(ct) == 0 {
-		return "", nil
-	}
-	got, err := c.crypto.PurposeOf(ct)
-	if err != nil {
-		return "", fmt.Errorf("identity/db: baca purpose kolom %q: %w", purpose, err)
-	}
-	if got != purpose {
-		return "", fmt.Errorf("identity/db: ciphertext kolom %q ternyata ber-purpose %q — ditolak (ADR-015)", purpose, got)
-	}
-	plain, err := c.crypto.Decrypt(ctx,
-		port.RowRef{TenantID: crypto.RealmCentral, RecordID: recordID.String()}, ct)
-	if err != nil {
-		return "", fmt.Errorf("identity/db: dekripsi %q baris %s: %w", purpose, recordID, err)
-	}
-	return string(plain), nil
+	return c.sealer.Open(ctx, purpose, recordID, ct)
 }

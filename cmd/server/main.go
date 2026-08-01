@@ -18,6 +18,7 @@ import (
 	"github.com/huda-salam/pamong/gateway"
 	identitydb "github.com/huda-salam/pamong/identity/adapter/db"
 	identitytoken "github.com/huda-salam/pamong/identity/adapter/token"
+	"github.com/huda-salam/pamong/infra/crypto"
 	"github.com/huda-salam/pamong/infra/db"
 	"github.com/huda-salam/pamong/infra/eventbus"
 	"github.com/huda-salam/pamong/infra/idempotency"
@@ -113,10 +114,20 @@ func run() error {
 	// tenant). Atomik + reset per tahun — dipakai use case seperti CreateSuratMasuk untuk
 	// nomor agenda. Menutup kabel nil PR-5.1.1 (gap Phase-1).
 	sequenceGen := sequence.NewDBGenerator(connMgr)
+	// Kripto field (ADR-009/010/017): kunci hidup di identity DB (id.data_keys) apa pun realm-nya,
+	// jadi ia dirakit di atas identityPool. Dipakai lapis repository (enkripsi transparan), jalur
+	// audit, DAN jalur clone tenant — pembaca clone tak bisa membuka pengenal tanpanya.
+	cryptoSvc, err := crypto.NewFromConfig(cfg, identityPool)
+	if err != nil {
+		return fmt.Errorf("kripto field (ADR-009): %w", err)
+	}
 	// Resolver user: baca READ-ONLY clone gov.user_profiles pada tenant DB (tenant dari context).
 	// Modul bisnis mengakses data user lewat port ini, bukan query clone langsung. Menutup kabel
 	// nil PR-5.1.1 (gap Phase-2). HasCentralRole DEFERRED (butuh lookup identity DB).
-	userResolver := infrauser.NewDBResolver(connMgr)
+	userResolver, err := infrauser.NewDBResolver(connMgr, cryptoSvc)
+	if err != nil {
+		return fmt.Errorf("resolver user (clone terenkripsi): %w", err)
+	}
 
 	// Router aggregator: rute semua modul terkumpul di sini saat Bootstrap.
 	router := gateway.NewRouter()

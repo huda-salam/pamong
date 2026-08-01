@@ -20,7 +20,9 @@ setiap perubahan butuh review ekstra (lihat aturan PR).
 - JWT issue/verify, revocation (jti)
 - Sync engine: clone person/employment ke tenant DB via event (fat event). Clone `gov.user_profiles`
   membawa KONTAK (email/no_hp) untuk routing notifikasi email/SMS (PR-N3b, ADR-013) — masih tanpa
-  kredensial/password. Freshness kontak/nama (update-on-change lintas-tenant) DEFERRED.
+  kredensial/password. Sejak PR-3.8.5 nik/nip/email/no_hp pada clone **TERENKRIPSI dengan realm
+  TENANT** (lihat §Enkripsi pengenal). Freshness kontak/nama (update-on-change lintas-tenant)
+  DEFERRED.
 
 ## BUKAN tanggung jawab
 - Evaluasi permission (itu core/permission; identity menyimpan central role master)
@@ -79,6 +81,16 @@ Kolom plaintext-nya **tidak ada** — bukan sekadar berhenti diisi.
   repo hanya PEMANGGILANNYA: `Save()` ketiga repo identity memanggil `Validate()` sebelum menyegel,
   sebab aturan yang menunggu tiap penulis use case baru mengingat memanggilnya bukan aturan —
   persis alasan enkripsi & audit juga dipasang di lapis repo, bukan di use case.
+- **Clone tenant memakai realm TENANT, bukan `_central` (PR-3.8.5).** Aturan realm sentral berlaku
+  untuk data identity yang memang tak punya tenant; `gov.user_profiles` hidup DI DALAM satu tenant
+  DB, jadi ia dilindungi kunci yang sama dengan sisa DB itu. Realm sentral di sana berarti satu
+  kunci membuka clone seluruh pemda. Akibat yang disengaja: `nik_bidx` orang yang sama berbeda
+  antar tenant, jadi clone tak bisa dipakai mengorelasikan orang lintas tenant. Penulis
+  (`identity/sync`) dan pembaca (`infra/user`, `infra/notification`) WAJIB memakai realm yang
+  sama — realm yang salah tidak gagal, ia hanya membuat bidx tak pernah cocok.
+- **Kebijakan seal/index/open punya SATU implementasi: `crypto.FieldSealer`.** Repo identity,
+  writer clone, dan kedua pembacanya memanggilnya, bukan menyalin aturannya. Jangan menulis ulang
+  "kosong → NULL", pengikatan baris, atau pemeriksaan `PurposeOf` di tempat baru.
 - **Sesudah lookup, yang kanonik adalah BARIS yang ditemukan — bukan nilai permintaan.** Nilai
   permintaan berhenti layak dipakai sebagai alamat tujuan, parameter kirim, atau apa pun yang
   mengalir ke sistem luar. `TrimSpace` di `normalize()` ikut membuang CR/LF, jadi ejaan yang

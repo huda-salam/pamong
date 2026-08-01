@@ -32,6 +32,39 @@ Jalur A/B/C merujuk tiga cara pembuatan skema yang dijelaskan di `DB_SCHEMA.md` 
 
 ---
 
+### 2026-08-01 · PR-3.8.5a (jalur clone) · `PENDING`
+**DB:** tenant · **Jalur:** C (`identity/sync/writer_tenantdb.go`) · **Down:** tidak (jalur C)
+
+PR-3.8.6 mengenkripsi pengenal di identity DB, tapi clone `gov.user_profiles` masih menyalinnya
+**plaintext ke setiap tenant DB** tempat person itu ditugaskan (fat event, PR-N3b/ADR-013). Entri
+ini menutup jalur samping itu (ADR-009 §6): NIK yang terlindungi di pusat tapi terbaca di dump
+tenant bukan NIK yang terlindungi.
+
+- `~ gov.user_profiles` — `- nik`, `- nip`, `- email`, `- no_hp` (kolom plaintext **DI-DROP**,
+  pendirian sama dengan migrasi 009); `+ nik_enc BYTEA NOT NULL`, `+ nik_bidx BYTEA NOT NULL`,
+  `+ nip_enc/nip_bidx BYTEA`, `+ email_enc/email_bidx BYTEA`, `+ no_hp_enc/no_hp_bidx BYTEA`.
+  `+ idx_user_profiles_nik_bidx`, `+ idx_user_profiles_nip_bidx` (**non-unik** — keunikan
+  ditegakkan di sumber, bukan di proyeksi).
+- `~ id.data_keys` — **tanpa DDL**: bertambah baris realm **tenant** untuk purpose
+  `nik`/`nip`/`email`/`no_hp`. Realm clone adalah TENANT-nya, bukan `_central` (ADR-017 §1 hanya
+  berlaku untuk data identity yang memang tak punya tenant).
+
+**Kompatibilitas: BREAKING untuk tenant yang sudah punya baris clone** — dan itu disengaja.
+Dua akibat yang harus dibaca utuh:
+
+1. `ADD COLUMN` lewat ALTER menghasilkan kolom **nullable** (NOT NULL menuntut backfill; backfill
+   bukan pekerjaan ensure-on-write). Hanya tenant baru yang mendapat NOT NULL dari `CREATE TABLE`.
+2. `DROP COLUMN` **menghilangkan nilai plaintext lama tanpa memindahkannya** ke kolom `_enc`.
+   Pemulihannya adalah **menerbitkan ulang event penugasan** (`identity.employment.ditugaskan`)
+   agar writer menulis ulang clone — bukan membaca balik kolom yang justru harus hilang. Clone
+   adalah proyeksi; sumbernya utuh di identity DB.
+
+Seperti PR-3.8.6, urutan ini murah **hanya selama belum ada tenant berisi**: nol baris clone di
+seluruh env saat ini (tak ada manifest deploy di repo, dev & CI membangun tenant DB dari nol tiap
+run). Sesudah ada data produksi, langkah yang sama menuntut backfill terjadwal per tenant.
+
+---
+
 ### 2026-08-01 · PR-3.8.6 + E2 · `05875c4`
 **DB:** identity · **Jalur:** B (identity, `009_encrypt_identity_identifiers`) · **Down:** ada
 (bentuk saja — lihat catatan)

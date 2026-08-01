@@ -418,19 +418,37 @@ assignment) yang di-clone ke sini.
 | `id` | UUID PK | **sama persis** dengan `id.persons.id` |
 | `person_id` | UUID NOT NULL | = `id` (eksplisit untuk kejelasan) |
 | `employment_status` | VARCHAR(10) NOT NULL | `asn` \| `non_asn` |
-| `nip` | VARCHAR(18) | |
-| `nik` | VARCHAR(16) NOT NULL | |
-| `nama_lengkap` | VARCHAR(255) NOT NULL | |
+| `nip_enc` | BYTEA | NIP terenkripsi; NULL untuk non-ASN |
+| `nip_bidx` | BYTEA | blind index NIP — penopang `ResolveByNIP` |
+| `nik_enc` | BYTEA NOT NULL | NIK terenkripsi (NULLABLE pada tabel hasil ALTER — lihat catatan) |
+| `nik_bidx` | BYTEA NOT NULL | blind index NIK — penopang `ResolveByNIK` |
+| `nama_lengkap` | VARCHAR(255) NOT NULL | kelas `personal`, **sengaja plaintext** (LIKE/ORDER BY) |
 | `assignment_id` | UUID NOT NULL | rujukan ke `id.tenant_assignments` (tanpa FK — beda DB) |
 | `is_cross_tenant` | BOOLEAN NOT NULL DEFAULT false | |
-| `email` | VARCHAR(255) | kontak untuk routing notifikasi (ADR-013) |
-| `no_hp` | VARCHAR(15) | idem |
+| `email_enc` / `email_bidx` | BYTEA | kontak untuk routing notifikasi (ADR-013), terenkripsi |
+| `no_hp_enc` / `no_hp_bidx` | BYTEA | idem |
 | `synced_at` | TIMESTAMPTZ NOT NULL | |
 | `jabatan_lokal` | VARCHAR(255) | kolom spesifik tenant, boleh diisi modul kepegawaian |
 | `unit_kerja_id` | UUID | scope ABAC; FK ke `gov.org_units` ditunda (lihat §2 jalur C) |
 
+Index: `idx_user_profiles_nik_bidx`, `idx_user_profiles_nip_bidx` — **non-unik**. Keunikan NIK/NIP
+ditegakkan di sumbernya (`id.persons`/`id.employments`, UNIQUE global); menegakkannya lagi pada
+proyeksi hanya akan mengubah anomali sisi-sumber menjadi sync yang macet di satu tenant.
+
+**Realm kunci = TENANT, bukan `_central`.** Clone hidup di DB tenant, jadi yang melindunginya
+adalah kunci yang sama dengan sisa DB itu; realm sentral di sini berarti satu kunci membuka clone
+seluruh pemda sekaligus. Akibat yang disengaja: `nik_bidx` untuk orang yang sama BERBEDA antar
+tenant, sehingga clone tak bisa dipakai mengorelasikan orang lintas tenant. Tak ada yang hilang —
+lookup clone selalu di dalam satu tenant DB.
+
+Catatan bentuk: kolom `_enc`/`_bidx` NOT NULL hanya pada tabel yang dibuat `CREATE TABLE` (tenant
+baru). Pada tenant yang tabelnya sudah ada, kolom ditambah lewat `ALTER TABLE ... ADD COLUMN IF
+NOT EXISTS` dan **nullable** — NOT NULL menuntut backfill, dan backfill bukan pekerjaan
+ensure-on-write.
+
 **Larangan keras:** jangan pernah menambahkan kolom credential/password di sini. Secret tetap di
-`id.credentials`.
+`id.credentials`. Jangan pula menambah query yang menyaring/mengurutkan atas pengenal
+(`WHERE nik LIKE`, `ORDER BY nip`) — kolomnya tak ada lagi, dan `_bidx` hanya melayani equality.
 
 Tabel ini adalah clone **hidup** (selalu nilai terbaru) untuk menjawab "siapa user ini sekarang".
 Ia **bukan** sumber untuk dokumen historis — nama/jabatan pada dokumen bisnis wajib di-snapshot

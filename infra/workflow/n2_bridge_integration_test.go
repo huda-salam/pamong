@@ -21,6 +21,7 @@ import (
 	tenantroledb "github.com/huda-salam/pamong/tenantrole/adapter/db"
 	"github.com/huda-salam/pamong/tenantrole/domain"
 	"github.com/huda-salam/pamong/testkit"
+	"github.com/huda-salam/pamong/testkit/cryptokit"
 )
 
 // n2Def adalah definisi kecil dipakai membuktikan bridge workflow→notifikasi end-to-end
@@ -154,7 +155,15 @@ func TestN2Bridge_TemplateBerbinding_NotifyDanSLA_SampaiInbox(t *testing.T) {
 		t.Fatalf("register channel: %v", err)
 	}
 	hub := coreNotif.NewHub(channels, coreNotif.NewTemplateEngine(notifTemplates), coreNotif.NewMemoryDeliveryRecorder())
-	dir := infraNotif.NewDBRecipientDirectory(pool)
+	// Direktori butuh kripto (kontak clone terenkripsi, PR-3.8.5). Test ini tak menyeed
+	// user_profiles sama sekali — yang diuji jalur in-app — jadi kripto di sini hanya perlu ADA;
+	// kontak tetap kosong dan itulah yang diharapkan.
+	cryptokit.Cleanup(t, pool)
+	t.Cleanup(func() { cryptokit.Cleanup(t, pool) })
+	dir, err := infraNotif.NewDBRecipientDirectory(pool, tenantID, cryptokit.NewService(t, pool, tenantID))
+	if err != nil {
+		t.Fatalf("NewDBRecipientDirectory: %v", err)
+	}
 	roleNotifier := coreNotif.NewRoleNotifier(coreNotif.NewRouter(dir), hub)
 
 	// --- Bridge PR-N2: Escalator (SLA) + TransitionNotifier (transisi) di atas RoleNotifier ---

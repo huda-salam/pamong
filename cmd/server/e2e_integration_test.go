@@ -12,7 +12,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -31,6 +33,7 @@ import (
 	"github.com/huda-salam/pamong/gateway"
 	identitydb "github.com/huda-salam/pamong/identity/adapter/db"
 	identitytoken "github.com/huda-salam/pamong/identity/adapter/token"
+	"github.com/huda-salam/pamong/infra/crypto"
 	"github.com/huda-salam/pamong/infra/db"
 	"github.com/huda-salam/pamong/infra/eventbus"
 	"github.com/huda-salam/pamong/infra/observability"
@@ -133,7 +136,24 @@ func TestE2E_CreateSuratMasuk_201(t *testing.T) {
 	// action workflow), jadi resolver tak terpanggil oleh POST /surat-masuk; ia di-wire di sini
 	// untuk membuktikan resolver non-nil tak merusak boot/serve. Perilaku baca clone diverifikasi
 	// terpisah di infra/user (db_resolver_integration_test.go).
-	userResolver := infrauser.NewDBResolver(connMgr)
+	// Kripto field dirakit dari identityPool persis seperti run() — id.data_keys hidup di sana
+	// apa pun realm-nya. Migrasi identity (termasuk 007/008) sudah diterapkan di atas, jadi
+	// cukup NewFromConfig; tak perlu helper cryptokit yang justru akan menerapkannya dua kali.
+	cryptoSvc, err := crypto.NewFromConfig(&config.AppConfig{
+		Env: "production", // driver static = jalur produksi Tier 1/2
+		Crypto: config.CryptoConfig{
+			KMSDriver:   crypto.DriverStatic,
+			MasterKey:   base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x5A}, 32)),
+			DEKCacheTTL: time.Minute,
+		},
+	}, identityPool)
+	if err != nil {
+		t.Fatalf("crypto: %v", err)
+	}
+	userResolver, err := infrauser.NewDBResolver(connMgr, cryptoSvc)
+	if err != nil {
+		t.Fatalf("NewDBResolver: %v", err)
+	}
 
 	router := gateway.NewRouter()
 	router.Get("/healthz", healthz)

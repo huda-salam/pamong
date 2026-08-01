@@ -7,8 +7,17 @@ import (
 
 	"github.com/google/uuid"
 	coreNotif "github.com/huda-salam/pamong/core/notification"
+	"github.com/huda-salam/pamong/infra/crypto"
 	"github.com/huda-salam/pamong/infra/db"
+	"github.com/huda-salam/pamong/port"
 	tenantroledb "github.com/huda-salam/pamong/tenantrole/adapter/db"
+)
+
+// Purpose kolom kontak terenkripsi pada clone — wajib sama dengan yang dipakai penulisnya
+// (identity/sync), kalau tidak blob ditolak pemeriksaan purpose (ADR-015).
+const (
+	purposeEmail = "email"
+	purposeNoHP  = "no_hp"
 )
 
 // hierarchy adalah subset kecil dari permission.Hierarchy yang dibutuhkan DBRecipientDirectory
@@ -30,14 +39,24 @@ type hierarchy interface {
 // sendiri, precedent gov.user_profiles). Isolasi tenant STRUKTURAL: query tak menyebut tenant_id
 // karena pool sudah terkoneksi ke tenant DB spesifik (konvensi tenantrole/CLAUDE.md).
 type DBRecipientDirectory struct {
-	pool *db.Pool
-	hier hierarchy
+	pool   *db.Pool
+	hier   hierarchy
+	sealer *crypto.FieldSealer
 }
 
 // NewDBRecipientDirectory merakit direktori dari pool tenant DB. Hierarki subtree dibangun di
 // atas pool yang sama (gov.org_units via tenantrole/adapter/db.OrgUnitHierarchy).
-func NewDBRecipientDirectory(pool *db.Pool) *DBRecipientDirectory {
-	return &DBRecipientDirectory{pool: pool, hier: tenantroledb.NewOrgUnitHierarchy(pool)}
+//
+// tenantID & CryptoPort dibutuhkan karena kontak pada clone TERENKRIPSI (PR-3.8.5) dengan realm
+// kunci = tenant. Pool memang sudah terikat satu tenant DB, tapi ia tak MEMBAWA identitas tenant
+// itu — dan realm yang salah tidak gagal, ia hanya menghasilkan dekripsi yang selalu ditolak.
+// Karena itu tenant diminta eksplisit alih-alih ditebak dari koneksi.
+func NewDBRecipientDirectory(pool *db.Pool, tenantID string, c port.CryptoPort) (*DBRecipientDirectory, error) {
+	sealer, err := crypto.NewFieldSealer(c, tenantID, "infra/notification")
+	if err != nil {
+		return nil, err
+	}
+	return &DBRecipientDirectory{pool: pool, hier: tenantroledb.NewOrgUnitHierarchy(pool), sealer: sealer}, nil
 }
 
 var _ coreNotif.RecipientDirectory = (*DBRecipientDirectory)(nil)
@@ -133,14 +152,16 @@ func (d *DBRecipientDirectory) fillContacts(ctx context.Context, recips []coreNo
 	if len(recips) == 0 {
 		return nil
 	}
-	// Cek KEDUA kolom (email & no_hp): SELECT di bawah membaca keduanya, jadi bila hanya salah
-	// satu ada (mis. ALTER terputus) fill dilewati alih-alih query gagal.
+	// Cek KEDUA kolom (email_enc & no_hp_enc): SELECT di bawah membaca keduanya, jadi bila hanya
+	// salah satu ada (mis. ALTER terputus) fill dilewati alih-alih query gagal. Nama kolom yang
+	// diprobe ikut pindah ke bentuk terenkripsi (PR-3.8.5) — memprobe nama lama akan selalu
+	// menjawab "tak ada" dan mematikan seluruh kanal email/SMS tanpa satu pun error.
 	// gov:raw-ok reason=notif-contact-probe query=notification-user-profiles-contact-cols
 	var hasContactCols bool
 	if err := d.pool.QueryRow(ctx,
 		`SELECT count(*) = 2 FROM information_schema.columns
 		    WHERE table_schema = 'gov' AND table_name = 'user_profiles'
-		      AND column_name IN ('email', 'no_hp')`).
+		      AND column_name IN ('email_enc', 'no_hp_enc')`).
 		Scan(&hasContactCols); err != nil {
 		return fmt.Errorf("cek kolom kontak gov.user_profiles: %w", err)
 	}
@@ -154,7 +175,7 @@ func (d *DBRecipientDirectory) fillContacts(ctx context.Context, recips []coreNo
 	}
 	// gov:raw-ok reason=notif-contact-fill query=notification-contact-by-ids
 	rows, err := d.pool.Query(ctx,
-		`SELECT id, email, no_hp FROM gov.user_profiles WHERE id = ANY($1::uuid[])`, ids)
+		`SELECT id, email_enc, no_hp_enc FROM gov.user_profiles WHERE id = ANY($1::uuid[])`, ids)
 	if err != nil {
 		return fmt.Errorf("baca kontak user_profiles: %w", err)
 	}
@@ -164,16 +185,20 @@ func (d *DBRecipientDirectory) fillContacts(ctx context.Context, recips []coreNo
 	byID := make(map[uuid.UUID]contact, len(recips))
 	for rows.Next() {
 		var id uuid.UUID
-		var email, phone *string // NULL → nil
-		if err := rows.Scan(&id, &email, &phone); err != nil {
+		var emailEnc, noHPEnc []byte // NULL → nil → kontak kosong
+		if err := rows.Scan(&id, &emailEnc, &noHPEnc); err != nil {
 			return fmt.Errorf("scan kontak user_profiles: %w", err)
 		}
+		// Identitas baris untuk AAD diambil dari BARIS ITU SENDIRI (id hasil scan), tak pernah
+		// dari daftar id yang diminta (ADR-016) — kalau tidak, baris yang ciphertext-nya
+		// dipindahkan lewat SQL akan terbuka sebagai kontak orang lain, dan notifikasi berisi
+		// data pribadi terkirim ke alamat yang salah.
 		var c contact
-		if email != nil {
-			c.email = *email
+		if c.email, err = d.sealer.Open(ctx, purposeEmail, id, emailEnc); err != nil {
+			return fmt.Errorf("buka kontak email: %w", err)
 		}
-		if phone != nil {
-			c.phone = *phone
+		if c.phone, err = d.sealer.Open(ctx, purposeNoHP, id, noHPEnc); err != nil {
+			return fmt.Errorf("buka kontak no_hp: %w", err)
 		}
 		byID[id] = c
 	}

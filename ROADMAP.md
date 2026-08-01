@@ -660,10 +660,36 @@ pluggable + custody sebagai kebijakan per-tenant).
 >
 > Berikutnya: `/code-review` + `/security-review` sebelum merge (HYBRID; permukaan kripto).
 
-- **PR-3.8.5** Tutup jalur kebocoran samping ← 3.8.3 (ADR-009 §6)
+- **PR-3.8.5** Tutup jalur kebocoran samping ← 3.8.3 (ADR-009 §6) — **SEBAGIAN**
   - Payload event, `gov.idempotency_keys`, staging table migrasi, log/trace, clone
     `gov.user_profiles`.
   - DoD: tiap jalur tak membocorkan pengenal mentah (test per-jalur).
+  - **3.8.5a — clone `gov.user_profiles` ✅ SELESAI.** Dikerjakan lebih dulu karena ia jalur
+    samping yang paling luas jangkauannya: NIK/NIP/email/no_hp tersalin ke SETIAP tenant DB tempat
+    person ditugaskan, sehingga pengenal yang terlindungi di identity DB tetap terbaca di dump
+    tenant mana pun. Yang berdiri: kolom plaintext DI-DROP dari clone → `_enc`+`_bidx` dengan
+    **realm TENANT** (bukan `_central` — clone hidup di DB tenant, dan realm sentral di sana berarti
+    satu kunci membuka clone seluruh pemda); `ResolveByNIK`/`ResolveByNIP` pindah ke blind index;
+    kontak notifikasi (ADR-013) dibuka lewat sealer, tetap best-effort. Kebijakan seal/index/open
+    diekstrak ke `crypto.FieldSealer` — satu implementasi dipakai identity DB & clone, sebab empat
+    salinan aturan kripto akan menyimpang diam-diam. Ikut tertutup: `ErrNotFound` di `infra/user`
+    dulu mengutip NIK/NIP yang dicari (jalur samping ADR-009 §6 yang sama).
+    - DoD terbukti di DB nyata: kolom plaintext hilang dari katalog; baris clone dibaca sebagai
+      teks **beserta bentuk hex bytea-nya** bersih dari keempat pengenal sementara `nama_lengkap`
+      (kelas `personal`, sengaja plaintext) tetap ada sebagai kontrol negatif; resolve by NIK/NIP
+      utuh lewat `_bidx`; realm tenant lain gagal me-lookup DAN gagal membuka; kunci yang terbentuk
+      di `id.data_keys` ber-realm tenant, bukan `_central`; kontak yang ciphertext-nya ditukar antar
+      baris lewat SQL ditolak (ADR-016) alih-alih terkirim ke alamat orang lain.
+    - **Tujuh mutasi kode produksi diverifikasi**; dua di antaranya LOLOS pada percobaan pertama dan
+      itu temuan tentang test-nya, bukan tentang kodenya: (a) NIK yang disimpan mentah ke kolom
+      `bytea` tak terlihat pada `row::text` karena Postgres merendernya sebagai hex — test kini
+      memeriksa kedua bentuk; (b) membuka ciphertext dengan id dari PERMINTAAN alih-alih dari BARIS
+      selalu benar selama hanya ada satu baris berkontak — test kini menyeed dua.
+  - **Belum ditutup (sisa 3.8.5):** payload event (`PersonDibuatPayload.NIK`,
+    `EmploymentDibuatPayload.NIP`, `EmploymentDitugaskanPayload.{NIK,NIP,Email,NoHP}` — mengalir
+    ke bus dan, saat outbox di-wire, ke `gov.outbox_events.payload`), `gov.idempotency_keys.body`,
+    log/trace, dan staging table migrasi (pipeline-nya belum ada — tak ada yang bisa ditutup
+    sekarang, tapi aturannya harus mendarat bersama pipeline-nya).
 
 - **PR-3.8.6** Migrasi identity UNIQUE→blind index ← 3.8.3 ✅ *(dikerjakan bersama E2)*
   - `nik`/`nip`/`cred_value`/`no_hp`/`email` → `_enc`+`_bidx`; UNIQUE pindah; backfill (dev
