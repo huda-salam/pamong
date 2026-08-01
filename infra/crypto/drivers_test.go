@@ -216,11 +216,11 @@ func TestRegisterProvider_DriverBaruTanpaUbahKodeKripto(t *testing.T) {
 		t.Fatalf("New dengan driver baru: %v", err)
 	}
 	ctx := context.Background()
-	ct, err := svc.Encrypt(ctx, "pemkot-surabaya", "nik", []byte("3578010101010001"))
+	ct, err := svc.Encrypt(ctx, fref("pemkot-surabaya", "nik"), []byte("3578010101010001"))
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
-	plain, err := svc.Decrypt(ctx, "pemkot-surabaya", ct)
+	plain, err := svc.Decrypt(ctx, rref("pemkot-surabaya"), ct)
 	if err != nil {
 		t.Fatalf("Decrypt: %v", err)
 	}

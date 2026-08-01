@@ -376,6 +376,101 @@ func TestFieldCrypto_CiphertextDipindahAntarKolomDitolak(t *testing.T) {
 	}
 }
 
+// TestFieldCrypto_CiphertextDipindahAntarBarisDitolak adalah DoD PR-3.8.9 (ADR-016) —
+// sisa risiko yang dicatat ADR-015 secara eksplisit. Purpose blob tetap "nik" sehingga
+// pemeriksaan PurposeOf LOLOS; tenant sama sehingga AAD lama pun lolos; tag GCM sah karena
+// isinya tak diubah. Yang tersisa untuk menangkapnya hanya record_id di AAD.
+//
+// Dilakukan lewat SQL langsung, bukan lewat repo, karena itulah model ancaman L3: pihak
+// ber-akses DB tanpa akses kunci.
+func TestFieldCrypto_CiphertextDipindahAntarBarisDitolak(t *testing.T) {
+	f := setupCryptoRepo(t)
+	ctx := context.Background()
+
+	const (
+		nikSiti = "3578010101010002"
+		rekSiti = "5555555555"
+	)
+	budi := f.save(t, "Budi", itNIK, itRek)
+	siti := f.save(t, "Siti", nikSiti, rekSiti)
+
+	// Prasyarat: sebelum dipindah, keduanya terbaca normal. Tanpa ini, test bisa "lulus"
+	// hanya karena pembacaan memang sudah rusak sejak awal.
+	for _, c := range []struct{ p, want *pegawaiIT }{
+		{budi, &pegawaiIT{NIK: itNIK, NoRekening: itRek}},
+		{siti, &pegawaiIT{NIK: nikSiti, NoRekening: rekSiti}},
+	} {
+		got, err := f.repo.FindByID(f.ctx, c.p.ID)
+		if err != nil || got.NIK != c.want.NIK || got.NoRekening != c.want.NoRekening {
+			t.Fatalf("prasyarat gagal: baca %s = %+v, err=%v", c.p.Nama, got, err)
+		}
+	}
+
+	// Kasus 1 — pertukaran KONSISTEN (_enc + _bidx) pada kolom non-Unique. Inilah bentuk
+	// paling berbahaya: pencarian ikut berpindah sehingga tak ada kejanggalan tersisa di
+	// data, dan sebelum ADR-016 keduanya mendekripsi bersih.
+	if _, err := f.pool.Exec(ctx, `
+		WITH b AS (SELECT no_rekening_enc e, no_rekening_bidx x FROM test_crypto.pegawais WHERE id = $1),
+		     s AS (SELECT no_rekening_enc e, no_rekening_bidx x FROM test_crypto.pegawais WHERE id = $2)
+		UPDATE test_crypto.pegawais p
+		SET no_rekening_enc  = CASE WHEN p.id = $1 THEN (SELECT e FROM s) ELSE (SELECT e FROM b) END,
+		    no_rekening_bidx = CASE WHEN p.id = $1 THEN (SELECT x FROM s) ELSE (SELECT x FROM b) END
+		WHERE p.id IN ($1, $2)`, budi.ID, siti.ID); err != nil {
+		t.Fatalf("tukar no_rekening antar baris: %v", err)
+	}
+	for _, p := range []*pegawaiIT{budi, siti} {
+		got, err := f.repo.FindByID(f.ctx, p.ID)
+		if err == nil {
+			t.Fatalf("no_rekening baris %s yang ditukar harus GAGAL dibaca, malah terbaca %q", p.Nama, got.NoRekening)
+		}
+		if !strings.Contains(err.Error(), "dekripsi kolom no_rekening") {
+			t.Fatalf("baris %s: err = %v, mau kegagalan dekripsi (pengikatan baris)", p.Nama, err)
+		}
+	}
+
+	// Kasus 2 — kolom Unique. Pertukaran konsisten di sini justru ditolak DB sendiri
+	// (UNIQUE di nik_bidx bentrok di tengah statement), jadi jalur yang tersisa bagi
+	// penyerang adalah memindahkan _enc SAJA. Itu tetap membuat NIK seseorang terbaca
+	// sebagai milik orang lain, dan itulah yang harus ditolak di sini.
+	if _, err := f.pool.Exec(ctx,
+		`UPDATE test_crypto.pegawais SET nik_enc = (SELECT nik_enc FROM test_crypto.pegawais WHERE id = $2) WHERE id = $1`,
+		budi.ID, siti.ID); err != nil {
+		t.Fatalf("pindahkan nik_enc: %v", err)
+	}
+	if got, err := f.repo.FindByID(f.ctx, budi.ID); err == nil {
+		t.Fatalf("nik milik baris lain harus GAGAL dibaca, malah terbaca %q", got.NIK)
+	} else if !strings.Contains(err.Error(), "dekripsi kolom nik") {
+		t.Fatalf("err = %v, mau kegagalan dekripsi kolom nik", err)
+	}
+}
+
+// TestFieldCrypto_BlindIndexTetapRowIndependent adalah syarat ADR-016 §3, dan sengaja
+// diuji di DB nyata: kalau pengikatan baris ikut merembes ke blind index, nilainya berbeda
+// tiap baris sehingga UNIQUE berhenti menangkap duplikat dan lookup berhenti menemukan
+// apa pun — dua kegagalan yang SENYAP (tak ada error, hanya hasil yang salah).
+func TestFieldCrypto_BlindIndexTetapRowIndependent(t *testing.T) {
+	f := setupCryptoRepo(t)
+	f.save(t, "Budi", itNIK, itRek)
+
+	// UNIQUE lintas baris masih menggigit → bidx dua baris atas nilai sama pasti identik.
+	err := f.repo.Save(f.ctx, &pegawaiIT{
+		ID: uuid.New(), Nama: "Budi Kembar", NIK: itNIK, NoRekening: "5555555555",
+	})
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		t.Fatalf("duplikat NIK harus ditolak UNIQUE di nik_bidx, dapat: %v", err)
+	}
+
+	// Dan lookup dari sisi lain (baris berbeda dari yang menulis) tetap menemukan barisnya.
+	res, err := f.repo.List(f.ctx, port.ListFilter{Filters: map[string]any{"nik": itNIK}})
+	if err != nil {
+		t.Fatalf("list filter nik: %v", err)
+	}
+	if len(res.Items) != 1 || res.Items[0].NIK != itNIK {
+		t.Fatalf("lookup lewat blind index gagal menemukan baris: %+v", res.Items)
+	}
+}
+
 // TestFieldCrypto_AuditDiffTanpaPlaintext adalah DoD PR-3.8.4: mengenkripsi kolom tanpa
 // menutup diff hanya MEMINDAHKAN kebocoran ke gov.audit_logs — snapshot audit diambil dari
 // entity (plaintext), bukan dari kolom DB. Dump tabel audit di sini harus bersih dari NIK,
@@ -426,8 +521,8 @@ func TestFieldCrypto_AuditDiffTanpaPlaintext(t *testing.T) {
 	if nikDiff == nil {
 		t.Fatalf("update tidak mencatat diff nik: %+v", entries[1].Diff)
 	}
-	before := decryptDiffValue(t, f.svc, nikDiff.Before)
-	after := decryptDiffValue(t, f.svc, nikDiff.After)
+	before := decryptDiffValue(t, f.svc, p.ID, nikDiff.Before)
+	after := decryptDiffValue(t, f.svc, p.ID, nikDiff.After)
 	if before != itNIK || after != nikBaru {
 		t.Fatalf("diff nik terdekripsi = %q -> %q, mau %q -> %q", before, after, itNIK, nikBaru)
 	}
@@ -535,8 +630,9 @@ func TestFieldCrypto_AuditReadGating(t *testing.T) {
 }
 
 // decryptDiffValue membuka satu nilai diff terenkripsi (base64 ciphertext) — mewakili apa
-// yang kelak dilakukan pembaca audit ber-permission `audit:sensitive:baca`.
-func decryptDiffValue(t *testing.T, svc *crypto.Service, v any) string {
+// yang kelak dilakukan pembaca audit ber-permission `audit:sensitive:baca`. entityID wajib:
+// nilai diff terikat ke baris yang dimutasi, sama seperti kolom aslinya (ADR-016).
+func decryptDiffValue(t *testing.T, svc *crypto.Service, entityID uuid.UUID, v any) string {
 	t.Helper()
 	// Diff kembali dari JSONB, jadi nilainya string (atau json.Number untuk angka).
 	s, ok := v.(string)
@@ -555,7 +651,9 @@ func decryptDiffValue(t *testing.T, svc *crypto.Service, v any) string {
 	if purpose != "nik" {
 		t.Fatalf("purpose ciphertext diff = %q, mau nik", purpose)
 	}
-	plain, err := svc.Decrypt(context.Background(), itTenant, ct)
+	plain, err := svc.Decrypt(context.Background(), port.RowRef{
+		TenantID: itTenant, RecordID: entityID.String(),
+	}, ct)
 	if err != nil {
 		t.Fatalf("dekripsi nilai diff: %v", err)
 	}

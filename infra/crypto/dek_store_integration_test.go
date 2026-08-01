@@ -208,14 +208,14 @@ func TestService_EndToEndDenganDBStore(t *testing.T) {
 	}
 
 	const nik = "3578010101010001"
-	ct, err := svc.Encrypt(ctx, "pemkot-surabaya", "nik", []byte(nik))
+	ct, err := svc.Encrypt(ctx, fref("pemkot-surabaya", "nik"), []byte(nik))
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
 	if bytes.Contains(ct, []byte(nik)) {
 		t.Fatal("ciphertext memuat NIK plaintext")
 	}
-	plain, err := svc.Decrypt(ctx, "pemkot-surabaya", ct)
+	plain, err := svc.Decrypt(ctx, rref("pemkot-surabaya"), ct)
 	if err != nil {
 		t.Fatalf("Decrypt: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestService_CustodyTenantDitolakLewatRegistry(t *testing.T) {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
 
-	if _, err := svc.Encrypt(ctx, "pemda-berdaulat", "nik", []byte("x")); err == nil {
+	if _, err := svc.Encrypt(ctx, fref("pemda-berdaulat", "nik"), []byte("x")); err == nil {
 		t.Fatal("tenant ber-custody 'tenant' harus ditolak sampai driver pemda didaftarkan")
 	}
 }
@@ -271,7 +271,7 @@ func TestService_TenantTakTerdaftarDitolak(t *testing.T) {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
 
-	if _, err := svc.Encrypt(ctx, "tenant-hantu", "nik", []byte("x")); err == nil {
+	if _, err := svc.Encrypt(ctx, fref("tenant-hantu", "nik"), []byte("x")); err == nil {
 		t.Fatal("tenant tak terdaftar harus ditolak")
 	}
 }

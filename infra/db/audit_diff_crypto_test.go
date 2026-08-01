@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/huda-salam/pamong/core/audit"
 	"github.com/huda-salam/pamong/port"
 	"github.com/huda-salam/pamong/testkit"
@@ -21,9 +22,13 @@ import (
 // diteruskan ke mock biasa.
 type failingCrypto struct{ *testkit.MockCrypto }
 
-func (failingCrypto) Encrypt(context.Context, string, string, []byte) ([]byte, error) {
+func (failingCrypto) Encrypt(context.Context, port.FieldRef, []byte) ([]byte, error) {
 	return nil, errors.New("kms sedang gagal")
 }
+
+// sealEntityID adalah baris yang dimutasi pada seluruh test di file ini — nilai diff
+// terikat padanya (ADR-016), jadi ia harus tetap sama antara segel & buka.
+var sealEntityID = uuid.MustParse("11111111-1111-4111-8111-111111111111")
 
 func sealRepo(c port.CryptoPort) *auditedRepo[pegawai] {
 	return &auditedRepo[pegawai]{crypto: c, diffEnc: FieldCryptoFromEntity(pegawaiDef())}
@@ -31,7 +36,7 @@ func sealRepo(c port.CryptoPort) *auditedRepo[pegawai] {
 
 // sealed menjalankan sealPair atas sepasang snapshot lalu mengembalikan diff-nya.
 func sealed(c port.CryptoPort, before, after map[string]any) []audit.FieldDiff {
-	sealRepo(c).sealPair(tenantCtx(), before, after)
+	sealRepo(c).sealPair(tenantCtx(), sealEntityID, before, after)
 	return audit.Diff(before, after)
 }
 
@@ -88,7 +93,9 @@ func TestSealPair_PerubahanTetapTercatatDanTerenkripsi(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s bukan base64: %v", sisi.nama, err)
 		}
-		got, err := c.Decrypt(context.Background(), "pemkot-surabaya", ct)
+		got, err := c.Decrypt(context.Background(), port.RowRef{
+			TenantID: "pemkot-surabaya", RecordID: sealEntityID.String(),
+		}, ct)
 		if err != nil {
 			t.Fatalf("dekripsi %s: %v", sisi.nama, err)
 		}
@@ -145,13 +152,13 @@ func TestSealPair_NilaiKosongJadiNilBukanCiphertext(t *testing.T) {
 func TestSealPair_SisiKosongCreateDanDelete(t *testing.T) {
 	c := testkit.NewMockCrypto()
 	after := map[string]any{"nama": "Budi", "nik": "3578010101010001"}
-	sealRepo(c).sealPair(tenantCtx(), nil, after) // create: before nil, tak boleh panic
+	sealRepo(c).sealPair(tenantCtx(), sealEntityID, nil, after) // create: before nil, tak boleh panic
 	if s, _ := after["nik"].(string); s == "" || strings.Contains(s, "3578") {
 		t.Fatalf("nik pada create harus tersegel, dapat %v", after["nik"])
 	}
 
 	before := map[string]any{"nama": "Budi", "nik": "3578010101010001"}
-	sealRepo(c).sealPair(tenantCtx(), before, nil) // delete: after nil
+	sealRepo(c).sealPair(tenantCtx(), sealEntityID, before, nil) // delete: after nil
 	if s, _ := before["nik"].(string); s == "" || strings.Contains(s, "3578") {
 		t.Fatalf("nik pada delete harus tersegel, dapat %v", before["nik"])
 	}
@@ -160,11 +167,46 @@ func TestSealPair_SisiKosongCreateDanDelete(t *testing.T) {
 func TestSealPair_TanpaTenantTidakPernahPlaintext(t *testing.T) {
 	before := map[string]any{"nama": "Budi", "nik": "3578010101010001"}
 	after := map[string]any{"nama": "Budi", "nik": "3578010101010002"}
-	sealRepo(testkit.NewMockCrypto()).sealPair(context.Background(), before, after)
+	sealRepo(testkit.NewMockCrypto()).sealPair(context.Background(), sealEntityID, before, after)
 
 	for _, m := range []map[string]any{before, after} {
 		if s, _ := m["nik"].(string); strings.Contains(s, "3578") {
 			t.Fatalf("tanpa tenant, nik tak boleh tercatat mentah: %q", s)
 		}
+	}
+}
+
+// --- ADR-016: pengikatan nilai diff ke baris ---
+
+func TestSealPair_TanpaEntityIDTidakPernahPlaintext(t *testing.T) {
+	// Tanpa id entity, nilai yang disegel tak terikat baris mana pun dan bisa dipindah ke
+	// entry audit lain. Yang benar adalah penanda gagal, BUKAN ciphertext tak-terikat —
+	// dan tentu bukan plaintext.
+	before := map[string]any{"nama": "Budi", "nik": "3578010101010001"}
+	after := map[string]any{"nama": "Budi", "nik": "3578010101010002"}
+	sealRepo(testkit.NewMockCrypto()).sealPair(tenantCtx(), uuid.Nil, before, after)
+
+	if before["nik"] != auditRedactedBefore || after["nik"] != auditRedactedAfter {
+		t.Fatalf("tanpa entity id harus jadi penanda gagal, dapat before=%v after=%v", before["nik"], after["nik"])
+	}
+}
+
+func TestSealPair_NilaiDiffTerikatEntityYangDimutasi(t *testing.T) {
+	// Nilai diff milik entry entity A tidak boleh terbuka sebagai milik entity B. Ini yang
+	// menutup pemindahan nilai antar entry audit lintas-entity (ADR-016 §Konsekuensi);
+	// pemindahan antar entry pada entity yang SAMA dijaga hash chain, bukan kripto.
+	c := testkit.NewMockCrypto()
+	after := map[string]any{"nama": "Budi", "nik": "3578010101010001"}
+	sealRepo(c).sealPair(tenantCtx(), sealEntityID, nil, after)
+
+	ct, err := base64.StdEncoding.DecodeString(after["nik"].(string))
+	if err != nil {
+		t.Fatalf("nilai tersegel bukan base64: %v", err)
+	}
+	lain := uuid.MustParse("22222222-2222-4222-8222-222222222222")
+	if _, err := c.Decrypt(context.Background(), port.RowRef{
+		TenantID: "pemkot-surabaya", RecordID: lain.String(),
+	}, ct); !errors.Is(err, port.ErrCiphertextInvalid) {
+		t.Fatalf("nilai diff entity lain harus ditolak, err = %v", err)
 	}
 }

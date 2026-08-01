@@ -105,7 +105,7 @@ func TestCustodyTenant_DitolakLantang(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	_, encErr := svc.Encrypt(ctx, "pemda-berdaulat", "nik", []byte("x"))
+	_, encErr := svc.Encrypt(ctx, fref("pemda-berdaulat", "nik"), []byte("x"))
 	_, bidxErr := svc.BlindIndex(ctx, "pemda-berdaulat", "nik", []byte("x"))
 	for name, err := range map[string]error{"Encrypt": encErr, "BlindIndex": bidxErr} {
 		if !errors.Is(err, ErrCustodyUnsupported) {
@@ -140,7 +140,7 @@ func TestCustodyBerpindah_DataLamaTetapTerbaca(t *testing.T) {
 	ctx := context.Background()
 	const tenant = "pemkot-surabaya"
 
-	ctLama, err := svc.Encrypt(ctx, tenant, "nik", []byte("3578010101010001"))
+	ctLama, err := svc.Encrypt(ctx, fref(tenant, "nik"), []byte("3578010101010001"))
 	if err != nil {
 		t.Fatalf("Encrypt custody platform: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestCustodyBerpindah_DataLamaTetapTerbaca(t *testing.T) {
 	custody.current = CustodyTenant
 	svc.keys.now = func() time.Time { return time.Now().Add(time.Hour) }
 
-	plain, err := svc.Decrypt(ctx, tenant, ctLama)
+	plain, err := svc.Decrypt(ctx, rref(tenant), ctLama)
 	if err != nil {
 		t.Fatalf("Decrypt data lama setelah custody berpindah: %v", err)
 	}

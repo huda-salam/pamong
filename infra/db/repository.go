@@ -146,7 +146,7 @@ func (r *SQLRepository[T]) writeVals(ctx context.Context, entity *T) ([]any, err
 	if r.fc == nil {
 		return r.m.DataValues(entity), nil
 	}
-	return r.fc.writeValues(ctx, r.m.DataValues(entity))
+	return r.fc.writeValues(ctx, r.m.ID(entity), r.m.DataValues(entity))
 }
 
 var _ port.BaseRepository[struct{}] = (*SQLRepository[struct{}])(nil)

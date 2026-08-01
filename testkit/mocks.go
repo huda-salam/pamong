@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"strings"
@@ -209,11 +210,16 @@ func (m *MockMessaging) SentEmails() []SentEmail {
 // bisa memeriksa bahwa nilai yang tersimpan bukan plaintext dan tetap bisa dibaca kembali.
 // Sifat yang ditiru dari implementasi nyata:
 //   - Encrypt memakai nonce acak → dua panggilan atas nilai sama berbeda hasilnya.
-//   - Decrypt menolak ciphertext milik tenant lain (port.ErrCiphertextInvalid).
-//   - BlindIndex deterministik per (tenant, purpose) dan menormalkan nilai dengan aturan
-//     YANG SAMA seperti implementasi nyata (trim + case-fold untuk purpose tertentu).
-//     Kesamaan ini WAJIB: kalau mock lebih longgar, test keunikan `_bidx` bisa lolos di sini
-//     lalu bentrok di produksi. Diikat oleh test paritas di infra/crypto.
+//   - Decrypt menolak ciphertext milik tenant lain ATAU baris lain (port.ErrCiphertextInvalid).
+//   - Pengikatan tenant+baris disimpan sebagai DIGEST, bukan nilai terbaca — meniru sifat AAD
+//     (ADR-016): blob tak bisa memberitahu ia milik baris mana, ia hanya bisa membenarkan atau
+//     menolak koordinat yang disodorkan. Kalau recordID disimpan apa adanya lalu dibandingkan,
+//     mock akan lolos untuk blob yang dipindah bersama "bukti" identitasnya sendiri — persis
+//     alternatif yang ditolak ADR-016.
+//   - BlindIndex deterministik per (tenant, purpose), TANPA recordID (ADR-016 §3), dan
+//     menormalkan nilai dengan aturan YANG SAMA seperti implementasi nyata (trim + case-fold
+//     untuk purpose tertentu). Kesamaan ini WAJIB: kalau mock lebih longgar, test keunikan
+//     `_bidx` bisa lolos di sini lalu bentrok di produksi. Diikat test paritas di infra/crypto.
 type MockCrypto struct{}
 
 func NewMockCrypto() *MockCrypto { return &MockCrypto{} }
@@ -222,34 +228,56 @@ var _ port.CryptoPort = (*MockCrypto)(nil)
 
 const mockCryptoPrefix = "mockenc"
 
-func (c *MockCrypto) Encrypt(_ context.Context, tenantID, purpose string, plain []byte) ([]byte, error) {
-	if tenantID == "" || purpose == "" {
+func (c *MockCrypto) Encrypt(_ context.Context, ref port.FieldRef, plain []byte) ([]byte, error) {
+	if ref.TenantID == "" || ref.Purpose == "" {
 		return nil, errors.New("testkit: MockCrypto butuh tenantID & purpose")
+	}
+	if ref.RecordID == "" {
+		return nil, errors.New("testkit: MockCrypto butuh RecordID (pengikatan baris, ADR-016)")
 	}
 	nonce := make([]byte, 8)
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
 	return []byte(strings.Join([]string{
-		mockCryptoPrefix, tenantID, purpose,
+		mockCryptoPrefix, ref.Purpose, mockBindTag(ref.Row()),
 		base64.RawStdEncoding.EncodeToString(nonce),
 		base64.RawStdEncoding.EncodeToString(plain),
 	}, ":")), nil
 }
 
-func (c *MockCrypto) Decrypt(_ context.Context, tenantID string, ct []byte) ([]byte, error) {
+func (c *MockCrypto) Decrypt(_ context.Context, ref port.RowRef, ct []byte) ([]byte, error) {
 	parts := strings.Split(string(ct), ":")
 	if len(parts) != 5 || parts[0] != mockCryptoPrefix {
 		return nil, fmt.Errorf("%w: bukan ciphertext MockCrypto", port.ErrCiphertextInvalid)
 	}
-	if parts[1] != tenantID {
-		return nil, fmt.Errorf("%w: ciphertext milik tenant lain", port.ErrCiphertextInvalid)
+	if ref.TenantID == "" || ref.RecordID == "" {
+		return nil, errors.New("testkit: MockCrypto butuh tenantID & RecordID")
+	}
+	// Satu jawaban untuk tenant salah maupun baris salah — seperti implementasi nyata.
+	if parts[2] != mockBindTag(ref) {
+		return nil, fmt.Errorf("%w: ciphertext milik tenant/baris lain", port.ErrCiphertextInvalid)
 	}
 	plain, err := base64.RawStdEncoding.DecodeString(parts[4])
 	if err != nil {
 		return nil, fmt.Errorf("%w: payload rusak", port.ErrCiphertextInvalid)
 	}
 	return plain, nil
+}
+
+// mockBindTag meniru peran AAD: ia mengikat blob ke (tenant, baris) tanpa membocorkan
+// keduanya dalam bentuk terbaca. Ber-length-prefix karena alasan yang sama dengan AAD nyata —
+// recordID tak selamanya UUID, dan pemisah polos membuat dua koordinat berbeda bisa
+// menghasilkan tag yang sama.
+func mockBindTag(ref port.RowRef) string {
+	h := sha256.New()
+	for _, part := range []string{ref.TenantID, ref.RecordID} {
+		var n [4]byte
+		binary.BigEndian.PutUint32(n[:], uint32(len(part)))
+		h.Write(n[:])
+		h.Write([]byte(part))
+	}
+	return base64.RawStdEncoding.EncodeToString(h.Sum(nil))
 }
 
 // PurposeOf membaca purpose dari ciphertext mock — meniru kontrak port.CryptoPort agar
@@ -259,7 +287,7 @@ func (c *MockCrypto) PurposeOf(ct []byte) (string, error) {
 	if len(parts) != 5 || parts[0] != mockCryptoPrefix {
 		return "", fmt.Errorf("%w: bukan ciphertext MockCrypto", port.ErrCiphertextInvalid)
 	}
-	return parts[2], nil
+	return parts[1], nil
 }
 
 func (c *MockCrypto) BlindIndex(_ context.Context, tenantID, purpose string, plain []byte) ([]byte, error) {

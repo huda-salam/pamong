@@ -96,13 +96,15 @@ func (r *auditedRepo[T]) Save(ctx context.Context, entity *T) error {
 	if err := r.inner.Save(ctx, entity); err != nil {
 		return err
 	}
+	id := r.mapper.ID(entity)
 	after := r.snapshot(entity)
-	r.sealPair(ctx, nil, after)
-	return r.record(ctx, audit.ActionCreate, r.mapper.ID(entity), nil, after)
+	r.sealPair(ctx, id, nil, after)
+	return r.record(ctx, audit.ActionCreate, id, nil, after)
 }
 
 func (r *auditedRepo[T]) Update(ctx context.Context, entity *T) error {
-	before, err := r.inner.FindByID(ctx, r.mapper.ID(entity))
+	id := r.mapper.ID(entity)
+	before, err := r.inner.FindByID(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -110,8 +112,8 @@ func (r *auditedRepo[T]) Update(ctx context.Context, entity *T) error {
 		return err
 	}
 	b, a := r.snapshot(before), r.snapshot(entity)
-	r.sealPair(ctx, b, a)
-	return r.record(ctx, audit.ActionUpdate, r.mapper.ID(entity), b, a)
+	r.sealPair(ctx, id, b, a)
+	return r.record(ctx, audit.ActionUpdate, id, b, a)
 }
 
 func (r *auditedRepo[T]) SoftDelete(ctx context.Context, id uuid.UUID) error {
@@ -123,7 +125,7 @@ func (r *auditedRepo[T]) SoftDelete(ctx context.Context, id uuid.UUID) error {
 		return err
 	}
 	b := r.snapshot(before)
-	r.sealPair(ctx, b, nil)
+	r.sealPair(ctx, id, b, nil)
 	return r.record(ctx, audit.ActionDelete, id, b, nil)
 }
 
@@ -150,45 +152,56 @@ func (r *auditedRepo[T]) snapshot(e *T) map[string]any {
 // terenkripsi sebagai berubah pada SETIAP update — jejak audit mengarang perubahan pengenal
 // dan supresi no-op update ikut mati. Karena itu nilai yang tidak berubah disegel SEKALI
 // lalu dipasang di kedua sisi (Diff membuangnya), yang berubah disegel per sisi.
-func (r *auditedRepo[T]) sealPair(ctx context.Context, before, after map[string]any) {
+// entityID mengikat nilai diff ke baris yang dimutasi (ADR-016 §7), sama seperti kolom
+// aslinya — jalur bacanya (core/audit.Reader) menyuplai AuditEntry.EntityID.
+func (r *auditedRepo[T]) sealPair(ctx context.Context, entityID uuid.UUID, before, after map[string]any) {
 	if len(r.diffEnc) == 0 || r.crypto == nil {
 		return
 	}
 	tenantID := port.TenantFrom(ctx)
+	// Entity tanpa id tak punya koordinat baris; RecordID dibiarkan kosong agar seal
+	// memperlakukannya sebagai kegagalan, bukan menyegel nilai yang tak terikat apa pun.
+	var recordID string
+	if entityID != uuid.Nil {
+		recordID = entityID.String()
+	}
 	for _, s := range r.diffEnc {
 		purpose := s.Purpose
 		if purpose == "" {
 			purpose = s.Column
 		}
+		ref := port.FieldRef{TenantID: tenantID, Purpose: purpose, RecordID: recordID}
 		bRaw, bOK := before[s.Column]
 		aRaw, aOK := after[s.Column]
 		bPlain, bNull, bErr := plaintextOf(s.Column, bRaw)
 		aPlain, aNull, aErr := plaintextOf(s.Column, aRaw)
 
 		if bOK && aOK && bErr == nil && aErr == nil && bNull == aNull && bytes.Equal(bPlain, aPlain) {
-			v := r.seal(ctx, tenantID, purpose, bPlain, bNull, nil, auditRedacted)
+			v := r.seal(ctx, ref, bPlain, bNull, nil, auditRedacted)
 			before[s.Column], after[s.Column] = v, v
 			continue
 		}
 		if bOK {
-			before[s.Column] = r.seal(ctx, tenantID, purpose, bPlain, bNull, bErr, auditRedactedBefore)
+			before[s.Column] = r.seal(ctx, ref, bPlain, bNull, bErr, auditRedactedBefore)
 		}
 		if aOK {
-			after[s.Column] = r.seal(ctx, tenantID, purpose, aPlain, aNull, aErr, auditRedactedAfter)
+			after[s.Column] = r.seal(ctx, ref, aPlain, aNull, aErr, auditRedactedAfter)
 		}
 	}
 }
 
 // seal menyegel satu nilai. Kegagalan TIDAK membatalkan pencatatan — nilainya diganti
 // penanda, karena kehilangan satu nilai lebih baik daripada menyimpan pengenal mentah.
-func (r *auditedRepo[T]) seal(ctx context.Context, tenantID, purpose string, plain []byte, isNull bool, parseErr error, marker string) any {
+// Ref tak lengkap (tenant/entity tak diketahui) diperlakukan sebagai kegagalan yang sama:
+// menyegel tanpa pengikatan akan menghasilkan nilai audit yang bisa dipindah ke entry lain.
+func (r *auditedRepo[T]) seal(ctx context.Context, ref port.FieldRef, plain []byte, isNull bool, parseErr error, marker string) any {
 	if parseErr == nil && isNull {
 		return nil
 	}
-	if parseErr != nil || tenantID == "" {
+	if parseErr != nil || ref.TenantID == "" || ref.RecordID == "" {
 		return marker
 	}
-	ct, err := r.crypto.Encrypt(ctx, tenantID, purpose, plain)
+	ct, err := r.crypto.Encrypt(ctx, ref, plain)
 	if err != nil {
 		return marker
 	}

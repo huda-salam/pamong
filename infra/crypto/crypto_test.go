@@ -80,16 +80,31 @@ func newTestService(t *testing.T) (*Service, *memDEKStore) {
 	return svc, store
 }
 
+// Dua identitas baris untuk menguji pengikatan ADR-016. Sebagian besar test hanya butuh
+// satu koordinat yang konsisten; recordB dipakai saat yang diuji justru perpindahannya.
+const (
+	recordA = "11111111-1111-4111-8111-111111111111"
+	recordB = "22222222-2222-4222-8222-222222222222"
+)
+
+func fref(tenantID, purpose string) port.FieldRef {
+	return port.FieldRef{TenantID: tenantID, Purpose: purpose, RecordID: recordA}
+}
+
+func rref(tenantID string) port.RowRef {
+	return port.RowRef{TenantID: tenantID, RecordID: recordA}
+}
+
 func TestEncrypt_RoundtripDanCiphertextTidakDeterministik(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 	nik := []byte("3578010101010001")
 
-	ct1, err := svc.Encrypt(ctx, "pemkot-surabaya", "nik", nik)
+	ct1, err := svc.Encrypt(ctx, fref("pemkot-surabaya", "nik"), nik)
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
-	ct2, err := svc.Encrypt(ctx, "pemkot-surabaya", "nik", nik)
+	ct2, err := svc.Encrypt(ctx, fref("pemkot-surabaya", "nik"), nik)
 	if err != nil {
 		t.Fatalf("Encrypt kedua: %v", err)
 	}
@@ -102,7 +117,7 @@ func TestEncrypt_RoundtripDanCiphertextTidakDeterministik(t *testing.T) {
 	}
 
 	for i, ct := range [][]byte{ct1, ct2} {
-		plain, err := svc.Decrypt(ctx, "pemkot-surabaya", ct)
+		plain, err := svc.Decrypt(ctx, rref("pemkot-surabaya"), ct)
 		if err != nil {
 			t.Fatalf("Decrypt ct%d: %v", i+1, err)
 		}
@@ -116,17 +131,17 @@ func TestDecrypt_TenantLainDitolak(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	ct, err := svc.Encrypt(ctx, "pemkot-surabaya", "nik", []byte("3578010101010001"))
+	ct, err := svc.Encrypt(ctx, fref("pemkot-surabaya", "nik"), []byte("3578010101010001"))
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
 
 	// Tenant lain yang SUDAH punya kunci sendiri: DEK berbeda DAN tenantID ikut ke AAD.
 	// Ditolak sebagai ciphertext tak sah — sebab detailnya tak dibocorkan.
-	if _, err := svc.Encrypt(ctx, "pemkot-malang", "nik", []byte("3578010101010009")); err != nil {
+	if _, err := svc.Encrypt(ctx, fref("pemkot-malang", "nik"), []byte("3578010101010009")); err != nil {
 		t.Fatalf("Encrypt tenant kedua: %v", err)
 	}
-	if _, err := svc.Decrypt(ctx, "pemkot-malang", ct); !errors.Is(err, port.ErrCiphertextInvalid) {
+	if _, err := svc.Decrypt(ctx, rref("pemkot-malang"), ct); !errors.Is(err, port.ErrCiphertextInvalid) {
 		t.Fatalf("Decrypt lintas tenant (punya kunci): err = %v, mau ErrCiphertextInvalid", err)
 	}
 
@@ -134,7 +149,7 @@ func TestDecrypt_TenantLainDitolak(t *testing.T) {
 	// dari ciphertext tak sah — "kunci tak bisa didapat" adalah sinyal operasional serius (baris
 	// id.data_keys hilang = data tak terbaca), tak boleh tersamarkan sebagai blob rusak. Yang
 	// penting untuk keamanan: keduanya sama-sama menolak, tak ada plaintext yang keluar.
-	if _, err := svc.Decrypt(ctx, "pemkot-blitar", ct); !errors.Is(err, ErrDEKMissing) {
+	if _, err := svc.Decrypt(ctx, rref("pemkot-blitar"), ct); !errors.Is(err, ErrDEKMissing) {
 		t.Fatalf("Decrypt tenant tanpa kunci: err = %v, mau ErrDEKMissing", err)
 	}
 }
@@ -142,7 +157,7 @@ func TestDecrypt_TenantLainDitolak(t *testing.T) {
 func TestDecrypt_CiphertextRusak(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
-	ct, err := svc.Encrypt(ctx, "pemkot-surabaya", "nik", []byte("3578010101010001"))
+	ct, err := svc.Encrypt(ctx, fref("pemkot-surabaya", "nik"), []byte("3578010101010001"))
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
@@ -153,13 +168,88 @@ func TestDecrypt_CiphertextRusak(t *testing.T) {
 	cases := map[string][]byte{
 		"kosong":             {},
 		"versi format asing": {0x09, 0x03, 'n', 'i', 'k'},
-		"purpose kosong":     {ctFormatV1, 0x00, 'x', 'x'},
+		"purpose kosong":     {ctFormatV2, 0x00, 'x', 'x'},
 		"header terpotong":   ct[:6],
 		"tag dimodifikasi":   tampered,
 	}
 	for name, blob := range cases {
-		if _, err := svc.Decrypt(ctx, "pemkot-surabaya", blob); !errors.Is(err, port.ErrCiphertextInvalid) {
+		if _, err := svc.Decrypt(ctx, rref("pemkot-surabaya"), blob); !errors.Is(err, port.ErrCiphertextInvalid) {
 			t.Errorf("%s: err = %v, mau ErrCiphertextInvalid", name, err)
+		}
+	}
+}
+
+// --- ADR-016: pengikatan baris ---
+
+// TestDecrypt_BarisLainDitolak adalah inti ADR-016: menukar nilai antar dua baris pada
+// tabel & tenant yang SAMA — yang sebelumnya mendekripsi bersih (sisa risiko ADR-015).
+func TestDecrypt_BarisLainDitolak(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	const tenant = "pemkot-surabaya"
+
+	ct, err := svc.Encrypt(ctx, port.FieldRef{TenantID: tenant, Purpose: "nik", RecordID: recordA},
+		[]byte("3578010101010001"))
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	// Purpose benar, tenant benar, blob utuh — hanya barisnya yang berbeda.
+	if _, err := svc.Decrypt(ctx, port.RowRef{TenantID: tenant, RecordID: recordB}, ct); !errors.Is(err, port.ErrCiphertextInvalid) {
+		t.Fatalf("Decrypt di baris lain: err = %v, mau ErrCiphertextInvalid", err)
+	}
+	// Dan baris pemiliknya tetap bisa membuka — pengikatan tidak boleh merusak jalur normal.
+	plain, err := svc.Decrypt(ctx, port.RowRef{TenantID: tenant, RecordID: recordA}, ct)
+	if err != nil || string(plain) != "3578010101010001" {
+		t.Fatalf("baris sendiri = %q err=%v", plain, err)
+	}
+}
+
+// TestDecrypt_FormatV1DitolakDenganSebabYangJelas: blob pra-pengikatan baris harus dikenali
+// sebagai "butuh re-enkripsi", bukan tersamar sebagai blob rusak atau kunci salah.
+func TestDecrypt_FormatV1DitolakDenganSebabYangJelas(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+
+	ct, err := svc.Encrypt(ctx, fref("pemkot-surabaya", "nik"), []byte("3578010101010001"))
+	if err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+	lama := append([]byte(nil), ct...)
+	lama[0] = ctFormatV1 // seolah ditulis kode pra-ADR-016
+
+	_, err = svc.Decrypt(ctx, rref("pemkot-surabaya"), lama)
+	if !errors.Is(err, port.ErrCiphertextInvalid) {
+		t.Fatalf("err = %v, mau ErrCiphertextInvalid", err)
+	}
+	if !strings.Contains(err.Error(), "re-enkripsi") {
+		t.Fatalf("pesan tak menyebut re-enkripsi, operator tak akan tahu penyebabnya: %v", err)
+	}
+	// PurposeOf TETAP menjawab untuk blob lama — jalur baca audit mengandalkannya untuk
+	// mengenali "ini nilai sensitif" dan menampilkan penanda, bukan blob mentah.
+	if p, err := PurposeOf(lama); err != nil || p != "nik" {
+		t.Fatalf("PurposeOf blob v1 = %q err=%v, mau tetap menjawab", p, err)
+	}
+}
+
+// TestFieldAAD_TidakAmbiguAntarKoordinat: AAD ber-length-prefix, jadi dua koordinat berbeda
+// tak pernah menghasilkan AAD yang sama. Dengan penggabungan ber-pemisah polos, pasangan di
+// bawah ini akan bertabrakan — dan tabrakan AAD berarti nilai satu koordinat bisa dibuka
+// sebagai koordinat lain.
+func TestFieldAAD_TidakAmbiguAntarKoordinat(t *testing.T) {
+	pasangan := [][2]port.FieldRef{
+		{
+			{TenantID: "a|b", Purpose: "nik", RecordID: recordA},
+			{TenantID: "a", Purpose: "b|nik", RecordID: recordA},
+		},
+		{
+			{TenantID: "a", Purpose: "nik", RecordID: "1|2"},
+			{TenantID: "a", Purpose: "nik|1", RecordID: "2"},
+		},
+	}
+	for i, p := range pasangan {
+		if bytes.Equal(fieldAAD(p[0], 1), fieldAAD(p[1], 1)) {
+			t.Errorf("pasangan %d menghasilkan AAD identik: %+v vs %+v", i, p[0], p[1])
 		}
 	}
 }
@@ -215,7 +305,7 @@ func TestBlindIndex_KunciTerpisahDariKunciEnkripsi(t *testing.T) {
 	svc, store := newTestService(t)
 	ctx := context.Background()
 
-	if _, err := svc.Encrypt(ctx, "pemkot-surabaya", "nik", []byte("x")); err != nil {
+	if _, err := svc.Encrypt(ctx, fref("pemkot-surabaya", "nik"), []byte("x")); err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
 	if _, err := svc.BlindIndex(ctx, "pemkot-surabaya", "nik", []byte("x")); err != nil {
@@ -244,7 +334,7 @@ func TestEncrypt_DEKDibuatSekaliLaluDiCache(t *testing.T) {
 	ctx := context.Background()
 
 	for i := 0; i < 5; i++ {
-		if _, err := svc.Encrypt(ctx, "pemkot-surabaya", "nik", []byte("3578010101010001")); err != nil {
+		if _, err := svc.Encrypt(ctx, fref("pemkot-surabaya", "nik"), []byte("3578010101010001")); err != nil {
 			t.Fatalf("Encrypt #%d: %v", i, err)
 		}
 	}
@@ -258,7 +348,7 @@ func TestDecrypt_SetelahRotasiDEK_CiphertextLamaTetapTerbaca(t *testing.T) {
 	ctx := context.Background()
 	const tenant = "pemkot-surabaya"
 
-	ctLama, err := svc.Encrypt(ctx, tenant, "nik", []byte("3578010101010001"))
+	ctLama, err := svc.Encrypt(ctx, fref(tenant, "nik"), []byte("3578010101010001"))
 	if err != nil {
 		t.Fatalf("Encrypt versi 1: %v", err)
 	}
@@ -276,16 +366,16 @@ func TestDecrypt_SetelahRotasiDEK_CiphertextLamaTetapTerbaca(t *testing.T) {
 	store.rotateTo(ref, DEKRecord{Version: 2, Wrapped: wrapped, Custody: CustodyPlatform, KEKDriver: DriverLocal})
 	svc.keys.now = func() time.Time { return time.Now().Add(2 * time.Minute) } // kadaluarsakan cache
 
-	ctBaru, err := svc.Encrypt(ctx, tenant, "nik", []byte("3578010101010001"))
+	ctBaru, err := svc.Encrypt(ctx, fref(tenant, "nik"), []byte("3578010101010001"))
 	if err != nil {
 		t.Fatalf("Encrypt versi 2: %v", err)
 	}
-	if _, version, _, _, err := parseCiphertext(ctBaru); err != nil || version != 2 {
+	if _, _, version, _, _, err := parseCiphertext(ctBaru); err != nil || version != 2 {
 		t.Fatalf("ciphertext baru versi = %d (err=%v), mau 2", version, err)
 	}
 
 	// Inti rotasi lazy: tulisan lama tetap terbaca dengan kunci versinya sendiri.
-	plain, err := svc.Decrypt(ctx, tenant, ctLama)
+	plain, err := svc.Decrypt(ctx, rref(tenant), ctLama)
 	if err != nil {
 		t.Fatalf("Decrypt ciphertext versi 1 setelah rotasi: %v", err)
 	}
@@ -297,7 +387,7 @@ func TestDecrypt_SetelahRotasiDEK_CiphertextLamaTetapTerbaca(t *testing.T) {
 func TestDecrypt_DEKVersiHilang(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
-	ct, err := svc.Encrypt(ctx, "pemkot-surabaya", "nik", []byte("x"))
+	ct, err := svc.Encrypt(ctx, fref("pemkot-surabaya", "nik"), []byte("x"))
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
@@ -305,7 +395,7 @@ func TestDecrypt_DEKVersiHilang(t *testing.T) {
 	ct[2+len("nik")+3] = 9
 	svc.keys.deks = map[dekCacheKey][]byte{}
 
-	if _, err := svc.Decrypt(ctx, "pemkot-surabaya", ct); !errors.Is(err, ErrDEKMissing) {
+	if _, err := svc.Decrypt(ctx, rref("pemkot-surabaya"), ct); !errors.Is(err, ErrDEKMissing) {
 		t.Fatalf("err = %v, mau ErrDEKMissing", err)
 	}
 }
@@ -314,20 +404,28 @@ func TestOperasi_ButuhTenantDanPurpose(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	if _, err := svc.Encrypt(ctx, "", "nik", []byte("x")); err == nil {
+	if _, err := svc.Encrypt(ctx, fref("", "nik"), []byte("x")); err == nil {
 		t.Error("Encrypt tanpa tenantID harus gagal")
 	}
-	if _, err := svc.Encrypt(ctx, "pemkot-surabaya", "", []byte("x")); err == nil {
+	if _, err := svc.Encrypt(ctx, fref("pemkot-surabaya", ""), []byte("x")); err == nil {
 		t.Error("Encrypt tanpa purpose harus gagal")
 	}
-	if _, err := svc.Encrypt(ctx, "pemkot-surabaya", strings.Repeat("p", purposeMaxLen+1), []byte("x")); err == nil {
+	if _, err := svc.Encrypt(ctx, fref("pemkot-surabaya", strings.Repeat("p", purposeMaxLen+1)), []byte("x")); err == nil {
 		t.Error("purpose melebihi batas header harus gagal (bukan ciphertext rusak saat dibaca)")
 	}
 	if _, err := svc.BlindIndex(ctx, "", "nik", []byte("x")); err == nil {
 		t.Error("BlindIndex tanpa tenantID harus gagal")
 	}
-	if _, err := svc.Decrypt(ctx, "", []byte("x")); err == nil {
+	if _, err := svc.Decrypt(ctx, rref(""), []byte("x")); err == nil {
 		t.Error("Decrypt tanpa tenantID harus gagal")
+	}
+	// RecordID kosong sama seriusnya dengan tenant kosong: nilainya akan bisa dipindah ke
+	// baris mana pun, dan itu tak akan terlihat sampai seseorang memindahkannya (ADR-016 §6).
+	if _, err := svc.Encrypt(ctx, port.FieldRef{TenantID: "pemkot-surabaya", Purpose: "nik"}, []byte("x")); err == nil {
+		t.Error("Encrypt tanpa RecordID harus gagal")
+	}
+	if _, err := svc.Decrypt(ctx, port.RowRef{TenantID: "pemkot-surabaya"}, []byte("x")); err == nil {
+		t.Error("Decrypt tanpa RecordID harus gagal")
 	}
 }
 
@@ -339,7 +437,7 @@ func TestPurposeOf(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	ct, err := svc.Encrypt(ctx, "pemkot-surabaya", "nik", []byte("3578010101010001"))
+	ct, err := svc.Encrypt(ctx, fref("pemkot-surabaya", "nik"), []byte("3578010101010001"))
 	if err != nil {
 		t.Fatalf("Encrypt: %v", err)
 	}
@@ -354,7 +452,7 @@ func TestPurposeOf(t *testing.T) {
 	// Skenario yang harus ditangkap repo: blob purpose "nik" ditemukan di kolom no_rekening.
 	// Service sendiri TETAP mendekripsinya (isinya asli, tenant-nya benar) — karena itu
 	// pemeriksaan purpose di repo wajib, bukan opsional.
-	plain, err := svc.Decrypt(ctx, "pemkot-surabaya", ct)
+	plain, err := svc.Decrypt(ctx, rref("pemkot-surabaya"), ct)
 	if err != nil || string(plain) != "3578010101010001" {
 		t.Fatalf("Decrypt = %q err=%v — asumsi test ini keliru bila berubah", plain, err)
 	}

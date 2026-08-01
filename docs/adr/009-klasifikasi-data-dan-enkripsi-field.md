@@ -1,8 +1,10 @@
 # ADR-009: Klasifikasi data & enkripsi field selektif (blind index)
 
 ## Status
-Accepted — keputusan tetap berlaku; **seam `CryptoPort` di §4 diperluas oleh ADR-015**
-(metode keempat `PurposeOf`, untuk mengikat ciphertext ke kolomnya). Tidak di-supersede.
+Accepted — keputusan tetap berlaku; **seam `CryptoPort` di §4 diperluas dua kali**:
+ADR-015 (metode keempat `PurposeOf`, mengikat ciphertext ke KOLOM-nya) dan ADR-016
+(identitas BARIS masuk ke AAD; `Encrypt`/`Decrypt` menerima `FieldRef`/`RowRef`, dan versi
+format ciphertext §3 naik ke `0x02`). Tidak di-supersede oleh keduanya.
 
 ## Konteks
 Regulasi pemerintah (UU 27/2022 PDP, PP 71/2019 PSTE, arahan kriptografi BSSN/SPBE)
@@ -122,6 +124,12 @@ type CryptoPort interface {
 > Alasannya lahir dari §3: karena purpose dibaca dari blob dan AAD hanya mengikat tenant,
 > ciphertext yang dipindah antar kolom dalam satu tenant tetap terbuka — pengikatan kolom
 > hanya bisa ditegakkan di lapis repository, dan lapis itu perlu tahu purpose tanpa kunci.
+>
+> **Diperluas oleh ADR-016:** dua metode pertama kini menerima koordinat ber-struct —
+> `Encrypt(ctx, FieldRef{TenantID, Purpose, RecordID}, plain)` dan
+> `Decrypt(ctx, RowRef{TenantID, RecordID}, ct)` — karena AAD yang hanya mengikat tenant
+> juga membiarkan blob dipindah antar BARIS. `BlindIndex` sengaja TIDAK ikut berubah: ia
+> wajib row-independent agar equality & UNIQUE tetap bekerja.
 
 Implementasi di `infra/crypto/` (vault-transit, local-dev untuk test/dev, KMS lain kelak).
 Domain & use case tetap nol-dependency kripto — mengikuti pola `OTPCodec`/`PasswordVerifier`

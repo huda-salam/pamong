@@ -63,9 +63,14 @@ Alur & aturan yang menopangnya:
   kolom terenkripsi, mendekripsi, lalu menulis hasilnya ke pointer asli.
 - Equality filter dialihkan ke `_bidx`. Sort & search (ILIKE) atas kolom terenkripsi DITOLAK
   lantang — bukan dibiarkan mengembalikan hasil yang tampak sah.
-- Setiap pembacaan memeriksa `PurposeOf(ciphertext)` = purpose kolom (ADR-015). AAD hanya
-  mengikat tenant, jadi tanpa pemeriksaan ini blob bisa dipindah antar kolom DALAM satu
-  tenant lewat satu `UPDATE` dan tetap terbaca sebagai nilai yang sah.
+- Setiap pembacaan memeriksa `PurposeOf(ciphertext)` = purpose kolom (ADR-015). AAD tidak
+  mengikat kolom, jadi tanpa pemeriksaan ini blob bisa dipindah antar kolom PADA BARIS YANG
+  SAMA lewat satu `UPDATE` dan tetap terbaca sebagai nilai yang sah.
+- **Nilai terikat ke BARIS-nya** (ADR-016): id baris masuk ke AAD. Jalur tulis mengambilnya
+  dari `Mapper.ID(entity)`; jalur baca mengambilnya dari kolom `id` BARIS ITU SENDIRI
+  (`dest[0]` setelah `Scan`, lewat `scannedID`) — dan justru itu yang membuatnya menggigit:
+  blob yang dipindah ke baris lain diminta dibuka dengan id baris tujuan. Entity tanpa id
+  (`uuid.Nil`) DITOLAK sebelum menyentuh DB.
 - `NewRepository` MENOLAK entity ber-field terenkripsi bila `CryptoPort` tak diberikan, dan
   enkripsi gagal keras bila tenant tak ada di context (`port.WithTenant`).
 - Diff audit ikut terenkripsi (`auditedRepo.snapshot` → `sealPair`) — snapshot diambil dari
@@ -73,8 +78,13 @@ Alur & aturan yang menopangnya:
   `audit_logs.diff`. Sisi bacanya: `core/audit.Reader` + permission `audit:sensitive:baca`.
 - Penyegelan diff membandingkan plaintext **sebelum** mengenkripsi, dan memproses kedua sisi
   bersama. Ciphertext tidak deterministik, jadi perbandingan apa pun setelah enkripsi salah.
-- Pengikatan `PurposeOf` berlaku per-KOLOM, bukan per-baris: menukar `_enc`+`_bidx` antar
-  baris masih lolos (ADR-015 §Konsekuensi, ditutup PR-3.8.9).
+- Dua pengikatan itu saling melengkapi, bukan menggantikan: `PurposeOf` menangkap
+  perpindahan antar KOLOM pada baris yang sama (AAD-nya identik di situ), AAD menangkap
+  perpindahan antar BARIS pada kolom yang sama (purpose-nya cocok di situ).
+- **Sisa risiko yang disadari:** menukar `_bidx` SAJA (tanpa `_enc`) antar baris masih
+  mungkin — pencarian menemukan baris yang salah, tapi nilai yang dibaca dari baris itu
+  tetap nilainya sendiri. Kegagalan integritas indeks, bukan kebocoran. Menutupnya butuh
+  blind index ber-baris, yang menghapus seluruh kegunaannya (ADR-016 §3).
 
 ## Pitfall umum
 - JOIN lintas-schema modul lain (dilarang) [linter: no-cross-schema-join].
@@ -84,6 +94,10 @@ Alur & aturan yang menopangnya:
   tenant). Buka pool HANYA di bawah lock per-entry.
 - Menambah jalur tulis baru (bulk insert, upsert, COPY) tanpa melewati `writeCols`/`writeVals`
   — pengenal akan mendarat plaintext tanpa satu pun test yang gagal.
+- **Menyeragamkan pemanggilan `Encrypt` & `BlindIndex`** dengan ikut menyelipkan id baris ke
+  blind index. Terlihat konsisten, dan membunuh dua hal sekaligus secara SENYAP: `WHERE
+  {f}_bidx = $1` tak pernah cocok lagi dan UNIQUE berhenti menangkap duplikat — tanpa satu
+  error pun, hanya hasil yang salah. `BlindIndex` sengaja tak menerima `FieldRef`.
 - **Mengenkripsi nilai diff audit per sisi (before dan after masing-masing).** Nonce acak
   membuat nilai yang SAMA menghasilkan blob berbeda, sehingga `audit.Diff` melaporkan setiap
   kolom terenkripsi sebagai berubah pada setiap update — jejak audit mengarang perubahan
@@ -103,4 +117,5 @@ Alur & aturan yang menopangnya:
 
 ## Rujukan
 - PRD.md (root: Migration strategy, DB-per-tenant), port/repository.go
-- ADR-009 (klasifikasi & enkripsi field), ADR-015 (`PurposeOf`/pengikatan kolom), ADR-002 (audit diff)
+- ADR-009 (klasifikasi & enkripsi field), ADR-015 (`PurposeOf`/pengikatan kolom),
+  ADR-016 (pengikatan baris lewat AAD), ADR-002 (audit diff)

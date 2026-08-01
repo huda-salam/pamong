@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/huda-salam/pamong/core/audit"
+	"github.com/huda-salam/pamong/port"
 	"github.com/huda-salam/pamong/testkit"
 )
 
@@ -28,10 +29,13 @@ func (f *fakeQueryStore) ByTenant(_ context.Context, tenantID string) ([]audit.A
 	return f.entries, nil
 }
 
-// encB64 menyiapkan nilai diff sebagaimana ditulis lapis repository: ciphertext base64.
-func encB64(t *testing.T, tenantID, purpose, plain string) string {
+// encB64 menyiapkan nilai diff sebagaimana ditulis lapis repository: ciphertext base64,
+// terikat ke tenant DAN baris yang dimutasi (ADR-016).
+func encB64(t *testing.T, tenantID string, entityID uuid.UUID, purpose, plain string) string {
 	t.Helper()
-	ct, err := (&testkit.MockCrypto{}).Encrypt(context.Background(), tenantID, purpose, []byte(plain))
+	ct, err := (&testkit.MockCrypto{}).Encrypt(context.Background(), port.FieldRef{
+		TenantID: tenantID, Purpose: purpose, RecordID: entityID.String(),
+	}, []byte(plain))
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
@@ -40,15 +44,16 @@ func encB64(t *testing.T, tenantID, purpose, plain string) string {
 
 func entryDenganNIK(t *testing.T, tenantID string) audit.AuditEntry {
 	t.Helper()
+	entityID := uuid.New()
 	return audit.AuditEntry{
-		ID: uuid.New(), TenantID: tenantID, Entity: "kepegawaian.Pegawai", EntityID: uuid.New(),
+		ID: uuid.New(), TenantID: tenantID, Entity: "kepegawaian.Pegawai", EntityID: entityID,
 		Action: audit.ActionUpdate, ActorID: uuid.New(), Timestamp: time.Now(),
 		Diff: []audit.FieldDiff{
 			{Field: "nama", Before: "Budi", After: "Budi Santoso"},
 			{
 				Field:  "nik",
-				Before: encB64(t, tenantID, "nik", "3578010101010001"),
-				After:  encB64(t, tenantID, "nik", "3578010101019999"),
+				Before: encB64(t, tenantID, entityID, "nik", "3578010101010001"),
+				After:  encB64(t, tenantID, entityID, "nik", "3578010101019999"),
 			},
 		},
 		PrevHash: "prev", Hash: "hash",
@@ -160,7 +165,7 @@ func TestReader_TenantSelaluDariToken(t *testing.T) {
 func TestReader_CiphertextTakTerbukaTidakJadiBlobMentah(t *testing.T) {
 	e := entryDenganNIK(t, "pemkot-surabaya")
 	// Ciphertext dibuat untuk tenant lain, tapi entry-nya milik tenant ini.
-	e.Diff[1].Before = encB64(t, "pemkot-malang", "nik", "3578010101010001")
+	e.Diff[1].Before = encB64(t, "pemkot-malang", e.EntityID, "nik", "3578010101010001")
 	store := &fakeQueryStore{entries: []audit.AuditEntry{e}}
 	r := audit.NewReader(store, &testkit.MockCrypto{})
 
@@ -193,6 +198,30 @@ func TestReader_TanpaCryptoNilaiTetapTertutup(t *testing.T) {
 	s, _ := nik.Before.(string)
 	if strings.Contains(s, "3578010101010001") {
 		t.Fatal("NIK terbaca tanpa CryptoPort")
+	}
+}
+
+// TestReader_NilaiDiffEntityLainTidakTerbuka: nilai diff terikat ke baris yang dimutasi
+// (ADR-016), jadi blob yang dipindahkan ke entry entity LAIN tak boleh terbuka meski
+// pembacanya berhak dan tenantnya benar. Yang tampil adalah penanda, bukan nilai orang lain.
+func TestReader_NilaiDiffEntityLainTidakTerbuka(t *testing.T) {
+	e := entryDenganNIK(t, "pemkot-surabaya")
+	e.Diff[1].Before = encB64(t, "pemkot-surabaya", uuid.New(), "nik", "3578010101010001")
+	r := audit.NewReader(&fakeQueryStore{entries: []audit.AuditEntry{e}}, &testkit.MockCrypto{})
+
+	got, err := r.ByTenant(testkit.Ctx(t,
+		testkit.WithTenant("pemkot-surabaya"), testkit.WithPermission(audit.PermSensitiveBaca)))
+	if err != nil {
+		t.Fatalf("byTenant: %v", err)
+	}
+	nik := diffOf(t, got[0].Diff, "nik")
+	if nik.Before != audit.UndecryptableRaw {
+		t.Fatalf("nilai milik entry entity lain = %v, mau penanda tak terbuka", nik.Before)
+	}
+	// Nilai sisi lain yang memang milik entry ini tetap terbuka — kegagalan satu nilai tak
+	// boleh menutup seluruh entry.
+	if nik.After != "3578010101019999" {
+		t.Fatalf("nilai sah ikut tertutup: %v", nik.After)
 	}
 }
 

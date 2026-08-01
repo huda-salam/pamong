@@ -4,6 +4,11 @@
 Accepted — **memperluas ADR-009 §4** (menambah satu metode pada `port.CryptoPort`);
 tidak men-supersede ADR-009 maupun ADR-010, seluruh keputusan keduanya tetap berlaku.
 
+> **Sisa risiko di §Konsekuensi ("per-kolom, bukan per-baris") sudah DITUTUP oleh
+> [ADR-016](016-pengikatan-baris-ciphertext-aad.md)** (PR-3.8.9): identitas baris kini masuk
+> ke AAD. Keputusan ADR ini TIDAK digantikan — `PurposeOf` tetap satu-satunya yang menangkap
+> perpindahan blob antar KOLOM pada baris yang sama (AAD-nya identik di situ).
+
 ## Konteks
 ADR-009 §4 menetapkan seam kripto `port.CryptoPort` dengan tiga metode (`Encrypt`,
 `Decrypt`, `BlindIndex`), dan §3 menetapkan format ciphertext **self-describing**:
@@ -59,16 +64,18 @@ begitu driver diganti.
 - `PurposeOf` membocorkan purpose ke pemanggil tanpa kunci. Itu memang sudah tersimpan
   apa adanya di dalam blob (konsekuensi format ADR-009 §3), jadi tak ada informasi baru
   yang terbuka — nama konteks kunci bukan rahasia, isinya yang rahasia.
-- **Sisa risiko yang DISADARI: pengikatan ini per-kolom, bukan per-baris.** Yang ditutup
-  adalah perpindahan blob antar KOLOM. Menukar `nik_enc` + `nik_bidx` antar BARIS pada
-  tabel & tenant yang sama tetap lolos setiap pemeriksaan dan mendekripsi bersih — NIK
-  seseorang terbaca sebagai milik orang lain. Penyebabnya sama: AAD hanya mengikat tenant.
-  Penutupnya adalah mengikat identitas baris ke AAD, dan itu **bukan tambalan di lapis
-  repo** — ia mengubah kontrak `Encrypt`/`Decrypt`, merambat ke seluruh driver, mock, dan
-  jalur baca audit (yang harus ikut membawa `EntityID`), jadi ia PR tersendiri ber-ADR
-  sendiri. Catatan penjadwalannya: retrofit ini murah hanya selama belum ada data
-  produksi — sesudahnya ia berarti re-enkripsi seluruh baris berpengenal. Karena itu
-  gerbangnya keras: **sebelum tenant produksi pertama** (lihat ROADMAP 3.8).
+- ~~**Sisa risiko yang DISADARI: pengikatan ini per-kolom, bukan per-baris.**~~ **DITUTUP
+  ADR-016** (PR-3.8.9). Teks aslinya dipertahankan sebagai catatan bagaimana risiko itu
+  dikenali dan dijadwalkan: yang ditutup ADR ini adalah perpindahan blob antar KOLOM;
+  menukar `nik_enc` + `nik_bidx` antar BARIS pada tabel & tenant yang sama tetap lolos
+  setiap pemeriksaan dan mendekripsi bersih — NIK seseorang terbaca sebagai milik orang
+  lain. Penyebabnya sama: AAD hanya mengikat tenant. Penutupnya adalah mengikat identitas
+  baris ke AAD, dan itu **bukan tambalan di lapis repo** — ia mengubah kontrak
+  `Encrypt`/`Decrypt`, merambat ke seluruh driver, mock, dan jalur baca audit (yang harus
+  ikut membawa `EntityID`), jadi ia PR tersendiri ber-ADR sendiri. Catatan penjadwalannya:
+  retrofit ini murah hanya selama belum ada data produksi — sesudahnya ia berarti
+  re-enkripsi seluruh baris berpengenal. Karena itu gerbangnya keras: **sebelum tenant
+  produksi pertama** (lihat ROADMAP 3.8).
 
 ## Alternatif yang dipertimbangkan
 

@@ -31,14 +31,23 @@ import (
 // Format ciphertext field (ADR-009 §3) — self-describing agar rotasi kunci tidak butuh
 // migrasi data, dan agar Decrypt tak perlu diberi purpose:
 //
-//	byte 0        : versi format (ctFormatV1)
+//	byte 0        : versi format (ctFormatV2)
 //	byte 1        : panjang purpose (1..255)
 //	byte 2..      : purpose (key_id: konteks kunci, mis. "nik")
 //	4 byte  (BE)  : key_version — DEK mana yang membukanya
 //	12 byte       : nonce GCM (acak per-nilai)
 //	sisanya       : ciphertext + tag GCM
+//
+// record_id (ADR-016) TIDAK ada di dalam blob — hanya di AAD. Menyimpannya di sini akan
+// membatalkan gunanya: blob yang dipindah akan membawa serta "bukti" identitasnya sendiri.
+//
+// v1 (pra-ADR-016) memakai tata letak yang sama persis tapi AAD tanpa record_id. Ia masih
+// DIKENALI parser — sehingga PurposeOf menjawab dan jalur baca audit bisa menampilkan
+// penanda "tidak dapat dibuka" alih-alih blob mentah — tapi DITOLAK Decrypt: menerimanya
+// sama dengan menerima ciphertext tak terikat baris.
 const (
 	ctFormatV1     = 0x01
+	ctFormatV2     = 0x02
 	ctVersionBytes = 4
 )
 
@@ -123,11 +132,11 @@ func NewFromConfig(cfg *config.AppConfig, identityConn port.DBConn) (*Service, e
 
 // Encrypt — lihat port.CryptoPort. Nonce acak per-nilai: dua panggilan atas plaintext sama
 // menghasilkan ciphertext berbeda (karena itu equality memakai BlindIndex, bukan kolom _enc).
-func (s *Service) Encrypt(ctx context.Context, tenantID, purpose string, plain []byte) ([]byte, error) {
-	if err := validateRefInput(tenantID, purpose); err != nil {
+func (s *Service) Encrypt(ctx context.Context, ref port.FieldRef, plain []byte) ([]byte, error) {
+	if err := validateFieldRef(ref); err != nil {
 		return nil, err
 	}
-	version, dek, err := s.keys.ActiveKey(ctx, tenantID, purpose, KindEncryption)
+	version, dek, err := s.keys.ActiveKey(ctx, ref.TenantID, ref.Purpose, KindEncryption)
 	if err != nil {
 		return nil, err
 	}
@@ -140,26 +149,34 @@ func (s *Service) Encrypt(ctx context.Context, tenantID, purpose string, plain [
 		return nil, fmt.Errorf("crypto: gagal membangkitkan nonce: %w", err)
 	}
 
-	header := make([]byte, 0, 2+len(purpose)+ctVersionBytes+gcmNonceLen)
-	header = append(header, ctFormatV1, byte(len(purpose)))
-	header = append(header, purpose...)
+	header := make([]byte, 0, 2+len(ref.Purpose)+ctVersionBytes+gcmNonceLen)
+	header = append(header, ctFormatV2, byte(len(ref.Purpose)))
+	header = append(header, ref.Purpose...)
 	header = binary.BigEndian.AppendUint32(header, uint32(version))
 	header = append(header, nonce...)
 
-	return gcm.Seal(header, nonce, plain, fieldAAD(tenantID, purpose, version)), nil
+	return gcm.Seal(header, nonce, plain, fieldAAD(ref, version)), nil
 }
 
-// Decrypt — lihat port.CryptoPort. Ciphertext milik tenant lain gagal dibuka meski DEK-nya
-// tersedia di proses ini: tenantID ikut ke dalam AAD.
-func (s *Service) Decrypt(ctx context.Context, tenantID string, ct []byte) ([]byte, error) {
-	if tenantID == "" {
-		return nil, fmt.Errorf("crypto: Decrypt butuh tenantID (hierarki DEK per-tenant)")
+// Decrypt — lihat port.CryptoPort. Ciphertext milik tenant lain ATAU baris lain gagal
+// dibuka meski DEK-nya tersedia di proses ini: keduanya ikut ke dalam AAD (ADR-016).
+func (s *Service) Decrypt(ctx context.Context, ref port.RowRef, ct []byte) ([]byte, error) {
+	if err := validateRowRef(ref); err != nil {
+		return nil, err
 	}
-	purpose, version, nonce, payload, err := parseCiphertext(ct)
+	format, purpose, version, nonce, payload, err := parseCiphertext(ct)
 	if err != nil {
 		return nil, err
 	}
-	dek, err := s.keys.KeyByVersion(ctx, tenantID, purpose, KindEncryption, version)
+	// Blob pra-ADR-016 dikenali agar operator tahu yang dibutuhkan adalah RE-ENKRIPSI,
+	// bukan menebak antara "blob rusak" dan "kunci salah". Ia tetap ditolak: menerimanya
+	// berarti membiarkan celah pemindahan antar baris terbuka lewat pintu kompatibilitas.
+	if format == ctFormatV1 {
+		return nil, fmt.Errorf(
+			"%w: ciphertext format v1 (pra-pengikatan baris, ADR-016) — butuh re-enkripsi, purpose %q",
+			port.ErrCiphertextInvalid, purpose)
+	}
+	dek, err := s.keys.KeyByVersion(ctx, ref.TenantID, purpose, KindEncryption, version)
 	if err != nil {
 		return nil, err
 	}
@@ -167,11 +184,12 @@ func (s *Service) Decrypt(ctx context.Context, tenantID string, ct []byte) ([]by
 	if err != nil {
 		return nil, fmt.Errorf("crypto: %w", err)
 	}
-	plain, err := gcm.Open(nil, nonce, payload, fieldAAD(tenantID, purpose, version))
+	aad := fieldAAD(port.FieldRef{TenantID: ref.TenantID, Purpose: purpose, RecordID: ref.RecordID}, version)
+	plain, err := gcm.Open(nil, nonce, payload, aad)
 	if err != nil {
-		// Satu jawaban untuk semua sebab (kunci salah, tenant salah, blob dimodifikasi):
-		// membedakannya hanya akan membantu penyerang.
-		return nil, fmt.Errorf("%w: gagal dibuka untuk tenant %q purpose %q", port.ErrCiphertextInvalid, tenantID, purpose)
+		// Satu jawaban untuk semua sebab (kunci salah, tenant salah, BARIS salah, blob
+		// dimodifikasi): membedakannya hanya akan membantu penyerang.
+		return nil, fmt.Errorf("%w: gagal dibuka untuk tenant %q purpose %q", port.ErrCiphertextInvalid, ref.TenantID, purpose)
 	}
 	return plain, nil
 }
@@ -195,21 +213,35 @@ func (s *Service) BlindIndex(ctx context.Context, tenantID, purpose string, plai
 	return mac.Sum(nil), nil
 }
 
-// fieldAAD mengikat ciphertext ke (tenant, purpose, versi kunci).
+// fieldAAD mengikat ciphertext ke (tenant, purpose, versi kunci, BARIS) — ADR-016 §1.
 //
-// BATAS YANG HARUS DIPAHAMI: dari ketiganya, hanya tenantID yang datang dari LUAR blob
-// (diberikan pemanggil). purpose & version dibaca DARI blob itu sendiri — memang begitu
-// desainnya, supaya Decrypt tak perlu diberi purpose dan rotasi kunci tak butuh migrasi
-// format. Akibatnya AAD ini menegakkan pengikatan TENANT, bukan pengikatan KOLOM:
-// ciphertext `nik` yang disalin ke kolom `no_rekening_enc` MILIK TENANT YANG SAMA tetap
-// terbuka (isinya tetap NIK — nilainya tak bisa dipalsukan, tapi penempatannya bisa).
+// Dari keempatnya, tenantID & recordID datang dari LUAR blob (diberikan pemanggil);
+// purpose & version dibaca DARI blob itu sendiri, supaya Decrypt tak perlu diberi purpose
+// dan rotasi kunci tak butuh migrasi format (ADR-009 §3). Justru komponen yang disuplai
+// pemanggil-lah yang menegakkan sesuatu: blob yang dipindah ke tenant/baris lain akan
+// diminta dibuka dengan koordinat tujuan, yang bukan koordinat saat ia disegel.
 //
-// Penegakan kolom karena itu ada di lapis pemanggil, bukan di sini: repository (PR-3.8.3)
-// WAJIB membandingkan PurposeOf(ct) dengan purpose kolom yang sedang dibaca dan menolak
-// bila berbeda. Lihat PurposeOf.
-func fieldAAD(tenantID, purpose string, version int) []byte {
-	return []byte(fmt.Sprintf("pamong/field/v1|%s|%s|%d", tenantID, purpose, version))
+// BATAS YANG TETAP ADA: AAD ini TIDAK mengikat KOLOM. Memindahkan `nik_enc` ke
+// `no_rekening_enc` pada BARIS YANG SAMA menghasilkan AAD yang identik dan tetap terbuka.
+// Penegakan kolom ada di lapis pemanggil: repository WAJIB membandingkan PurposeOf(ct)
+// dengan purpose kolom yang sedang dibaca (ADR-015). Lihat PurposeOf.
+//
+// Setiap komponen ditulis ber-length-prefix, bukan digabung dengan pemisah: recordID tak
+// selamanya UUID (jalur idempotency ber-kunci string dari klien), dan nilai yang memuat
+// karakter pemisah bisa menghasilkan AAD yang sama untuk dua koordinat berbeda.
+func fieldAAD(ref port.FieldRef, version int) []byte {
+	out := make([]byte, 0, 64+len(ref.TenantID)+len(ref.Purpose)+len(ref.RecordID))
+	out = append(out, aadPrefix...)
+	for _, part := range []string{ref.TenantID, ref.Purpose, ref.RecordID} {
+		out = binary.BigEndian.AppendUint32(out, uint32(len(part)))
+		out = append(out, part...)
+	}
+	return binary.BigEndian.AppendUint32(out, uint32(version))
 }
+
+// aadPrefix menandai domain AAD. Ia ikut naik versi bersama format ciphertext supaya blob
+// v1 tak akan pernah kebetulan cocok dengan AAD v2.
+const aadPrefix = "pamong/field/v2"
 
 // PurposeOf — lihat port.CryptoPort. Membaca purpose dari header ciphertext tanpa kunci
 // maupun I/O, sehingga lapis repository bisa menegakkan pengikatan kolom yang TIDAK bisa
@@ -222,32 +254,37 @@ func (s *Service) PurposeOf(ct []byte) (string, error) {
 }
 
 // PurposeOf versi fungsi paket — dipakai internal & alat baris perintah yang hanya punya blob.
+//
+// Sengaja MENJAWAB juga untuk blob v1 (pra-ADR-016): pemeriksaan pengikatan kolom di repo
+// dan pengenalan "nilai ini sensitif" di jalur baca audit harus tetap bekerja atas data
+// lama, supaya blob lama berakhir sebagai penanda "tidak dapat dibuka" — bukan tampil
+// sebagai nilai biasa. Penolakannya terjadi di Decrypt, bukan di sini.
 func PurposeOf(ct []byte) (string, error) {
-	purpose, _, _, _, err := parseCiphertext(ct)
+	_, purpose, _, _, _, err := parseCiphertext(ct)
 	return purpose, err
 }
 
-func parseCiphertext(ct []byte) (purpose string, version int, nonce, payload []byte, err error) {
+func parseCiphertext(ct []byte) (format byte, purpose string, version int, nonce, payload []byte, err error) {
 	// Minimal: header(2) + purpose(≥1) + version(4) + nonce(12) + tag(16).
 	if len(ct) < 2 {
-		return "", 0, nil, nil, fmt.Errorf("%w: terlalu pendek (%d byte)", port.ErrCiphertextInvalid, len(ct))
+		return 0, "", 0, nil, nil, fmt.Errorf("%w: terlalu pendek (%d byte)", port.ErrCiphertextInvalid, len(ct))
 	}
-	if ct[0] != ctFormatV1 {
-		return "", 0, nil, nil, fmt.Errorf("%w: versi format tak dikenal (%#x)", port.ErrCiphertextInvalid, ct[0])
+	if ct[0] != ctFormatV1 && ct[0] != ctFormatV2 {
+		return 0, "", 0, nil, nil, fmt.Errorf("%w: versi format tak dikenal (%#x)", port.ErrCiphertextInvalid, ct[0])
 	}
 	purposeLen := int(ct[1])
 	if purposeLen == 0 {
-		return "", 0, nil, nil, fmt.Errorf("%w: purpose kosong", port.ErrCiphertextInvalid)
+		return 0, "", 0, nil, nil, fmt.Errorf("%w: purpose kosong", port.ErrCiphertextInvalid)
 	}
 	head := 2 + purposeLen + ctVersionBytes + gcmNonceLen
 	if len(ct) <= head {
-		return "", 0, nil, nil, fmt.Errorf("%w: header terpotong", port.ErrCiphertextInvalid)
+		return 0, "", 0, nil, nil, fmt.Errorf("%w: header terpotong", port.ErrCiphertextInvalid)
 	}
 	purpose = string(ct[2 : 2+purposeLen])
 	version = int(binary.BigEndian.Uint32(ct[2+purposeLen : 2+purposeLen+ctVersionBytes]))
 	nonce = ct[2+purposeLen+ctVersionBytes : head]
 	payload = ct[head:]
-	return purpose, version, nonce, payload, nil
+	return ct[0], purpose, version, nonce, payload, nil
 }
 
 // purposeMaxLen mengikuti batas satu byte panjang di header ciphertext; nama purpose adalah
@@ -263,6 +300,30 @@ func validateRefInput(tenantID, purpose string) error {
 	}
 	if len(purpose) > purposeMaxLen {
 		return fmt.Errorf("crypto: purpose maksimal %d byte, bukan %d", purposeMaxLen, len(purpose))
+	}
+	return nil
+}
+
+// validateFieldRef & validateRowRef menjaga koordinat lengkap sebelum kripto berjalan.
+// RecordID kosong GAGAL, tidak pernah diperlakukan sebagai nilai default: hasilnya akan
+// menjadi nilai yang bisa dipindah ke baris mana pun, dan kegagalan itu tak terlihat
+// sampai seseorang memindahkannya (ADR-016 §6).
+func validateFieldRef(ref port.FieldRef) error {
+	if err := validateRefInput(ref.TenantID, ref.Purpose); err != nil {
+		return err
+	}
+	if ref.RecordID == "" {
+		return fmt.Errorf("crypto: RecordID wajib (pengikatan baris, ADR-016)")
+	}
+	return nil
+}
+
+func validateRowRef(ref port.RowRef) error {
+	if ref.TenantID == "" {
+		return fmt.Errorf("crypto: Decrypt butuh tenantID (hierarki DEK per-tenant)")
+	}
+	if ref.RecordID == "" {
+		return fmt.Errorf("crypto: Decrypt butuh RecordID (pengikatan baris, ADR-016)")
 	}
 	return nil
 }

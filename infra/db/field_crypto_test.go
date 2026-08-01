@@ -1,7 +1,9 @@
 package db
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -169,11 +171,13 @@ func TestSave_KolomTerenkripsiJadiEncDanBidx(t *testing.T) {
 
 func TestFindByID_MendekripsiKolomTerenkripsi(t *testing.T) {
 	mock := testkit.NewMockCrypto()
-	ct, err := mock.Encrypt(tenantCtx(), "pemkot-surabaya", "nik", []byte("3578010101010001"))
+	id := uuid.New()
+	ct, err := mock.Encrypt(tenantCtx(), port.FieldRef{
+		TenantID: "pemkot-surabaya", Purpose: "nik", RecordID: id.String(),
+	}, []byte("3578010101010001"))
 	if err != nil {
 		t.Fatalf("siapkan ciphertext: %v", err)
 	}
-	id := uuid.New()
 	conn := &fakeCryptoConn{row: scriptedRow{values: []any{id, "Budi", ct, 1}}}
 	repo, err := NewSQLRepository[pegawai](conn, pegawaiMapper{},
 		WithFieldCrypto(mock, FieldCryptoFromEntity(pegawaiDef())))
@@ -200,20 +204,140 @@ func TestFindByID_MendekripsiKolomTerenkripsi(t *testing.T) {
 // (lihat crypto.fieldAAD): blob ber-purpose lain yang disalin ke kolom ini harus ditolak.
 func TestFindByID_TolakCiphertextPindahKolom(t *testing.T) {
 	mock := testkit.NewMockCrypto()
-	asing, err := mock.Encrypt(tenantCtx(), "pemkot-surabaya", "no_rekening", []byte("1234567890"))
+	id := uuid.New()
+	// Sengaja BARIS YANG SAMA: AAD-nya identik (ADR-016 tak terpicu), jadi yang harus
+	// menangkap perpindahan ini semata-mata pemeriksaan purpose ADR-015.
+	asing, err := mock.Encrypt(tenantCtx(), port.FieldRef{
+		TenantID: "pemkot-surabaya", Purpose: "no_rekening", RecordID: id.String(),
+	}, []byte("1234567890"))
 	if err != nil {
 		t.Fatalf("siapkan ciphertext: %v", err)
 	}
-	conn := &fakeCryptoConn{row: scriptedRow{values: []any{uuid.New(), "Budi", asing, 1}}}
+	conn := &fakeCryptoConn{row: scriptedRow{values: []any{id, "Budi", asing, 1}}}
 	repo, err := NewSQLRepository[pegawai](conn, pegawaiMapper{},
 		WithFieldCrypto(mock, FieldCryptoFromEntity(pegawaiDef())))
 	if err != nil {
 		t.Fatalf("repo: %v", err)
 	}
 
-	_, err = repo.FindByID(tenantCtx(), uuid.New())
+	_, err = repo.FindByID(tenantCtx(), id)
 	if err == nil || !strings.Contains(err.Error(), "dipindah antar kolom") {
 		t.Fatalf("err = %v, mau penolakan purpose tak cocok", err)
+	}
+}
+
+// --- ADR-016: pengikatan baris ---
+
+// TestFindByID_TolakCiphertextPindahBaris menutup sisa risiko yang dicatat ADR-015: blob
+// yang dipindah ke BARIS lain lolos pemeriksaan purpose (purpose-nya benar) dan hanya
+// tertangkap oleh AAD ber-record_id.
+func TestFindByID_TolakCiphertextPindahBaris(t *testing.T) {
+	mock := testkit.NewMockCrypto()
+	budi, siti := uuid.New(), uuid.New()
+	ctSiti, err := mock.Encrypt(tenantCtx(), port.FieldRef{
+		TenantID: "pemkot-surabaya", Purpose: "nik", RecordID: siti.String(),
+	}, []byte("3578010101010002"))
+	if err != nil {
+		t.Fatalf("siapkan ciphertext: %v", err)
+	}
+
+	// Baris Budi, tapi nik_enc milik Siti — hasil `UPDATE ... SET nik_enc = (SELECT ...)`.
+	conn := &fakeCryptoConn{row: scriptedRow{values: []any{budi, "Budi", ctSiti, 1}}}
+	repo, err := NewSQLRepository[pegawai](conn, pegawaiMapper{},
+		WithFieldCrypto(mock, FieldCryptoFromEntity(pegawaiDef())))
+	if err != nil {
+		t.Fatalf("repo: %v", err)
+	}
+
+	got, err := repo.FindByID(tenantCtx(), budi)
+	if err == nil {
+		t.Fatalf("nik milik baris lain harus GAGAL dibaca, malah dapat %+v", got)
+	}
+	if !strings.Contains(err.Error(), "dekripsi kolom nik") {
+		t.Fatalf("err = %v, mau kegagalan dekripsi karena pengikatan baris", err)
+	}
+}
+
+// TestSave_CiphertextTerikatBarisYangMenulisnya mengunci sisi TULIS: nilai yang disimpan
+// tak boleh bisa dibuka dengan id baris lain. Tanpa ini, pengikatan bisa "hilang" di jalur
+// tulis tanpa satu pun test baca yang gagal.
+func TestSave_CiphertextTerikatBarisYangMenulisnya(t *testing.T) {
+	mock := testkit.NewMockCrypto()
+	conn := &fakeCryptoConn{}
+	repo, err := NewSQLRepository[pegawai](conn, pegawaiMapper{},
+		WithFieldCrypto(mock, FieldCryptoFromEntity(pegawaiDef())))
+	if err != nil {
+		t.Fatalf("repo: %v", err)
+	}
+
+	p := &pegawai{ID: uuid.New(), Nama: "Budi", NIK: "3578010101010001"}
+	if err := repo.Save(tenantCtx(), p); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	ct, ok := conn.execs[0].args[2].([]byte) // urutan: id, nama, nik_enc, nik_bidx
+	if !ok {
+		t.Fatalf("argumen nik_enc bertipe %T, mau []byte", conn.execs[0].args[2])
+	}
+
+	if _, err := mock.Decrypt(tenantCtx(), port.RowRef{
+		TenantID: "pemkot-surabaya", RecordID: uuid.New().String(),
+	}, ct); !errors.Is(err, port.ErrCiphertextInvalid) {
+		t.Fatalf("ciphertext harus terikat baris penulisnya, dibuka baris lain err = %v", err)
+	}
+	got, err := mock.Decrypt(tenantCtx(), port.RowRef{
+		TenantID: "pemkot-surabaya", RecordID: p.ID.String(),
+	}, ct)
+	if err != nil || string(got) != "3578010101010001" {
+		t.Fatalf("baris sendiri harus tetap bisa membuka: %q, %v", got, err)
+	}
+}
+
+// TestSave_EntityTanpaIDDitolak: id nil berarti nilai terikat ke "baris kosong" dan karena
+// itu dapat dipindah ke baris kosong mana pun. Harus gagal sebelum menyentuh DB.
+func TestSave_EntityTanpaIDDitolak(t *testing.T) {
+	conn := &fakeCryptoConn{}
+	repo := cryptoRepo(t, conn)
+
+	err := repo.Save(tenantCtx(), &pegawai{Nama: "Budi", NIK: "3578010101010001"})
+	if err == nil || !strings.Contains(err.Error(), "tanpa id") {
+		t.Fatalf("err = %v, mau penolakan entity tanpa id", err)
+	}
+	if len(conn.execs) != 0 {
+		t.Fatal("tidak boleh ada INSERT saat entity tak ber-id")
+	}
+}
+
+// TestList_BlindIndexTidakTerikatBaris menjaga syarat ADR-016 §3. Kalau blind index ikut
+// ber-baris, nilainya akan berbeda tiap pemanggilan dan `WHERE nik_bidx = $1` tak akan
+// pernah cocok — pencarian & UNIQUE mati diam-diam, bukan gagal lantang.
+func TestList_BlindIndexTidakTerikatBaris(t *testing.T) {
+	mock := testkit.NewMockCrypto()
+	conn := &fakeCryptoConn{}
+	repo, err := NewSQLRepository[pegawai](conn, pegawaiMapper{},
+		WithFieldCrypto(mock, FieldCryptoFromEntity(pegawaiDef())))
+	if err != nil {
+		t.Fatalf("repo: %v", err)
+	}
+
+	const nik = "3578010101010001"
+	// Dua baris berbeda, nilai NIK sama → blind index WAJIB sama.
+	for _, id := range []uuid.UUID{uuid.New(), uuid.New()} {
+		if err := repo.Save(tenantCtx(), &pegawai{ID: id, Nama: "Budi", NIK: nik}); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+	b1, _ := conn.execs[0].args[3].([]byte)
+	b2, _ := conn.execs[1].args[3].([]byte)
+	if len(b1) == 0 || !bytes.Equal(b1, b2) {
+		t.Fatalf("blind index harus row-independent: %x vs %x", b1, b2)
+	}
+
+	// Dan nilai yang dicari lewat filter harus cocok dengan yang tersimpan.
+	conn.row = scriptedRow{values: []any{int64(0)}}
+	_, _ = repo.List(tenantCtx(), port.ListFilter{Filters: map[string]any{"nik": nik}})
+	bFilter, _ := conn.queries[0].args[0].([]byte)
+	if !bytes.Equal(b1, bFilter) {
+		t.Fatalf("blind index filter (%x) tak cocok dengan yang disimpan (%x) — lookup tak akan pernah menemukan baris", bFilter, b1)
 	}
 }
 

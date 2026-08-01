@@ -5,10 +5,10 @@ Driven adapter: implementasi `port.CryptoPort` (ADR-009). Enkripsi field selekti
 KEK→DEK dengan KMS (ADR-010). SENSITIF — perubahan menyentuh keamanan data pribadi.
 
 ## Status
-IMPLEMENTED (PR-3.8.2): driver `static` + `local`, custody `platform`. BELUM di-wire ke lapis
-repository — enkripsi transparan dari `FieldDef.Class` adalah PR-3.8.3, jadi belum ada kolom
-produksi terenkripsi. Custody `tenant` + KMS eksternal = PR-3.8.8 (cukup `RegisterProvider` +
-satu `CustodyProvider`, tanpa ubah kode di sini).
+IMPLEMENTED: driver `static` + `local`, custody `platform` (PR-3.8.2); sudah di-wire ke lapis
+repository lewat `infra/db` (PR-3.8.3/3.8.4); ciphertext terikat BARIS (PR-3.8.9, ADR-016 —
+format `0x02`, blob `0x01` ditolak `Decrypt`). Custody `tenant` + KMS eksternal = PR-3.8.8
+(cukup `RegisterProvider` + satu `CustodyProvider`, tanpa ubah kode di sini).
 
 ## Bergantung pada
 - port/crypto.go; core/config (driver & master key); port.DBConn ke IDENTITY DB
@@ -52,6 +52,19 @@ Driver KMS eksternal (vault/aws-kms/bssn) masuk sebagai file/paket baru yang mem
 
 ## Konvensi khusus
 - `purpose` memisahkan konteks kunci (mis. "nik" vs "no_rekening") tanpa ubah port.
+- **AAD mengikat (tenant, purpose, key_version, record_id)** — ADR-016. tenant & record_id
+  disuplai pemanggil (`port.FieldRef`/`port.RowRef`); purpose & versi dibaca dari blob.
+  Yang menegakkan justru komponen dari pemanggil: blob yang dipindah diminta dibuka dengan
+  koordinat tujuan. `record_id` TIDAK disimpan di blob — kalau disimpan, blob yang dipindah
+  membawa serta "bukti" identitasnya sendiri dan pengikatan jadi tak berarti.
+- Komponen AAD ditulis ber-length-prefix (`uint32(len) || bytes`), bukan digabung dengan
+  pemisah: `record_id` tak selamanya UUID, dan pemisah polos membuat dua koordinat berbeda
+  bisa menghasilkan AAD yang sama.
+- `BlindIndex` sengaja TIDAK menerima `FieldRef` — ia wajib row-independent (ADR-016 §3).
+- Format ciphertext `0x01` (pra-ADR-016) masih DIKENALI parser (agar `PurposeOf` menjawab &
+  jalur baca audit menampilkan penanda, bukan blob mentah) tapi DITOLAK `Decrypt` dengan
+  pesan yang menyebut re-enkripsi. Jangan "melonggarkan demi kompatibilitas": menerima v1 =
+  menerima ciphertext tak terikat baris.
 - Kunci blind-index TERPISAH dari kunci enkripsi (`kind` di id.data_keys: enc vs bidx), BUKAN
   turunan satu DEK — kalau diturunkan, rotasi kunci enkripsi ikut memaksa reindex.
   Rotasi bidx = reindex seluruh baris (mahal, hanya saat kompromi).
@@ -70,6 +83,9 @@ Driver KMS eksternal (vault/aws-kms/bssn) masuk sebagai file/paket baru yang mem
 ## Pitfall umum
 - Deterministic encryption untuk equality (membocorkan kesamaan nilai) — pakai GCM + blind
   index, bukan itu.
+- Menaruh `record_id` ke dalam BLOB alih-alih AAD "supaya self-describing" — itu tidak
+  mengamankan apa pun (ADR-016 §Alternatif), hanya memindahkan pemeriksaan ke lapis
+  aplikasi yang bisa dilangkahi jalur tulis mana pun yang lupa memeriksanya.
 - Menyimpan DEK ter-wrap di tenant DB (dump membuka jalan) — DEK di sentral/KMS.
 - Lupa menutup jalur kebocoran samping (audit diff, event, idempotency, log) — enkripsi
   kolom saja = teater keamanan (ADR-009 §6).
@@ -84,4 +100,5 @@ Driver KMS eksternal (vault/aws-kms/bssn) masuk sebagai file/paket baru yang mem
   `PAMONG_TEST_DB_DSN=... go test ./infra/crypto/... -tags=integration -p 1`
 
 ## Rujukan
-- PRD.md, port/crypto.go, docs/adr/009-*, docs/adr/010-*, ADR-002 (audit diff)
+- PRD.md, port/crypto.go, docs/adr/009-*, docs/adr/010-*, docs/adr/015-* (pengikatan
+  kolom), docs/adr/016-* (pengikatan baris), ADR-002 (audit diff)

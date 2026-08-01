@@ -111,12 +111,16 @@ func (r *Reader) reveal(actx port.AuthContext, entries []AuditEntry) []VisibleEn
 
 	out := make([]VisibleEntry, 0, len(entries))
 	for _, e := range entries {
+		// Nilai diff terikat ke BARIS yang dimutasi (ADR-016), sama seperti kolom aslinya —
+		// jadi koordinat baca harus dibangun dari entry itu sendiri, tak pernah dari
+		// parameter pemanggil.
+		ref := port.RowRef{TenantID: e.TenantID, RecordID: e.EntityID.String()}
 		diff := make([]FieldDiff, len(e.Diff))
 		for i, d := range e.Diff {
 			diff[i] = FieldDiff{
 				Field:  d.Field,
-				Before: r.revealValue(actx, e.TenantID, d.Before, boleh),
-				After:  r.revealValue(actx, e.TenantID, d.After, boleh),
+				Before: r.revealValue(actx, ref, d.Before, boleh),
+				After:  r.revealValue(actx, ref, d.After, boleh),
 			}
 		}
 		out = append(out, VisibleEntry{
@@ -134,7 +138,7 @@ func (r *Reader) reveal(actx port.AuthContext, entries []AuditEntry) []VisibleEn
 // dikenali PurposeOf — bukan klasifikasi field yang dibaca ulang saat baca. Ini disengaja:
 // class sebuah field bisa berubah setelah entry lama tertulis, dan jejak audit harus tetap
 // diperlakukan sesuai apa yang BENAR-BENAR tersimpan di dalamnya.
-func (r *Reader) revealValue(ctx context.Context, tenantID string, v any, boleh bool) any {
+func (r *Reader) revealValue(ctx context.Context, ref port.RowRef, v any, boleh bool) any {
 	s, ok := v.(string)
 	if !ok || s == "" || r.crypto == nil {
 		return v
@@ -149,10 +153,11 @@ func (r *Reader) revealValue(ctx context.Context, tenantID string, v any, boleh 
 	if !boleh {
 		return HiddenSensitive
 	}
-	plain, err := r.crypto.Decrypt(ctx, tenantID, ct)
+	plain, err := r.crypto.Decrypt(ctx, ref, ct)
 	if err != nil {
-		// Kunci tenant lain / kunci hilang / blob rusak. Jangan pernah mengembalikan blob
-		// mentah sebagai "nilai" — itu menyamarkan kegagalan sebagai data.
+		// Kunci tenant lain / kunci hilang / blob rusak / blob milik entry entity LAIN
+		// (ADR-016) / blob format lama pra-pengikatan baris. Jangan pernah mengembalikan
+		// blob mentah sebagai "nilai" — itu menyamarkan kegagalan sebagai data.
 		return UndecryptableRaw
 	}
 	return string(plain)

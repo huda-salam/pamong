@@ -765,6 +765,13 @@ Pemetaan kolom logis → fisik ditegakkan **transparan di lapis repository** (`i
 PR-3.8.3/3.8.4), bukan dipanggil use case: filter equality dialihkan ke `_bidx`, sort atas kolom
 terenkripsi ditolak, dan diff audit memakai bentuk yang sudah di-mask.
 
+Isi `_enc` **terikat pada barisnya**: id baris ikut ke AAD ciphertext (ADR-016), sehingga blob
+yang dipindah ke baris lain lewat `UPDATE` langsung GAGAL dibuka. `record_id` itu ada di AAD
+saja — tidak disimpan di dalam blob, karena blob yang membawa serta identitasnya sendiri akan
+tetap terbuka di mana pun ia dipasang. Format ciphertext yang berlaku adalah `0x02`; blob `0x01`
+(pra-pengikatan baris) ditolak dan butuh re-enkripsi. `_bidx` sengaja TIDAK terikat baris —
+kalau ikut, `WHERE {f}_bidx = $1` berhenti cocok dan `UNIQUE` berhenti menangkap duplikat.
+
 **`tenant_id` di tenant DB**: hanya dipakai bila ada alasan spesifik (partisi hash chain audit,
 scope resolver, kompatibilitas single-DB). Default: tidak perlu.
 

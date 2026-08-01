@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/huda-salam/pamong/core/domain"
 	"github.com/huda-salam/pamong/port"
 )
@@ -124,13 +125,22 @@ func (f *fieldCrypto) readColumns() []string {
 // ciphertext (+ blind index). Nilai KOSONG disimpan NULL di kedua kolom — bukan ciphertext
 // dari string kosong: blind index atas nilai kosong akan menandai baris mana yang kosong,
 // dan UNIQUE-nya akan menolak baris kosong kedua.
-func (f *fieldCrypto) writeValues(ctx context.Context, values []any) ([]any, error) {
+//
+// recordID adalah id baris pemilik nilai; ia masuk ke AAD (ADR-016) sehingga ciphertext
+// yang dipindah ke baris lain tak bisa dibuka. Blind index sengaja TIDAK menerimanya —
+// ia harus row-independent agar equality & UNIQUE tetap bekerja.
+func (f *fieldCrypto) writeValues(ctx context.Context, recordID uuid.UUID, values []any) ([]any, error) {
 	if len(values) != len(f.order) {
 		return nil, fmt.Errorf("field crypto: jumlah nilai (%d) tak sama dengan kolom (%d)", len(values), len(f.order))
 	}
 	tenantID, err := f.tenant(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if recordID == uuid.Nil {
+		// Entity tanpa id belum boleh menyentuh kripto: nilainya akan terikat ke baris
+		// "kosong" dan karena itu bisa dipindah ke baris kosong mana pun.
+		return nil, fmt.Errorf("field crypto: entity tanpa id tidak bisa dienkripsi (pengikatan baris, ADR-016)")
 	}
 
 	out := make([]any, 0, len(values)+len(f.byColumn))
@@ -151,7 +161,9 @@ func (f *fieldCrypto) writeValues(ctx context.Context, values []any) ([]any, err
 			}
 			continue
 		}
-		ct, err := f.crypto.Encrypt(ctx, tenantID, s.Purpose, plain)
+		ct, err := f.crypto.Encrypt(ctx, port.FieldRef{
+			TenantID: tenantID, Purpose: s.Purpose, RecordID: recordID.String(),
+		}, plain)
 		if err != nil {
 			return nil, fmt.Errorf("enkripsi kolom %s: %w", col, err)
 		}
@@ -275,6 +287,16 @@ func (s *decryptingScanner) Scan(dest ...any) error {
 		return err
 	}
 
+	// Identitas baris diambil dari BARIS ITU SENDIRI, bukan dari pemanggil — dan justru itu
+	// yang membuat pengikatan ADR-016 bekerja di jalur baca: blob yang dipindah ke baris lain
+	// akan diminta dibuka dengan id baris tujuan, yang bukan id saat ia disegel.
+	var recordID uuid.UUID
+	if len(holders) > 0 {
+		if recordID, err = scannedID(dest[0]); err != nil {
+			return err
+		}
+	}
+
 	for pos, raw := range holders {
 		col := s.columns[pos-1]
 		spec, _ := s.fc.spec(col)
@@ -294,7 +316,9 @@ func (s *decryptingScanner) Scan(dest ...any) error {
 				"kolom %s memuat ciphertext ber-purpose %q, bukan %q — data dipindah antar kolom",
 				col, gotPurpose, spec.Purpose)
 		}
-		plain, err := s.fc.crypto.Decrypt(s.ctx, tenantID, *raw)
+		plain, err := s.fc.crypto.Decrypt(s.ctx, port.RowRef{
+			TenantID: tenantID, RecordID: recordID.String(),
+		}, *raw)
 		if err != nil {
 			return fmt.Errorf("dekripsi kolom %s: %w", col, err)
 		}
@@ -303,6 +327,22 @@ func (s *decryptingScanner) Scan(dest ...any) error {
 		}
 	}
 	return nil
+}
+
+// scannedID membaca id baris dari pointer tujuan pertama milik Mapper. Kontrak Mapper.Scan
+// menetapkan urutan "id, data..., version" dan id framework selalu UUID, jadi tipe lain di
+// sini berarti Mapper menyimpang dari kontrak — kondisi yang harus berisik: tanpa id yang
+// benar, seluruh pengikatan baris (ADR-016) diam-diam tak punya arti.
+func scannedID(dest any) (uuid.UUID, error) {
+	id, ok := dest.(*uuid.UUID)
+	if !ok {
+		return uuid.Nil, fmt.Errorf(
+			"field crypto: tujuan scan kolom id bertipe %T, bukan *uuid.UUID (kontrak Mapper.Scan: id, data..., version)", dest)
+	}
+	if *id == uuid.Nil {
+		return uuid.Nil, fmt.Errorf("field crypto: baris tanpa id tidak bisa didekripsi (pengikatan baris, ADR-016)")
+	}
+	return *id, nil
 }
 
 // assignPlaintext menulis hasil dekripsi ke pointer tujuan milik Mapper.

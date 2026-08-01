@@ -286,6 +286,12 @@ kebutuhannya dibangun (keputusan user 2026-07-27) — bukan bug aktif, tapi jang
   per-tenant dari registry, `key_custody='tenant'` ditolak lantang (`ErrCustodyUnsupported`).
 - TERSISA: driver KMS produksi + mode custody `tenant` (PR-3.8.8); escrow/exit kunci Tier 3
   (kontrak, bukan kode); rotasi belum punya jalur operasi (CLI re-wrap) — masih manual SQL.
+- **DITUTUP di PR-3.8.9 (ADR-016):** AAD kini mengikat `(tenant, purpose, key_version,
+  record_id)`, sehingga ciphertext yang dipindah antar BARIS gagal dibuka. `PurposeOf`
+  (ADR-015) tetap dibutuhkan untuk perpindahan antar KOLOM pada baris yang sama. Format
+  ciphertext naik ke `0x02`; blob `0x01` ditolak `Decrypt` dengan pesan yang menyebut
+  re-enkripsi. Sisa risiko yang diterima sadar: pertukaran `_bidx` SAJA antar baris
+  (integritas indeks, bukan kebocoran) — lihat ADR-016 §Konsekuensi.
 - **BATAS yang harus diperiksa saat PR-3.8.3 (jangan dianggap sudah ditutup):** AAD ciphertext
   field hanya mengikat TENANT. purpose & key_version dibaca dari blob itu sendiri (konsekuensi
   sadar format self-describing), sehingga ciphertext bisa dipindah antar KOLOM dalam satu

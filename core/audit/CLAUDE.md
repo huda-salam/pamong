@@ -40,6 +40,11 @@ kode audit. Kebutuhan paling ketat untuk sistem pemerintahan (temuan BPK).
 - `Reader` mengenali nilai sensitif dari BENTUKNYA (ciphertext framework, lewat `PurposeOf`),
   bukan dengan membaca ulang class field. Class sebuah field bisa berubah setelah entry lama
   tertulis; jejak audit harus diperlakukan sesuai apa yang benar-benar tersimpan.
+- **Nilai diff terikat ke baris yang dimutasi** (ADR-016): `Reader` membangun koordinat baca
+  dari `AuditEntry.EntityID`, tak pernah dari parameter pemanggil. Akibatnya nilai yang
+  dipindah ke entry entity LAIN tampil sebagai `UndecryptableRaw`. Perpindahan antar entry
+  pada entity yang SAMA tetap mungkin dari sisi kripto — itu wilayah hash chain (ADR-002),
+  yang putus bila baris audit disentuh. Dua lapis untuk dua sisi ancaman berbeda.
 - Tanpa permission, entry TETAP tampil — hanya nilai pengenalnya tertutup. Menyembunyikan
   entry utuh akan merusak fungsi audit itu sendiri.
 - `tenant_id` untuk pembacaan selalu dari AuthContext, tak pernah parameter pemanggil.
@@ -60,3 +65,4 @@ kode audit. Kebutuhan paling ketat untuk sistem pemerintahan (temuan BPK).
 
 ## Rujukan
 - PRD.md, core/domain/PRD.md (Auditable), CODING_PHILOSOPHY.md #4
+- ADR-002 (audit diff & hash chain), ADR-009 §6, ADR-015/ADR-016 (pengikatan ciphertext)

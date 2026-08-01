@@ -674,8 +674,7 @@ pluggable + custody sebagai kebijakan per-tenant).
   - Inventaris field ber-`Class` dari manifest — artefak kepatuhan UU PDP yang tak basi.
   - DoD: `pamongctl` regenerate; diff PR menampilkan perubahan klasifikasi.
 
-- **PR-3.8.9** Pengikatan BARIS ke AAD ← 3.8.3 (sisa risiko ADR-015) — **gerbang keras:
-  sebelum tenant produksi pertama**
+- **PR-3.8.9** Pengikatan BARIS ke AAD ← 3.8.3 (sisa risiko ADR-015) ✅
   - ADR-015 menutup perpindahan ciphertext antar KOLOM lewat `PurposeOf`. Antar BARIS masih
     lolos: menukar `nik_enc`+`nik_bidx` dua pegawai dalam tenant yang sama mendekripsi bersih,
     dan NIK seseorang terbaca sebagai milik orang lain. Sebabnya sama — AAD hanya mengikat
@@ -687,7 +686,30 @@ pluggable + custody sebagai kebijakan per-tenant).
     data produksi ia berarti re-enkripsi seluruh baris berpengenal di semua tenant.
   - DoD: menukar pasangan `_enc`/`_bidx` antar baris lewat SQL langsung membuat pembacaan
     GAGAL (test integrasi, bukan unit); blind index tetap row-independent agar pencarian &
-    UNIQUE tak rusak.
+    UNIQUE tak rusak. ✅
+  - **SELESAI (ADR-016).** Dikerjakan MENDAHULUI 3.8.5/3.8.6 secara sadar: ia mengubah
+    kontrak port, sedangkan kedua PR itu justru MENAMBAH pemanggil kontrak tersebut
+    (identity, payload event, idempotency). Saat mendarat, pemanggil produksinya tepat empat.
+  - Yang berdiri: `port.FieldRef`/`port.RowRef` menggantikan parameter string di
+    `Encrypt`/`Decrypt`; AAD `(tenant, purpose, key_version, record_id)` ber-length-prefix
+    (pemisah polos ambigu — `record_id` tak selamanya UUID); format ciphertext naik
+    `0x01`→`0x02` dengan v1 DIKENALI parser tapi DITOLAK `Decrypt` (pesan menyebut
+    re-enkripsi, bukan "blob rusak"); `record_id` di AAD SAJA, tak pernah di blob.
+    `BlindIndex` sengaja tak berubah (wajib row-independent). Jalur baca repo mengambil
+    identitas baris dari BARIS ITU SENDIRI (`dest[0]`), jalur audit dari `EntityID`.
+  - DoD terpenuhi di DB nyata (`TestFieldCrypto_CiphertextDipindahAntarBarisDitolak`): tukar
+    konsisten `_enc`+`_bidx` pada kolom non-Unique → baca GAGAL; pada kolom Unique, tukar
+    konsisten justru ditolak DB sendiri (UNIQUE `_bidx` bentrok di tengah statement) sehingga
+    yang diuji adalah pemindahan `_enc` saja → juga GAGAL.
+    `TestFieldCrypto_BlindIndexTetapRowIndependent` menjaga lookup & UNIQUE tak ikut mati.
+  - Empat mutasi kode produksi diverifikasi MEMBUAT test gagal: (1) buang `record_id` dari
+    AAD → test tukar-baris gagal; (2) terima format v1 → test penolakan v1 gagal; (3) blind
+    index ikut ber-baris di jalur tulis → 1 unit + 3 integrasi gagal; (4) `MockCrypto`
+    berhenti mengikat → 4 test lapis atas gagal (mock terbukti bukan hiasan).
+  - **Sisa risiko yang DIPUTUSKAN diterima:** menukar `_bidx` SAJA antar baris tetap mungkin
+    → pencarian menemukan baris salah, tapi nilai yang dibaca tetap milik baris itu
+    (integritas indeks, bukan kebocoran/atribusi palsu). Penutupnya butuh blind index
+    ber-baris = menghapus kegunaannya. Wilayah kontrol akses tulis DB + rekonsiliasi.
 
 > KMS = driver ber-registry (`GOV_CRYPTO_KMS_DRIVER`); custody = kebijakan per-tenant
 > (`key_custody`) — ADR-010. Enkripsi jalan penuh dengan driver `local` (dev/test); driver
