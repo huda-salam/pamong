@@ -141,14 +141,20 @@ func seedOrgUnits(t *testing.T, pool *db.Pool, ctx context.Context, units ...str
 // tetap yang diuji.
 func seedUserProfile(t *testing.T, pool *db.Pool, svc *crypto.Service, ctx context.Context, id uuid.UUID, email, noHP string) {
 	t.Helper()
+	seedClone(t, pool, svc, ctx, identsync.UserProfileClone{
+		PersonID: id, AssignmentID: uuid.New(), NIK: "3578010101900001",
+		NamaLengkap: "Dummy", EmploymentStatus: "asn", Email: email, NoHP: noHP,
+	})
+}
+
+// seedClone menulis satu baris clone apa adanya lewat writer sync.
+func seedClone(t *testing.T, pool *db.Pool, svc *crypto.Service, ctx context.Context, c identsync.UserProfileClone) {
+	t.Helper()
 	w, err := identsync.NewTenantDBWriter(poolSatu{pool: pool}, svc)
 	if err != nil {
 		t.Fatalf("NewTenantDBWriter: %v", err)
 	}
-	if err := w.Upsert(ctx, dirTenant, identsync.UserProfileClone{
-		PersonID: id, AssignmentID: uuid.New(), NIK: "3578010101900001",
-		NamaLengkap: "Dummy", EmploymentStatus: "asn", Email: email, NoHP: noHP,
-	}); err != nil {
+	if err := w.Upsert(ctx, dirTenant, c); err != nil {
 		t.Fatalf("seed user_profile: %v", err)
 	}
 }
@@ -314,19 +320,10 @@ func TestDBRecipientDirectory_HoldersOf_TidakFilterCrossTenant(t *testing.T) {
 	// gov.user_profiles: user ini ditandai cross-tenant (mis. PJ Bupati dari Pemprov, di-clone
 	// + diberi role tenant). HoldersOf tidak boleh mengecualikannya — query tak menyentuh kolom
 	// is_cross_tenant sama sekali (lihat doc DBRecipientDirectory).
-	if _, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS gov.user_profiles (
-		id UUID PRIMARY KEY, person_id UUID NOT NULL, employment_status VARCHAR(10) NOT NULL,
-		nip VARCHAR(18), nik VARCHAR(16) NOT NULL, nama_lengkap VARCHAR(255) NOT NULL,
-		assignment_id UUID NOT NULL, is_cross_tenant BOOLEAN NOT NULL DEFAULT false,
-		synced_at TIMESTAMPTZ NOT NULL)`); err != nil {
-		t.Fatalf("create user_profiles: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `INSERT INTO gov.user_profiles
-		(id, person_id, employment_status, nik, nama_lengkap, assignment_id, is_cross_tenant, synced_at)
-		VALUES ($1,$1,'asn','1234567890123456','PJ Bupati',$2,true,now())`,
-		user, uuid.New()); err != nil {
-		t.Fatalf("seed user_profiles: %v", err)
-	}
+	seedClone(t, pool, svc, ctx, identsync.UserProfileClone{
+		PersonID: user, AssignmentID: uuid.New(), NIK: "1234567890123456",
+		NamaLengkap: "PJ Bupati", EmploymentStatus: "asn", IsCrossTenant: true,
+	})
 
 	dir := newDirectory(t, pool, svc)
 	got, err := dir.HoldersOf(ctx, coreNotif.RoleTarget{TenantID: "pemkot", Role: "kepala_dinas"})
@@ -439,6 +436,67 @@ func TestDBRecipientDirectory_KontakDipindahAntarBarisDitolak(t *testing.T) {
 			t.Fatalf("kontak terbuka meski ciphertext-nya milik baris lain: person=%s email=%q",
 				r.PersonID, r.Email)
 		}
+	}
+}
+
+// TestDBRecipientDirectory_SatuKontakRusakTakMenularKeYangLain menjaga BATAS ledakan
+// best-effort: satu baris yang ciphertext-nya tak terbuka hanya kehilangan kontaknya sendiri.
+// Kalau kegagalan itu membatalkan seluruh batch, satu baris rusak menurunkan email/SMS SELURUH
+// pemegang role menjadi in-app — dan karena kegagalannya cuma warning, penurunan itu senyap.
+func TestDBRecipientDirectory_SatuKontakRusakTakMenularKeYangLain(t *testing.T) {
+	pool, svc, ctx := setupDirectoryDB(t)
+	roleID := seedRole(t, pool, ctx, "kepala_dinas")
+	userRusak, userSehat := uuid.New(), uuid.New()
+	seedAssignment(t, pool, ctx, assignmentSpec{userID: userRusak, roleID: roleID})
+	seedAssignment(t, pool, ctx, assignmentSpec{userID: userSehat, roleID: roleID})
+	seedUserProfile(t, pool, svc, ctx, userRusak, "rusak@example.test", "0812340001")
+	seedUserProfile(t, pool, svc, ctx, userSehat, "sehat@example.test", "0812340002")
+
+	// Rusakkan satu byte pada tag GCM baris pertama: blob tetap ber-purpose "email" dan lolos
+	// pemeriksaan ADR-015, tapi gagal saat Decrypt — kerusakan paling realistis (bit rot,
+	// restore parsial), bukan blob yang bentuknya asing.
+	if _, err := pool.Exec(ctx, `
+		UPDATE gov.user_profiles
+		   SET email_enc = set_byte(email_enc, length(email_enc) - 1,
+		                            (get_byte(email_enc, length(email_enc) - 1) # 255))
+		 WHERE id = $1`, userRusak); err != nil {
+		t.Fatalf("rusakkan email_enc: %v", err)
+	}
+
+	got, err := dirHolders(t, newDirectory(t, pool, svc), ctx)
+	if err != nil {
+		t.Fatalf("HoldersOf: %v", err)
+	}
+	var sehat, rusak coreNotif.Recipient
+	for _, r := range got {
+		switch r.PersonID {
+		case userSehat:
+			sehat = r
+		case userRusak:
+			rusak = r
+		}
+	}
+	if sehat.Email != "sehat@example.test" || sehat.Phone != "0812340002" {
+		t.Fatalf("kontak penerima sehat ikut hilang karena baris lain rusak: %+v", sehat)
+	}
+	if rusak.Email != "" || rusak.Phone != "" {
+		t.Fatalf("baris rusak justru mengembalikan kontak: %+v", rusak)
+	}
+}
+
+// TestDBRecipientDirectory_TargetTenantLainDitolak: direktori terikat satu tenant lewat pool DAN
+// realm kunci. Target dari tenant lain harus gagal LANTANG — kalau tidak, ia menjawab dengan
+// pemegang dari DB yang salah sementara tiap kontak ditolak AAD, dan gejalanya menyamar jadi
+// "belum ada yang mendaftarkan kontak" selamanya.
+func TestDBRecipientDirectory_TargetTenantLainDitolak(t *testing.T) {
+	pool, svc, ctx := setupDirectoryDB(t)
+	roleID := seedRole(t, pool, ctx, "kepala_dinas")
+	seedAssignment(t, pool, ctx, assignmentSpec{userID: uuid.New(), roleID: roleID})
+
+	_, err := newDirectory(t, pool, svc).HoldersOf(ctx,
+		coreNotif.RoleTarget{TenantID: "pemkot-lain", Role: "kepala_dinas"})
+	if err == nil {
+		t.Fatal("target tenant lain harus ditolak, bukan dilayani dari DB tenant ini")
 	}
 }
 

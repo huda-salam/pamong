@@ -63,6 +63,16 @@ Seperti PR-3.8.6, urutan ini murah **hanya selama belum ada tenant berisi**: nol
 seluruh env saat ini (tak ada manifest deploy di repo, dev & CI membangun tenant DB dari nol tiap
 run). Sesudah ada data produksi, langkah yang sama menuntut backfill terjadwal per tenant.
 
+**Window rollout — yang menerapkan ALTER hanyalah PENULIS.** `identity/sync.TenantDBWriter`
+meng-ensure skema saat write pertama; pembacanya (`infra/user.DBResolver`, `infra/notification`)
+tidak pernah menulis DDL, dan writer itu sendiri **belum di-wire di `cmd/server`** (subscriber
+sync belum dipasang — gap terpisah). Akibatnya, pada tenant yang tabel clone-nya dibuat versi
+lama, `DBResolver` gagal lantang (`column "nik_enc" does not exist`) sampai ada write clone.
+Itu **perilaku yang dipilih, bukan kelalaian**: resolver sengaja tak memprobe
+`information_schema` seperti jalur kontak, karena probe akan mengubah "skema tertinggal" menjadi
+"user tidak ditemukan" — kegagalan senyap pada jalur otorisasi. Urutan onboarding yang benar:
+sync jalan lebih dulu, baru resolver melayani.
+
 ---
 
 ### 2026-08-01 · PR-3.8.6 + E2 · `05875c4`

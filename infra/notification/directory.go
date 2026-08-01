@@ -77,6 +77,15 @@ type roleAssignmentCandidate struct {
 // unit, lalu tiap kandidat diuji lewat withinScope (yang memanggil hier.IsWithin hanya bila
 // perlu memeriksa subtree).
 func (d *DBRecipientDirectory) HoldersOf(ctx context.Context, t coreNotif.RoleTarget) ([]coreNotif.Recipient, error) {
+	// Direktori ini terikat SATU tenant di dua tempat sekaligus: pool (DB-nya) dan realm kunci
+	// (kontaknya). Target dari tenant lain berarti salah satu ikatan itu keliru — dan kekeliruan
+	// itu TIDAK gagal sendiri: holder tetap kembali (dari DB yang salah), sementara tiap Open
+	// ditolak AAD sehingga kontak selalu kosong. Gejalanya menyamar jadi "belum ada yang
+	// mendaftarkan kontak" dan bisa bertahan selamanya. Karena itu ditolak lantang di sini.
+	if t.TenantID != "" && t.TenantID != d.sealer.Realm() {
+		return nil, fmt.Errorf("direktori notifikasi terikat tenant %q tapi target role %q berasal dari tenant %q",
+			d.sealer.Realm(), t.Role, t.TenantID)
+	}
 	// gov:raw-ok reason=notif-role-holders query=notification-holders-of
 	rows, err := d.pool.Query(ctx, `
 		SELECT ura.user_id, ura.unit_kerja_id, ura.include_subtree
@@ -183,6 +192,8 @@ func (d *DBRecipientDirectory) fillContacts(ctx context.Context, recips []coreNo
 
 	type contact struct{ email, phone string }
 	byID := make(map[uuid.UUID]contact, len(recips))
+	var takTerbuka int
+	var gagalPertama error
 	for rows.Next() {
 		var id uuid.UUID
 		var emailEnc, noHPEnc []byte // NULL → nil → kontak kosong
@@ -194,11 +205,21 @@ func (d *DBRecipientDirectory) fillContacts(ctx context.Context, recips []coreNo
 		// dipindahkan lewat SQL akan terbuka sebagai kontak orang lain, dan notifikasi berisi
 		// data pribadi terkirim ke alamat yang salah.
 		var c contact
-		if c.email, err = d.sealer.Open(ctx, purposeEmail, id, emailEnc); err != nil {
-			return fmt.Errorf("buka kontak email: %w", err)
+		var err error
+		if c.email, err = d.sealer.Open(ctx, purposeEmail, id, emailEnc); err == nil {
+			c.phone, err = d.sealer.Open(ctx, purposeNoHP, id, noHPEnc)
 		}
-		if c.phone, err = d.sealer.Open(ctx, purposeNoHP, id, noHPEnc); err != nil {
-			return fmt.Errorf("buka kontak no_hp: %w", err)
+		if err != nil {
+			// Best-effort di sini berlaku PER BARIS, bukan per batch: satu ciphertext yang tak
+			// terbuka (dipindah antar baris, ditulis realm lain, format pra-ADR-016) tak boleh
+			// menghapus kontak penerima lain yang blob-nya sehat — itu akan menurunkan email/SMS
+			// seluruh role menjadi in-app karena satu baris rusak. Baris ini dilewati (kontaknya
+			// kosong = kanal tak tersedia); kegagalannya tetap dilaporkan ke pemanggil di bawah.
+			takTerbuka++
+			if gagalPertama == nil {
+				gagalPertama = err
+			}
+			continue
 		}
 		byID[id] = c
 	}
@@ -211,6 +232,11 @@ func (d *DBRecipientDirectory) fillContacts(ctx context.Context, recips []coreNo
 			recips[i].Email = c.email
 			recips[i].Phone = c.phone
 		}
+	}
+	// Dilaporkan SESUDAH pengisian: penerima yang sehat tetap dapat kontaknya, sementara baris
+	// yang gagal tak lenyap tanpa jejak (HoldersOf mencatatnya sebagai warning).
+	if gagalPertama != nil {
+		return fmt.Errorf("%d baris kontak tak terbuka, kontaknya dikosongkan: %w", takTerbuka, gagalPertama)
 	}
 	return nil
 }
