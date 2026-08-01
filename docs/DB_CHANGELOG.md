@@ -32,7 +32,7 @@ Jalur A/B/C merujuk tiga cara pembuatan skema yang dijelaskan di `DB_SCHEMA.md` 
 
 ---
 
-### 2026-08-01 · PR-3.8.5a (jalur clone) · `PENDING`
+### 2026-08-01 · PR-3.8.5a (jalur clone) · `7485fc8`
 **DB:** tenant · **Jalur:** C (`identity/sync/writer_tenantdb.go`) · **Down:** tidak (jalur C)
 
 PR-3.8.6 mengenkripsi pengenal di identity DB, tapi clone `gov.user_profiles` masih menyalinnya
