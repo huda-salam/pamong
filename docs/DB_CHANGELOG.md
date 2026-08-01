@@ -53,6 +53,12 @@ tapi ditolak `Decrypt` dengan pesan yang menyebut re-enkripsi. Tidak ada backfil
 disediakan karena belum ada tenant produksi — itulah gerbang keras ROADMAP 3.8 untuk PR ini.
 Bila ada DB dev berisi entity ber-field terenkripsi, buang/isi ulang datanya.
 
+**Radius kegagalannya se-HALAMAN, bukan se-baris:** satu blob yang tak terbuka menggagalkan
+seluruh panggilan `List`, bukan hanya baris itu — jadi satu baris v1 yang tertinggal membuat
+daftarnya kosong total, tanpa halaman yang bisa dilewati. Itu perilaku yang disengaja (lihat
+`SQLRepository.List`: melewati baris akan menjadikan perusakan ciphertext sebagai alat
+penyembunyian). Errornya menyebut id baris agar bisa ditindak.
+
 ---
 
 ### 2026-07-30 · PR-3.8.2 · `fa6e51c`

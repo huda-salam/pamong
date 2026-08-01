@@ -71,6 +71,15 @@ Alur & aturan yang menopangnya:
   (`dest[0]` setelah `Scan`, lewat `scannedID`) — dan justru itu yang membuatnya menggigit:
   blob yang dipindah ke baris lain diminta dibuka dengan id baris tujuan. Entity tanpa id
   (`uuid.Nil`) DITOLAK sebelum menyentuh DB.
+- Karena jalur baca membaca `dest[0]`, **tujuan scan kolom id ikut jadi kontrak**: boleh
+  `*uuid.UUID`, `*string`, atau `*[]byte` asalkan isinya UUID — selalu dikanonikalkan lewat
+  `uuid.UUID`, sebab AAD dibangun dari TEKS id dan ejaan berbeda (huruf besar) akan membuat
+  baris tak bisa membuka nilainya sendiri. Tipe lain ditolak berisik.
+- **Satu baris gagal dekripsi = SELURUH `List` gagal**, disengaja. Melewati baris menjadikan
+  perusakan ciphertext alat penyembunyian; mengosongkan field menyamarkan nilai tak terbaca
+  sebagai nilai kosong. Repository adalah sumber kebenaran, bukan laporan — beda dari
+  `core/audit.Reader` yang boleh mendegradasi anggun karena ia menampilkan bukti. Error
+  menyebut id baris agar tetap bisa ditindak.
 - `NewRepository` MENOLAK entity ber-field terenkripsi bila `CryptoPort` tak diberikan, dan
   enkripsi gagal keras bila tenant tak ada di context (`port.WithTenant`).
 - Diff audit ikut terenkripsi (`auditedRepo.snapshot` → `sealPair`) — snapshot diambil dari

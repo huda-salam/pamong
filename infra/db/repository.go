@@ -26,6 +26,12 @@ type RowScanner interface {
 // id, <DataColumns...>, version. Implementasi Scan WAJIB men-scan dengan urutan
 // yang sama. Framework mengelola sendiri kolom version, created_at, updated_at,
 // dan deleted_at — Mapper hanya mendeklarasikan kolom bisnis lewat DataColumns.
+//
+// Tujuan scan kolom id WAJIB terbaca kembali sebagai UUID (*uuid.UUID, *string, atau
+// *[]byte berisi UUID). Ini bukan sekadar kerapian: untuk entity ber-field terenkripsi,
+// id baris itulah yang mengikat ciphertext ke barisnya (ADR-016), dan framework
+// membacanya dari tujuan scan pertama. Tipe lain akan menggagalkan setiap pembacaan
+// entity tersebut — bukan hanya kolom terenkripsinya.
 type Mapper[T any] interface {
 	Table() string                 // nama tabel lengkap "schema.tabel"
 	DataColumns() []string         // kolom bisnis, tanpa id/version/timestamp
@@ -319,6 +325,14 @@ func (r *SQLRepository[T]) List(ctx context.Context, filter port.ListFilter) (*p
 
 	items := make([]T, 0, pageSize)
 	for rows.Next() {
+		// Satu baris yang gagal didekripsi menggagalkan SELURUH halaman, dan itu disengaja.
+		// Dua alternatif yang lebih ramah justru berbahaya di jalur data: melewati baris
+		// membuat baris yang ciphertext-nya dirusak MENGHILANG dari daftar (perusakan jadi
+		// alat penyembunyian), sedangkan mengosongkan field membuat nilai yang tak terbaca
+		// tampak seperti nilai yang memang kosong. Repository adalah sumber kebenaran, bukan
+		// laporan — kegagalan di sini harus terlihat. Jalur baca audit (core/audit.Reader)
+		// boleh mendegradasi anggun karena ia memang menampilkan bukti, bukan menyuplai data
+		// untuk keputusan. Error dari scanner menyebut id baris agar tetap bisa ditindak.
 		e, err := r.m.Scan(r.scanner(ctx, rows))
 		if err != nil {
 			return nil, err

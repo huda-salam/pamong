@@ -12,4 +12,10 @@ coverage.html
 .DS_Store
 *.swp
 
+# Konfigurasi agen per-mesin. Isinya terakumulasi otomatis dari persetujuan sesi
+# (perintah sekali-pakai, path absolut milik satu workstation) — bukan kebijakan tim.
+# Meng-commit-nya memasukkan izin ber-path $HOME ke riwayat bersama, dan izin itu
+# menghapus gerbang persetujuan untuk file yang paling berharga di mesin ybs.
+.claude/
+
 next-ses.txt

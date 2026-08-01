@@ -309,18 +309,21 @@ func (s *decryptingScanner) Scan(dest ...any) error {
 		// akan terbaca sebagai no_rekening yang sah.
 		gotPurpose, err := s.fc.crypto.PurposeOf(*raw)
 		if err != nil {
-			return fmt.Errorf("kolom %s: %w", col, err)
+			return fmt.Errorf("kolom %s baris %s: %w", col, recordID, err)
 		}
 		if gotPurpose != spec.Purpose {
 			return fmt.Errorf(
-				"kolom %s memuat ciphertext ber-purpose %q, bukan %q — data dipindah antar kolom",
-				col, gotPurpose, spec.Purpose)
+				"kolom %s baris %s memuat ciphertext ber-purpose %q, bukan %q — data dipindah antar kolom",
+				col, recordID, gotPurpose, spec.Purpose)
 		}
 		plain, err := s.fc.crypto.Decrypt(s.ctx, port.RowRef{
 			TenantID: tenantID, RecordID: recordID.String(),
 		}, *raw)
 		if err != nil {
-			return fmt.Errorf("dekripsi kolom %s: %w", col, err)
+			// Id baris ikut disebut karena kegagalan ini menggagalkan SELURUH List, bukan satu
+			// baris (lihat catatan di List). Tanpa id, operator hanya tahu "ada baris rusak"
+			// tanpa cara menemukannya kecuali memindai tabel satu per satu.
+			return fmt.Errorf("dekripsi kolom %s baris %s: %w", col, recordID, err)
 		}
 		if err := assignPlaintext(dest[pos], plain); err != nil {
 			return fmt.Errorf("kolom %s: %w", col, err)
@@ -329,20 +332,47 @@ func (s *decryptingScanner) Scan(dest ...any) error {
 	return nil
 }
 
-// scannedID membaca id baris dari pointer tujuan pertama milik Mapper. Kontrak Mapper.Scan
-// menetapkan urutan "id, data..., version" dan id framework selalu UUID, jadi tipe lain di
-// sini berarti Mapper menyimpang dari kontrak — kondisi yang harus berisik: tanpa id yang
-// benar, seluruh pengikatan baris (ADR-016) diam-diam tak punya arti.
+// scannedID membaca id baris dari pointer tujuan pertama milik Mapper (kontrak Mapper.Scan:
+// "id, data..., version"). Nilainya harus cocok dengan yang dipakai jalur tulis, yaitu
+// Mapper.ID(entity) — karena itu tipe apa pun yang dikenali di sini di-parse lalu
+// dikanonikalkan lewat uuid.UUID, bukan dipakai apa adanya: id yang sama dalam ejaan berbeda
+// (huruf besar, berkurung) akan menghasilkan AAD berbeda dan membuat baris sendiri tak
+// terbaca. Mapper boleh menyimpan id sebagai string atau []byte selama nilainya UUID —
+// Mapper.ID sudah mengharuskannya.
+//
+// Tipe di luar itu ditolak berisik, bukan dilewati: tanpa id yang benar seluruh pengikatan
+// baris (ADR-016) diam-diam tak punya arti.
 func scannedID(dest any) (uuid.UUID, error) {
-	id, ok := dest.(*uuid.UUID)
-	if !ok {
+	var (
+		id  uuid.UUID
+		err error
+	)
+	switch d := dest.(type) {
+	case *uuid.UUID:
+		id = *d
+	case *string:
+		if id, err = uuid.Parse(*d); err != nil {
+			return uuid.Nil, fmt.Errorf("field crypto: kolom id %q bukan UUID: %w", *d, err)
+		}
+	case *[]byte:
+		// Postgres mengirim uuid sebagai 16 byte biner atau sebagai teks, tergantung mode.
+		if len(*d) == 16 {
+			id, err = uuid.FromBytes(*d)
+		} else {
+			id, err = uuid.ParseBytes(*d)
+		}
+		if err != nil {
+			return uuid.Nil, fmt.Errorf("field crypto: kolom id bukan UUID: %w", err)
+		}
+	default:
 		return uuid.Nil, fmt.Errorf(
-			"field crypto: tujuan scan kolom id bertipe %T, bukan *uuid.UUID (kontrak Mapper.Scan: id, data..., version)", dest)
+			"field crypto: tujuan scan kolom id bertipe %T, tidak bisa dibaca sebagai UUID "+
+				"(kontrak Mapper.Scan: id, data..., version — lihat dok Mapper)", dest)
 	}
-	if *id == uuid.Nil {
+	if id == uuid.Nil {
 		return uuid.Nil, fmt.Errorf("field crypto: baris tanpa id tidak bisa didekripsi (pengikatan baris, ADR-016)")
 	}
-	return *id, nil
+	return id, nil
 }
 
 // assignPlaintext menulis hasil dekripsi ke pointer tujuan milik Mapper.

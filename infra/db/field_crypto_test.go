@@ -341,6 +341,98 @@ func TestList_BlindIndexTidakTerikatBaris(t *testing.T) {
 	}
 }
 
+// pegawaiStrID meniru mapper Tier 3 tulis tangan yang menyimpan id sebagai string — bentuk
+// yang sah menurut kontrak Mapper (ID() tetap mengembalikan uuid.UUID) dan lolos semua jalur
+// non-kripto. Tanpa dukungan di scannedID, entity seperti ini gagal dibaca SELURUHNYA begitu
+// ia mendeklarasikan satu field terenkripsi.
+type pegawaiStrID struct {
+	ID      string
+	Nama    string
+	NIK     string
+	Version int
+}
+
+type pegawaiStrIDMapper struct{}
+
+func (pegawaiStrIDMapper) Table() string           { return "kepegawaian.pegawais" }
+func (pegawaiStrIDMapper) DataColumns() []string   { return []string{"nama", "nik"} }
+func (pegawaiStrIDMapper) SearchColumns() []string { return []string{"nama"} }
+func (pegawaiStrIDMapper) DataValues(e *pegawaiStrID) []any {
+	return []any{e.Nama, e.NIK}
+}
+func (pegawaiStrIDMapper) Scan(s RowScanner) (*pegawaiStrID, error) {
+	var p pegawaiStrID
+	return &p, s.Scan(&p.ID, &p.Nama, &p.NIK, &p.Version)
+}
+func (pegawaiStrIDMapper) ID(e *pegawaiStrID) uuid.UUID {
+	id, _ := uuid.Parse(e.ID)
+	return id
+}
+func (pegawaiStrIDMapper) Version(e *pegawaiStrID) int       { return e.Version }
+func (pegawaiStrIDMapper) SetVersion(e *pegawaiStrID, v int) { e.Version = v }
+
+// TestFindByID_IDBukanUUIDStructTetapTerbaca mengunci lebar kontrak Mapper: id boleh
+// di-scan sebagai string. Ejaan non-kanonik (huruf besar) ikut diuji karena AAD dibangun dari
+// TEKS id — tanpa kanonikalisasi, baris yang ditulis dengan ejaan berbeda tak bisa membuka
+// nilainya sendiri.
+func TestFindByID_IDBukanUUIDStructTetapTerbaca(t *testing.T) {
+	mock := testkit.NewMockCrypto()
+	id := uuid.New()
+	ct, err := mock.Encrypt(tenantCtx(), port.FieldRef{
+		TenantID: "pemkot-surabaya", Purpose: "nik", RecordID: id.String(),
+	}, []byte("3578010101010001"))
+	if err != nil {
+		t.Fatalf("siapkan ciphertext: %v", err)
+	}
+
+	for _, ejaan := range []string{id.String(), strings.ToUpper(id.String())} {
+		conn := &fakeCryptoConn{row: scriptedRow{values: []any{ejaan, "Budi", ct, 1}}}
+		repo, err := NewSQLRepository[pegawaiStrID](conn, pegawaiStrIDMapper{},
+			WithFieldCrypto(mock, FieldCryptoFromEntity(pegawaiDef())))
+		if err != nil {
+			t.Fatalf("repo: %v", err)
+		}
+		got, err := repo.FindByID(tenantCtx(), id)
+		if err != nil {
+			t.Fatalf("id ejaan %q: FindByID: %v", ejaan, err)
+		}
+		if got.NIK != "3578010101010001" {
+			t.Fatalf("id ejaan %q: nik = %q", ejaan, got.NIK)
+		}
+	}
+}
+
+// TestFindByID_GagalDekripsiMenyebutBaris: kegagalan satu baris menggagalkan seluruh List
+// (keputusan sengaja, lihat List). Karena itu errornya WAJIB menyebut id baris — tanpa itu
+// operator tak punya cara menemukan baris rusak selain memindai tabel.
+func TestFindByID_GagalDekripsiMenyebutBaris(t *testing.T) {
+	mock := testkit.NewMockCrypto()
+	budi, siti := uuid.New(), uuid.New()
+	ctSiti, err := mock.Encrypt(tenantCtx(), port.FieldRef{
+		TenantID: "pemkot-surabaya", Purpose: "nik", RecordID: siti.String(),
+	}, []byte("3578010101010002"))
+	if err != nil {
+		t.Fatalf("siapkan ciphertext: %v", err)
+	}
+	conn := &fakeCryptoConn{row: scriptedRow{values: []any{budi, "Budi", ctSiti, 1}}}
+	repo, err := NewSQLRepository[pegawai](conn, pegawaiMapper{},
+		WithFieldCrypto(mock, FieldCryptoFromEntity(pegawaiDef())))
+	if err != nil {
+		t.Fatalf("repo: %v", err)
+	}
+
+	_, err = repo.FindByID(tenantCtx(), budi)
+	if err == nil {
+		t.Fatal("harus gagal")
+	}
+	if !strings.Contains(err.Error(), budi.String()) {
+		t.Fatalf("err = %v, harus menyebut id baris %s", err, budi)
+	}
+	if strings.Contains(err.Error(), "3578010101010002") {
+		t.Fatalf("err membocorkan plaintext: %v", err)
+	}
+}
+
 func TestList_FilterTerenkripsiLewatBlindIndex(t *testing.T) {
 	conn := &fakeCryptoConn{row: scriptedRow{values: []any{int64(0)}}}
 	repo := cryptoRepo(t, conn)
