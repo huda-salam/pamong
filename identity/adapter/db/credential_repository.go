@@ -35,6 +35,20 @@ func NewCredentialRepo(conn db.Conn, c port.CryptoPort) (*CredentialRepo, error)
 const credentialCols = `id, person_id, cred_type, cred_value_enc, secret_hash, is_primary, last_used_at, created_at`
 
 func (r *CredentialRepo) Save(ctx context.Context, c *domain.Credential) error {
+	// Invariant domain ditegakkan DI PINTU TULIS, bukan diserahkan ke use case. Alasannya
+	// sama dengan alasan enkripsi & audit dipasang di lapis repo: kalau penegakannya
+	// bergantung pada tiap penulis use case baru mengingat memanggil Validate, ia akan
+	// terlewat — dan yang terlewat di sini bukan kosmetik. cred_value yang lolos dengan
+	// CR/LF tetap me-resolve lewat blind index (normalize() mem-*trim*-nya sebelum HMAC),
+	// lalu ditolak transport di hilir → beda respons antara kredensial terdaftar dan tak
+	// terdaftar. Itu orakel keberadaan akun yang persis sama dengan yang ditutup di jalur
+	// baca (REVIEW_BACKLOG A7); menutupnya di jalur tulis hanya berarti kalau tak ada
+	// jalan memutar. Saat ini belum ada use case penulis credential — justru itu waktu
+	// termurah memasangnya.
+	if err := c.Validate(); err != nil {
+		return err
+	}
+
 	var secret any
 	if c.SecretHash != "" {
 		secret = c.SecretHash

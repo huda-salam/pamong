@@ -5,6 +5,13 @@ Accepted — **memperluas ADR-010 §2 (hierarki DEK) dan ADR-009 §2 (blind inde
 men-supersede ADR-009, ADR-010, ADR-015, maupun ADR-016. Seluruh keputusannya tetap
 berlaku apa adanya untuk data tenant.
 
+**Mengamandemen ADR-003 §Keputusan pada satu titik:** nilai sentinel partisi chain audit
+identity bukan lagi `"central"` melainkan `crypto.RealmCentral` (`_central`) — satu nilai
+untuk realm kunci DAN partisi chain, karena `audit.Reader` membangun `RowRef.TenantID` dari
+`entry.TenantID` untuk membuka diff yang tersegel. Keputusan ADR-003 selebihnya (audit store
+sentral terpisah di `id.audit_logs`, chain tunggal, auto-attach lewat dekorator) tidak
+berubah. Alasan nilainya berpindah ada di §Alternatif di bawah.
+
 ## Konteks
 ADR-010 §2 menetapkan hierarki kunci **KEK → DEK per-tenant per-purpose → data**, dengan
 alasan yang tetap benar: DB-per-tenant (ADR-004) dan Tier 3 menuntut satu tenant bocor

@@ -39,6 +39,14 @@ func NewPersonRepo(conn db.Conn, c port.CryptoPort) (*PersonRepo, error) {
 const personCols = `id, nik_enc, nama_lengkap, tgl_lahir, no_hp_enc, email_enc, is_active, created_at, updated_at`
 
 func (r *PersonRepo) Save(ctx context.Context, p *domain.Person) error {
+	// Lihat CredentialRepo.Save: invariant bentuk pengenal ditegakkan di pintu tulis. Person
+	// kebetulan sudah divalidasi CreatePerson, tapi itu sifat satu use case — bukan jaminan
+	// tabel. email/no_hp person mengalir ke clone gov.user_profiles dan dari sana menjadi
+	// alamat kirim notifikasi (ADR-013), jadi konsekuensinya sama.
+	if err := p.Validate(); err != nil {
+		return err
+	}
+
 	nikEnc, nikBidx, err := r.fc.seal(ctx, purposeNIK, p.ID, p.NIK)
 	if err != nil {
 		return err

@@ -31,6 +31,13 @@ func NewEmploymentRepo(conn db.Conn, c port.CryptoPort) (*EmploymentRepo, error)
 const employmentCols = `id, person_id, status, nip_enc, instansi_asal, is_active, valid_from, valid_until, created_at`
 
 func (r *EmploymentRepo) Save(ctx context.Context, e *domain.Employment) error {
+	// Lihat CredentialRepo.Save. Untuk employment yang dijaga bukan bentuk alamat melainkan
+	// pasangan status↔NIP: CHECK employments_nip_status_check kini berdiri di atas nip_bidx,
+	// jadi ia tak lagi bisa "melihat" NIP yang cacat bentuknya — hanya ada/tidaknya.
+	if err := e.Validate(); err != nil {
+		return err
+	}
+
 	// NIP kosong (non-ASN) disimpan NULL pada KEDUA kolom: banyak baris NULL diizinkan
 	// UNIQUE Postgres, dan CHECK employments_nip_status_check menuntutnya. seal()
 	// mengembalikan (nil, nil) untuk nilai kosong, jadi tak perlu percabangan di sini.

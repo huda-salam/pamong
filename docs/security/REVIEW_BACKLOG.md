@@ -165,6 +165,18 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
   + kasus `email`/`no_hp` di `TestPerson_Validate`. Diverifikasi lewat 3 mutasi (lumpuhkan cabang
   spasi-tepi; lumpuhkan `unicode.IsControl`; cabut aturannya dari `Credential.Validate`) — tiap
   kali test yang dituju gagal.
+  **Susulan (code review putaran keempat, diperbaiki di PR ini): aturannya belum punya penegak.**
+  `Credential.Validate` tak dipanggil satu pun kode produksi — belum ada use case penulis
+  credential — dan `Person.Validate` hanya kebetulan dipanggil `CreatePerson`. Aturan di atas
+  karena itu masih dokumentasi: penulis use case credential pertama tinggal lupa memanggilnya dan
+  orakel jalur tulis kembali terbuka utuh. **Penegakan dipindah ke PINTU TULIS repo** —
+  `PersonRepo`/`EmploymentRepo`/`CredentialRepo.Save` memanggil `Validate()` sebelum `seal()`,
+  dengan alasan yang sama seperti enkripsi & audit dipasang di lapis repo: yang bergantung pada
+  ingatan tiap penulis use case pasti terlewat. Yang pindah adalah PEMANGGILANNYA, bukan
+  aturannya — tabel kebijakannya tetap di domain. Diuji
+  `TestRepoIdentity_MenolakNilaiCacatDiPintuTulis` (DBConn yang menggagalkan test bila tersentuh,
+  jadi yang dibuktikan "tak pernah sampai ke DB", bukan sekadar "error dikembalikan"); mutasi
+  mencabut `Validate()` dari `CredentialRepo.Save` → test gagal lewat conn yang tersentuh.
 - **Pelajaran yang berlaku umum:** setiap kali pencarian berpindah ke blind index, SEMUA yang
   diturunkan dari nilai pencarian ikut berubah artinya — bukan hanya yang di-*key* padanya.
   Rate limiter, cache, dan idempotency key harus di-key ulang pada hasil resolusi; dan nilai

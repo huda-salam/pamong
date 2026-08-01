@@ -1,7 +1,9 @@
 # ADR-003: Audit untuk mutasi identity (store sentral terpisah)
 
 ## Status
-Accepted
+Accepted — **diamandemen ADR-017 pada satu titik:** nilai sentinel partisi chain di bawah
+tertulis `"central"`; sejak PR-3.8.6 nilainya `crypto.RealmCentral` (`_central`), sama
+dengan realm kunci enkripsi identity. Keputusan ADR ini selebihnya berlaku apa adanya.
 
 ## Konteks
 PRD identity mewajibkan: *"Semua perubahan identitas/role/assignment ter-audit."* Namun
@@ -27,7 +29,8 @@ Identity punya **audit store sentral terpisah di identity DB, schema `id`**
   non-perilaku untuk path gov.
 - **Chain tunggal untuk identity.** Karena tak ada tenant, seluruh mutasi identity
   dirantai jadi satu chain. Kolom `tenant_id` dipakai sebagai partisi chain dengan nilai
-  sentinel konstan `"central"`.
+  sentinel konstan `"central"` — *nilai ini diamandemen ADR-017 menjadi `_central`; lihat
+  §Status.*
 - **Tetap auto-attach (tanpa kode audit di use case).** Repo identity dibungkus dekorator
   audit di `identity/adapter/db` (`NewAuditedPersonRepo`, dst). Use case memanggil
   `repo.Save(ctx, ...)` seperti biasa; dekorator mencatat audit dari `AuthContext`. Use

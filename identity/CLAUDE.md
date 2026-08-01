@@ -70,12 +70,15 @@ Kolom plaintext-nya **tidak ada** — bukan sekadar berhenti diisi.
   trim + case-fold (`email`), jadi beberapa ejaan me-resolve ke satu baris. Apa pun yang di-key
   pada nilai pencarian — rate limiter, cache, idempotency — harus di-key ulang pada hasil
   resolusi (ID), bukan pada nilai mentah. Lihat REVIEW_BACKLOG A7.
-- **Nilai yang MASUK wajib sudah kanonik — ditegakkan di DOMAIN.** `Credential.Validate` &
-  `Person.Validate` menolak control character + spasi tepi (`bentukPengenalRusak`), karena `seal()`
-  mengenkripsi verbatim sementara `index()` menormalkan. Tanpa aturan ini nilai ber-CRLF bisa
-  TERSIMPAN, dan alamat kanonik hasil dekripsi pun menjadi alamat yang ditolak SMTP. Jangan
-  memindahkan aturan ini ke `seal()`: nilai terdekripsi jadi ≠ nilai yang didaftarkan, dan
-  kebijakan `infra/crypto` tersalin ke lapis repo.
+- **Nilai yang MASUK wajib sudah kanonik — aturannya di DOMAIN, penegaknya di PINTU TULIS.**
+  `Credential.Validate` & `Person.Validate` menolak control character + spasi tepi
+  (`bentukPengenalRusak`), karena `seal()` mengenkripsi verbatim sementara `index()` menormalkan.
+  Tanpa aturan ini nilai ber-CRLF bisa TERSIMPAN, dan alamat kanonik hasil dekripsi pun menjadi
+  alamat yang ditolak SMTP. Jangan memindahkan ATURANNYA ke `seal()`: nilai terdekripsi jadi ≠
+  nilai yang didaftarkan, dan kebijakan `infra/crypto` tersalin ke lapis repo. Yang dipasang di
+  repo hanya PEMANGGILANNYA: `Save()` ketiga repo identity memanggil `Validate()` sebelum menyegel,
+  sebab aturan yang menunggu tiap penulis use case baru mengingat memanggilnya bukan aturan —
+  persis alasan enkripsi & audit juga dipasang di lapis repo, bukan di use case.
 - **Sesudah lookup, yang kanonik adalah BARIS yang ditemukan — bukan nilai permintaan.** Nilai
   permintaan berhenti layak dipakai sebagai alamat tujuan, parameter kirim, atau apa pun yang
   mengalir ke sistem luar. `TrimSpace` di `normalize()` ikut membuang CR/LF, jadi ejaan yang
