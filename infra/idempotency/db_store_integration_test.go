@@ -195,6 +195,46 @@ func TestDBStore_ResponsTakTerbacaDiKolom(t *testing.T) {
 	}
 }
 
+// TestDBStore_ResponsTakTerbukaTetapMemberiVerdict: entri yang badan responsnya TAK BISA dibuka
+// — baris pra-3.8.5b yang masih plaintext, atau blob rusak — tetap harus menghasilkan verdict
+// "key dipakai untuk request berbeda" (422, final), bukan error yang dipetakan middleware jadi
+// 503 retryable. Klien yang menerima 503 akan mencoba lagi dengan request yang sama salahnya,
+// selama sisa TTL 24 jam. Badan respons tak dibutuhkan verdict ini, jadi ia tak boleh dibuka.
+func TestDBStore_ResponsTakTerbukaTetapMemberiVerdict(t *testing.T) {
+	store, pool, ctx := newIdemEnv(t)
+	person := uuid.New()
+
+	if _, _, err := store.Reserve(ctx, itTenant, person, "k1", "fp-asli"); err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	if err := store.Complete(ctx, itTenant, person, "k1", 201, []byte(`{"id":"x"}`)); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	// Turunkan kolom ke bentuk pra-3.8.5b: byte plaintext, tanpa amplop kripto.
+	if _, err := pool.Exec(ctx, `
+		UPDATE gov.idempotency_keys SET response = $2::bytea
+		WHERE person_id = $1 AND key = 'k1'`, person, []byte(`{"id":"x"}`)); err != nil {
+		t.Fatalf("turunkan kolom ke plaintext: %v", err)
+	}
+
+	rec, reserved, err := store.Reserve(ctx, itTenant, person, "k1", "fp-BEDA")
+	if err != nil {
+		t.Fatalf("fingerprint berbeda tak butuh badan respons — tak boleh gagal: %v", err)
+	}
+	if reserved || rec == nil {
+		t.Fatalf("entri masih valid → reserved=false & rec terisi; got reserved=%v rec=%v", reserved, rec)
+	}
+	if rec.Fingerprint != "fp-asli" || !rec.Completed {
+		t.Fatalf("verdict butuh Fingerprint & Completed yang utuh; got %+v", rec)
+	}
+
+	// Jaring pengaman: pada cabang replay (fingerprint SAMA) blob tak terbuka tetap wajib
+	// gagal lantang — jangan sampai perbaikan ini berubah jadi "respons kosong yang sah".
+	if _, _, err := store.Reserve(ctx, itTenant, person, "k1", "fp-asli"); err == nil {
+		t.Fatal("replay atas blob tak terbuka harus gagal lantang, bukan badan kosong")
+	}
+}
+
 // TestDBStore_ResponsTerikatBaris: blob yang dipindah ke baris lain HARUS gagal dibuka
 // (ADR-016). Koordinat AAD tabel ini diturunkan dari (person_id, key) — jadi memindahkannya
 // ke KEY LAIN MILIK ORANG YANG SAMA pun harus gagal. Kalau koordinatnya hanya person_id,

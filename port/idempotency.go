@@ -31,6 +31,11 @@ type IdempotencyStore interface {
 	//                    (Status/Body); bila belum → request kembar masih in-flight. Caller TIDAK
 	//                    menjalankan handler.
 	// Fingerprint dipakai caller untuk mendeteksi key yang dipakai-ulang untuk request berbeda.
+	//
+	// Body DIJAMIN terisi hanya bila Completed DAN record.Fingerprint == fingerprint argumen —
+	// satu-satunya keadaan yang membuatnya boleh disajikan. Di luar itu Body boleh kosong meski
+	// entri tersimpan punya isi: implementasi boleh melewatkan kerja (mis. dekripsi) yang
+	// hasilnya tak berhak dipakai caller. Fingerprint & Completed SELALU terisi.
 	Reserve(ctx context.Context, tenantID string, personID uuid.UUID, key, fingerprint string) (record *IdempotencyRecord, reserved bool, err error)
 
 	// Complete menyimpan respons final untuk reservasi & memperpanjang masa simpan ke replay

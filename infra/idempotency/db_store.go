@@ -180,7 +180,18 @@ func (s *DBStore) Reserve(ctx context.Context, tenantID string, personID uuid.UU
 		rec.Status = *status
 	}
 
-	// Buka badan respons. Gagal membuka TIDAK boleh berubah jadi "respons kosong": klien akan
+	// Badan respons hanya dipakai pada SATU cabang caller: replay (entri selesai DAN
+	// fingerprint-nya sama). Dua cabang lain — key dipakai-ulang untuk request BERBEDA, dan
+	// kembar yang masih in-flight — lahir dari Fingerprint & Completed saja. Membuka blob di
+	// luar cabang replay hanya memindahkan kegagalan kripto (baris pra-3.8.5b yang masih
+	// plaintext, versi kunci yang hilang, blob rusak) ke dua verdict yang tak butuh isinya:
+	// keduanya berubah menjadi 503 retryable selama sisa TTL, padahal 422 adalah jawaban
+	// FINAL yang benar dan retry tak akan pernah menolong.
+	if !rec.Completed || rec.Fingerprint != fingerprint {
+		return rec, false, nil
+	}
+
+	// Di cabang replay, gagal membuka TIDAK boleh berubah jadi "respons kosong": klien akan
 	// menerima 200 berbadan kosong sebagai jawaban final yang sah, dan request mutasinya tak
 	// akan pernah dijalankan ulang. Gagal lantang → middleware fail-closed 503, retry aman.
 	sl, err := s.sealer(tenantID)

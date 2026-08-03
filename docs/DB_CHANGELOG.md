@@ -56,9 +56,12 @@ perubahannya tak terlihat dari `\d`, sementara arti kolomnya bergeser total.
 
 **Kompatibilitas:** additive di kawat, **breaking pada data yang sudah ada**. Baris
 `gov.idempotency_keys` yang ditulis SEBELUM rilis ini memuat respons plaintext dan akan DITOLAK
-saat dibaca (`PurposeOf` gagal pada non-ciphertext) → `Reserve` mengembalikan error, middleware
-menjawab 503, klien retry. Dampak nyata nihil: TTL entri completed 24 jam dan replay bukan jalur
-kebenaran. Bila tak ingin ada 503 sama sekali, `DELETE FROM gov.idempotency_keys` saat deploy.
+saat dibaca (`PurposeOf` gagal pada non-ciphertext). Yang terdampak **hanya cabang replay**
+(entri selesai DAN fingerprint sama): di sana `Reserve` gagal lantang → middleware 503 → klien
+retry. Verdict yang tak butuh badan respons — key dipakai-ulang untuk request berbeda (422) dan
+kembar in-flight (409) — tetap terbit apa adanya, karena `Reserve` tak membuka blob di luar
+cabang replay. Dampak nyata nihil: TTL entri completed 24 jam dan replay bukan jalur kebenaran.
+Bila tak ingin ada 503 sama sekali, `DELETE FROM gov.idempotency_keys` saat deploy.
 
 **Sisa plaintext yang TIDAK dibersihkan mesin ini** (runbook, bukan kode): pesan yang terlanjur
 mengendap di stream NATS retensi dan baris `gov.outbox_events` lama tetap memuat pengenal —

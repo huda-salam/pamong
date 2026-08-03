@@ -90,7 +90,12 @@ dibuka). Ia tetap oracle kesamaan atas request utuh — diterima secara sadar.
 - **Tak ada perubahan bentuk tabel**, tapi arti dua kolom bergeser total — dicatat di
   DB_CHANGELOG justru karena tak terlihat dari `\d`.
 - **Baris idempotency lama menjadi tak terbaca** (`PurposeOf` gagal pada plaintext) → `Reserve`
-  error → middleware 503 → klien retry. TTL 24 jam membuat dampaknya habis sendiri.
+  error → middleware 503 → klien retry. TTL 24 jam membuat dampaknya habis sendiri. Kerusakannya
+  ditahan di **cabang replay saja**: badan respons hanya dibuka bila entri selesai DAN
+  fingerprint-nya sama, sehingga verdict 422 (key dipakai-ulang untuk request berbeda) dan 409
+  (kembar in-flight) tetap terbit — keduanya lahir dari `Fingerprint`+`Completed`, tak butuh
+  isinya. Menukar 422 yang FINAL dengan 503 yang retryable akan menyuruh klien mengulang request
+  yang salahnya sama selama sisa TTL.
 - **Yang mengendap tidak dibersihkan mesin ini**: pesan di stream NATS retensi & baris outbox
   lama tetap memuat plaintext. Runbook, bukan kode — kelas yang sama dengan catatan
   `DROP COLUMN`/heap-tuple di PR-3.8.5a.

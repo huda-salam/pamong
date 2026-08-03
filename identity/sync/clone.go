@@ -12,9 +12,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// UserProfileClone adalah snapshot person+employment yang ditulis ke gov.user_profiles
-// satu tenant. Sumbernya event "fat" (EmploymentDitugaskanPayload), bukan baca-balik
-// identity DB — sehingga consumer mandiri dari skema sentral.
+// UserProfileClone adalah salinan person+employment yang ditulis ke gov.user_profiles satu
+// tenant. Sumbernya DUA: atribut non-pengenal (nama, status, cross-tenant) datang dari payload
+// event, sedangkan keempat pengenal kelas personal_id datang dari CloneSource — dibaca balik ke
+// identity saat event ditangani, karena payload event adalah jalur samping yang wajib ditutup
+// (ADR-009 §6, ADR-018). Jangan mengembalikan pengenal ke payload demi "satu sumber": nilainya
+// akan mendarat plaintext di gov.outbox_events dan di stream NATS ber-retensi.
 type UserProfileClone struct {
 	PersonID         uuid.UUID
 	AssignmentID     uuid.UUID
