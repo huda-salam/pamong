@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	coreIdem "github.com/huda-salam/pamong/core/idempotency"
+	"github.com/huda-salam/pamong/infra/crypto"
 	"github.com/huda-salam/pamong/infra/db"
 	"github.com/huda-salam/pamong/port"
 )
@@ -23,29 +24,76 @@ const (
 	defaultCompletedTTL = 24 * time.Hour
 )
 
+// purposeResponse adalah purpose kunci untuk kolom `response` (badan respons tersimpan).
+const purposeResponse = "idempotency_response"
+
 // DBStore mengimplementasi port.IdempotencyStore di atas tenant DB (tabel gov.idempotency_keys).
 // Pool tenant diresolusi per-request dari TenantConnManager (DB-per-tenant); skema dipastikan
 // sekali per tenant per proses.
+//
+// Kolom `response` disimpan TERENKRIPSI (ADR-009 §6 butir 3): ia badan respons API yang
+// utuh, jadi ia memuat apa pun yang di-echo endpoint mutasi — termasuk NIK/NIP/email pada
+// respons use case identity. Mengenkripsi kolomnya sendiri sambil membiarkan cache replay
+// menyimpan salinan plaintext-nya selama 24 jam adalah teater keamanan.
+//
+// Kolom `fingerprint` TIDAK disegel: ia SHA-256 atas (method+path+body), bukan nilai mentah.
+// Ia tetap oracle kesamaan atas request utuh — diterima, karena menyegelnya akan mematikan
+// satu-satunya gunanya (dibandingkan saat Reserve, sebelum baris apa pun dibuka).
 type DBStore struct {
 	connMgr      *db.TenantConnManager
+	crypto       port.CryptoPort
 	pendingTTL   time.Duration
 	completedTTL time.Duration
 
 	ensuredMu sync.Mutex
 	ensured   map[string]bool // tenantID → skema gov.idempotency_keys sudah dipastikan
+
+	sealers sync.Map // tenantID → *crypto.FieldSealer (realm = tenant, seperti clone)
 }
 
-// NewDBStore membuat store dengan TTL default.
-func NewDBStore(connMgr *db.TenantConnManager) *DBStore {
+// NewDBStore membuat store dengan TTL default. CryptoPort nil DITOLAK: store tanpa kripto
+// menyimpan badan respons plaintext tanpa satu pun gejala sampai seseorang membuka dump —
+// penolakan yang sama dengan NewTenantDBWriter & infra/db.NewRepository, dan di titik yang
+// sama (konstruksi, bukan penulisan pertama).
+func NewDBStore(connMgr *db.TenantConnManager, c port.CryptoPort) (*DBStore, error) {
+	if c == nil {
+		return nil, fmt.Errorf("infra/idempotency: cache respons butuh port.CryptoPort (ADR-009 §6)")
+	}
 	return &DBStore{
 		connMgr:      connMgr,
+		crypto:       c,
 		pendingTTL:   defaultPendingTTL,
 		completedTTL: defaultCompletedTTL,
 		ensured:      make(map[string]bool),
-	}
+	}, nil
 }
 
 var _ port.IdempotencyStore = (*DBStore)(nil)
+
+// sealer mengembalikan sealer ber-realm TENANT. Alasannya sama dengan clone (ADR-017):
+// gov.idempotency_keys hidup DI DALAM tenant DB, jadi ia dilindungi kunci yang sama dengan
+// sisa DB itu — realm sentral di sini berarti satu kunci membuka cache respons seluruh pemda.
+func (s *DBStore) sealer(tenantID string) (*crypto.FieldSealer, error) {
+	if v, ok := s.sealers.Load(tenantID); ok {
+		return v.(*crypto.FieldSealer), nil
+	}
+	sl, err := crypto.NewFieldSealer(s.crypto, tenantID, "infra/idempotency")
+	if err != nil {
+		return nil, err
+	}
+	actual, _ := s.sealers.LoadOrStore(tenantID, sl)
+	return actual.(*crypto.FieldSealer), nil
+}
+
+// recordRef menurunkan identitas BARIS untuk AAD (ADR-016). Tabel ini ber-PK gabungan
+// (person_id, key) tanpa kolom UUID, jadi koordinatnya dibangun deterministik dari kedua
+// bagian PK itu — bukan dari person_id saja: dengan person_id saja, respons boleh dipindah
+// antar key MILIK ORANG YANG SAMA dan tetap terbuka, dan `fingerprint` tak menolong karena
+// ia ikut berpindah dalam baris yang sama. Namespace URL + separator eksplisit menjaga
+// (person, "a|b") tak bertabrakan dengan (person, "a", "b").
+func recordRef(personID uuid.UUID, key string) uuid.UUID {
+	return uuid.NewSHA1(personID, []byte("gov.idempotency_keys\x00"+key))
+}
 
 // pool meresolusi pool tenant & memastikan skema tabel ada (sekali per tenant).
 func (s *DBStore) pool(ctx context.Context, tenantID string) (*db.Pool, error) {
@@ -131,13 +179,37 @@ func (s *DBStore) Reserve(ctx context.Context, tenantID string, personID uuid.UU
 	if status != nil {
 		rec.Status = *status
 	}
-	rec.Body = body
+
+	// Buka badan respons. Gagal membuka TIDAK boleh berubah jadi "respons kosong": klien akan
+	// menerima 200 berbadan kosong sebagai jawaban final yang sah, dan request mutasinya tak
+	// akan pernah dijalankan ulang. Gagal lantang → middleware fail-closed 503, retry aman.
+	sl, err := s.sealer(tenantID)
+	if err != nil {
+		return nil, false, err
+	}
+	plain, err := sl.Open(ctx, purposeResponse, recordRef(personID, key), body)
+	if err != nil {
+		return nil, false, err
+	}
+	if plain != "" {
+		rec.Body = []byte(plain)
+	}
 	return rec, false, nil
 }
 
-// Complete menyimpan respons final & memperpanjang masa simpan ke replay window.
+// Complete menyimpan respons final (TERENKRIPSI) & memperpanjang masa simpan ke replay window.
 func (s *DBStore) Complete(ctx context.Context, tenantID string, personID uuid.UUID, key string, status int, body []byte) error {
 	pool, err := s.pool(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	sl, err := s.sealer(tenantID)
+	if err != nil {
+		return err
+	}
+	// Disegel SEBELUM menyentuh DB: kegagalan kripto harus berarti "tak ada yang tersimpan",
+	// bukan "tersimpan plaintext".
+	sealed, err := sl.SealOpaque(ctx, purposeResponse, recordRef(personID, key), string(body))
 	if err != nil {
 		return err
 	}
@@ -146,7 +218,7 @@ func (s *DBStore) Complete(ctx context.Context, tenantID string, personID uuid.U
 		UPDATE gov.idempotency_keys
 		SET status = $3, response = $4, completed = true,
 		    expires_at = now() + make_interval(secs => $5)
-		WHERE person_id = $1 AND key = $2`, personID, key, status, body, s.completedTTL.Seconds())
+		WHERE person_id = $1 AND key = $2`, personID, key, status, sealed, s.completedTTL.Seconds())
 	return err
 }
 

@@ -2,7 +2,9 @@ package usecase_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -102,23 +104,44 @@ func TestAssignEmploymentToTenant_Success(t *testing.T) {
 		t.Fatalf("assignment harus tersimpan, dapat %d", len(assignments.saved))
 	}
 
-	// Event ditugaskan terbit dengan payload fat lengkap (pemicu clone).
+	// Event ditugaskan terbit membawa KOORDINAT clone (pemicu), bukan pengenalnya.
 	testkit.AssertEventPublished(t, pub, domain.EventEmploymentDitugaskan)
 	ev := pub.Published()[0]
 	payload, ok := ev.Payload.(domain.EmploymentDitugaskanPayload)
 	if !ok {
 		t.Fatalf("payload bertipe %T", ev.Payload)
 	}
-	if payload.PersonID != person.ID || payload.NIK != person.NIK ||
-		payload.NIP != emp.NIP || payload.TenantID != "pemkot-surabaya" || payload.IsCrossTenant {
+	if payload.PersonID != person.ID || payload.EmploymentID != emp.ID ||
+		payload.TenantID != "pemkot-surabaya" || payload.IsCrossTenant {
 		t.Fatalf("payload tidak sesuai: %+v", payload)
-	}
-	// Kontak person ikut dibawa payload fat (PR-N3b) → mengisi clone → Recipient.Email/Phone.
-	if payload.Email != person.Email || payload.NoHP != person.NoHP {
-		t.Fatalf("payload kontak tidak sesuai: email=%q no_hp=%q", payload.Email, payload.NoHP)
 	}
 	if ev.TenantID != "pemkot-surabaya" {
 		t.Fatalf("event tenant_id salah: %q", ev.TenantID)
+	}
+	assertPayloadTanpaPengenal(t, payload, person, emp)
+}
+
+// assertPayloadTanpaPengenal menegakkan ADR-009 §6 butir 2 pada bentuk YANG DIKIRIM — bukan
+// pada struct Go-nya. Pemeriksaan dilakukan atas hasil marshal JSON karena itulah yang benar-
+// benar mendarat di stream NATS dan `gov.outbox_events.payload`; menghapus field dari struct
+// sambil menambahkan `MarshalJSON` yang menyertakannya kembali akan lolos type check tapi
+// tetap membocorkan. Nilai dicari sebagai substring, jadi ia ikut menangkap field bernama lain
+// yang kebetulan memuatnya.
+func assertPayloadTanpaPengenal(t *testing.T, payload domain.EmploymentDitugaskanPayload, person *domain.Person, emp *domain.Employment) {
+	t.Helper()
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	for nama, nilai := range map[string]string{
+		"nik": person.NIK, "nip": emp.NIP, "email": person.Email, "no_hp": person.NoHP,
+	} {
+		if nilai == "" {
+			t.Fatalf("fixture %s kosong — test tak membuktikan apa pun", nama)
+		}
+		if strings.Contains(string(raw), nilai) {
+			t.Fatalf("payload event memuat %s; pengenal tak boleh melewati bus (ADR-009 §6): %s", nama, raw)
+		}
 	}
 }
 

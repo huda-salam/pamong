@@ -71,7 +71,9 @@ func TestSyncClone_EmploymentDitugaskan(t *testing.T) {
 	pool, ctx := setupTenantDB(t)
 
 	writer, svc := newWriter(t, pool)
-	engine := sync.NewEngine(writer)
+	// Pengenal datang dari CloneSource, bukan dari event (PR-3.8.5b). Nilai fixture-nya sama
+	// dengan yang diperiksa di bawah, sehingga yang diuji tetap jalur tulis ujung-ke-ujung.
+	engine := newEngine(t, writer, newSource())
 	bus := newBus(t)
 	if err := engine.Register(bus); err != nil {
 		t.Fatalf("register: %v", err)
@@ -87,12 +89,8 @@ func TestSyncClone_EmploymentDitugaskan(t *testing.T) {
 			EmploymentID:     uuid.New(),
 			PersonID:         personID,
 			TenantID:         "pemkot-surabaya",
-			NIK:              "3578010101900001",
-			NIP:              "199001012015011001",
 			NamaLengkap:      "Budi Santoso",
 			EmploymentStatus: "asn",
-			Email:            "budi@example.test",
-			NoHP:             "0812340001",
 		},
 	}); err != nil {
 		t.Fatalf("publish ditugaskan: %v", err)
@@ -169,8 +167,7 @@ func TestSyncClone_EmploymentDitugaskan(t *testing.T) {
 		TenantID: "pemkot-surabaya",
 		Payload: domain.EmploymentDitugaskanPayload{
 			AssignmentID: assignmentID, EmploymentID: uuid.New(), PersonID: personID,
-			TenantID: "pemkot-surabaya", NIK: "3578010101900001", NIP: "199001012015011001",
-			NamaLengkap: "Budi Santoso", EmploymentStatus: "asn",
+			TenantID: "pemkot-surabaya", NamaLengkap: "Budi Santoso", EmploymentStatus: "asn",
 		},
 	}); err != nil {
 		t.Fatalf("publish ulang: %v", err)

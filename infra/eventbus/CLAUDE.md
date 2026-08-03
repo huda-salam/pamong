@@ -23,6 +23,15 @@ Driven adapter: implementasi port.EventPublisher + EventSubscriber. Driver memor
 - Event name terdaftar di manifest modul; schema divalidasi saat publish.
 - Outbox: tulis event ke tabel outbox dalam transaksi bisnis; relay async.
 - Driver memory hanya untuk test.
+- **Payload tak boleh memuat nilai kelas `personal_id`** (ADR-009 §6, ADR-018).
+  `gov.outbox_events.payload` adalah JSONB plaintext dan stream NATS punya retensi, jadi pengenal
+  yang lewat sini terbaca dari dump. Ditutup dengan MENGHAPUS nilainya (consumer meresolusi lewat
+  port di sisi pemilik data), bukan menyegelnya: blob yang mengendap di stream/outbox menjadi
+  kewajiban dekripsi permanen yang melintasi rotasi kunci dan patahan format ciphertext.
+- **Tak ada konsep versi schema.** `SchemaRegistry` mencocokkan identitas TIPE GO, dan `Unmarshal`
+  memakai encoding/json yang mengabaikan key tak dikenal. Menambah ATAU menghapus field karena itu
+  backward-tolerant di kawat; yang ditolak hanya tipe payload yang berbeda untuk nama event yang
+  sama. Checklist PR "naikkan versi schema" belum punya mesin di belakangnya.
 
 ## Pitfall umum
 - Publish tanpa schema terdaftar [linter: event-must-use-const di sisi pemanggil].

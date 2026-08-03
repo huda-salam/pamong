@@ -57,7 +57,7 @@ func (uc *CreatePerson) Execute(ctx port.AuthContext, in CreatePersonInput) (*do
 		Name:     domain.EventPersonDibuat,
 		CausedBy: ctx.PersonID().String(),
 		Payload: domain.PersonDibuatPayload{
-			PersonID: p.ID, NIK: p.NIK, NamaLengkap: p.NamaLengkap,
+			PersonID: p.ID, NamaLengkap: p.NamaLengkap,
 		},
 	}); err != nil {
 		return nil, err

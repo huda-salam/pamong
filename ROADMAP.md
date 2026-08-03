@@ -685,11 +685,36 @@ pluggable + custody sebagai kebijakan per-tenant).
       `bytea` tak terlihat pada `row::text` karena Postgres merendernya sebagai hex — test kini
       memeriksa kedua bentuk; (b) membuka ciphertext dengan id dari PERMINTAAN alih-alih dari BARIS
       selalu benar selama hanya ada satu baris berkontak — test kini menyeed dua.
-  - **Belum ditutup (sisa 3.8.5):** payload event (`PersonDibuatPayload.NIK`,
-    `EmploymentDibuatPayload.NIP`, `EmploymentDitugaskanPayload.{NIK,NIP,Email,NoHP}` — mengalir
-    ke bus dan, saat outbox di-wire, ke `gov.outbox_events.payload`), `gov.idempotency_keys.body`,
-    log/trace, dan staging table migrasi (pipeline-nya belum ada — tak ada yang bisa ditutup
-    sekarang, tapi aturannya harus mendarat bersama pipeline-nya).
+  - **3.8.5b — payload event + cache idempotency ✅ SELESAI.** Dua jalur terakhir yang masih
+    menyimpan pengenal plaintext, ditutup dengan DUA mekanisme berbeda karena sifatnya berbeda —
+    keputusan itu yang jadi isi **ADR-018**:
+    - **Payload event: nilainya DIHAPUS, bukan disegel.** `PersonDibuatPayload.NIK`,
+      `EmploymentDibuatPayload.NIP`, dan `EmploymentDitugaskanPayload.{NIK,NIP,Email,NoHP}`
+      dibuang; `identity/sync` memintanya lewat port baru `CloneSource` (impl di atas repo
+      identity, jadi kunci realm sentral tak pernah keluar dari sisi identity). Menyegel akan
+      menaruh ciphertext di stream NATS retensi & `gov.outbox_events.payload` — kewajiban
+      dekripsi permanen yang melintasi rotasi kunci dan patahan format (`0x01` sudah ditolak
+      `Decrypt` sejak ADR-016). Membalik doktrin "fat event" **untuk pengenal saja**;
+      `NamaLengkap` tetap ikut payload (kelas `personal`, sengaja tak dienkripsi di kolom).
+      Keputusan #1 ADR-013 tidak berubah — kontak tetap mendarat di clone, yang berganti hanya
+      kurirnya; opsi yang dulu ditolak ADR-013 adalah baca live saat KIRIM di sisi tenant.
+    - **`gov.idempotency_keys.response`: disegel** (di sini tak ada yang bisa dihapus — badan
+      respons itu memang datanya). Realm tenant, purpose `idempotency_response`, **tanpa blind
+      index** (`FieldSealer.SealOpaque` — bidx atas nilai yang tak pernah dicari hanya oracle
+      kesamaan antar respons). Koordinat AAD diturunkan dari KEDUA bagian PK, sebab dari
+      `person_id` saja respons bisa dipindah antar key milik orang yang sama dan tetap terbuka.
+    - DoD terbukti: payload diperiksa pada bentuk **hasil marshal JSON** (bukan struct Go —
+      `MarshalJSON` yang menyertakan field kembali akan lolos type check), dengan nilai dicari
+      sebagai substring sehingga kebocoran lewat field bernama lain ikut tertangkap; kolom
+      `response` bersih dari badan respons dalam bentuk teks **dan** hex, sementara replay tetap
+      memulihkannya utuh; ciphertext yang dipindah antar key ditolak.
+    - **Enam mutasi kode produksi diverifikasi** (koordinat salah ke `CloneSource`, error source
+      ditelan, pengenal bocor lewat field payload bernama lain, tak-ditemukan dikembalikan
+      kosong, respons disimpan plaintext, koordinat AAD hanya `person_id`).
+  - **Belum ditutup (sisa 3.8.5):** staging table migrasi — pipeline legacy-import belum ada sama
+    sekali, jadi tak ada yang bisa ditutup sekarang; aturannya harus mendarat bersama pipeline-nya.
+    (Log/trace sudah disisir tuntas di 3.8.5a: satu-satunya pelog alamat/body adalah driver
+    `infra/messaging/log.go` yang memang ditolak di staging & production.)
 
 - **PR-3.8.6** Migrasi identity UNIQUE→blind index ← 3.8.3 ✅ *(dikerjakan bersama E2)*
   - `nik`/`nip`/`cred_value`/`no_hp`/`email` → `_enc`+`_bidx`; UNIQUE pindah; backfill (dev

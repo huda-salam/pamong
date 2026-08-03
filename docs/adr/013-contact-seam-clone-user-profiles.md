@@ -1,7 +1,12 @@
 # ADR-013: Contact seam — kontak (email/no_hp) di clone tenant untuk routing notifikasi
 
 ## Status
-Accepted
+Accepted — keputusan tetap berlaku. **Kurir pada Keputusan #1 diganti ADR-018**: kontak tetap
+di-clone ke `gov.user_profiles` dan jalur KIRIM notifikasi tetap satu join same-schema (itulah
+keputusannya), tapi nilainya tidak lagi menumpang field di `EmploymentDitugaskanPayload` —
+`identity/sync` memintanya lewat port saat menangani event, karena payload adalah jalur samping
+yang wajib ditutup (ADR-009 §6). Ini **bukan** "opsi B" yang ditolak di bawah: opsi B membaca
+live **saat kirim**, di sisi tenant, per notifikasi. Tidak di-supersede.
 
 ## Konteks
 PR-N1 (`infra/notification.DBRecipientDirectory`) membaca pemegang role tenant nyata dan
@@ -52,6 +57,8 @@ nama+kontak sekaligus).
   bertugas — bukan hanya di identity DB. Ini konsekuensi sadar opsi A (lihat Alternatif). Enkripsi
   field untuk kolom ini DEFERRED bersama `nik`/`no_hp` lain (ROADMAP 3.8) — konsisten dengan
   keadaan sekarang (kolom personal_id lain di clone pun masih plaintext).
+  → **Sudah tidak DEFERRED**: kolom kontak di clone disegel PR-3.8.5a (realm tenant), dan
+  nilainya berhenti melewati payload event di PR-3.8.5b (ADR-018).
 - `gov.user_profiles` bertambah 2 kolom; `EmploymentDitugaskanPayload` bertambah 2 field (aditif).
 - Kontak yang berubah di identity TIDAK otomatis ter-refresh di clone sampai clone-freshness
   dibangun (sama seperti nama). Dokumen historis tetap snapshot (memang begitu seharusnya);

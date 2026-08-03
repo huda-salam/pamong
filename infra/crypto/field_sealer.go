@@ -80,6 +80,32 @@ func (f *FieldSealer) Seal(ctx context.Context, purpose string, recordID uuid.UU
 	return enc, bidx, nil
 }
 
+// SealOpaque menyegel nilai yang TAK PERNAH dicari — satu kolom fisik, tanpa blind index.
+//
+// Ia bukan sekadar penghematan. Blind index bersifat deterministik: menghitungnya atas nilai
+// yang tak pernah menjadi kunci pencarian hanya menghasilkan sidik jari yang membocorkan
+// "dua baris ini isinya sama" kepada siapa pun yang membaca dump, plus satu kunci lagi yang
+// harus dirotasi. Untuk badan respons (`gov.idempotency_keys.response`) itu berarti oracle
+// kesamaan atas seluruh respons API — kebocoran baru yang diciptakan oleh mekanisme yang
+// seharusnya menutup kebocoran.
+//
+// Aturan sisanya identik dengan Seal: kosong → NULL, pengikatan baris wajib. Pasangan bacanya
+// adalah Open yang sama (ia memang tak pernah menyentuh index).
+func (f *FieldSealer) SealOpaque(ctx context.Context, purpose string, recordID uuid.UUID, plain string) ([]byte, error) {
+	if plain == "" {
+		return nil, nil
+	}
+	if recordID == uuid.Nil {
+		return nil, fmt.Errorf("%s: seal %q butuh id baris (pengikatan baris, ADR-016)", f.who(), purpose)
+	}
+	ref := port.FieldRef{TenantID: f.realm, Purpose: purpose, RecordID: recordID.String()}
+	enc, err := f.crypto.Encrypt(ctx, ref, []byte(plain))
+	if err != nil {
+		return nil, fmt.Errorf("%s: enkripsi %q: %w", f.who(), purpose, err)
+	}
+	return enc, nil
+}
+
 // Index menghitung blind index untuk lookup equality & UNIQUE. Sengaja TIDAK menerima
 // recordID: ia wajib row-independent (ADR-016 §3), kalau tidak `WHERE {f}_bidx = $1` tak akan
 // pernah cocok dan UNIQUE tak akan pernah menangkap duplikat.

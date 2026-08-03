@@ -96,19 +96,17 @@ func (uc *AssignEmploymentToTenant) Execute(ctx port.AuthContext, in AssignEmplo
 		Name:     domain.EventEmploymentDitugaskan,
 		TenantID: in.TenantID,
 		CausedBy: ctx.PersonID().String(),
+		// Pengenal (NIK/NIP/kontak) sengaja TIDAK disertakan — sync engine memintanya lewat
+		// CloneSource saat menangani event (PR-3.8.5b, ADR-009 §6). person tetap di-load di
+		// atas karena NamaLengkap ikut payload dan resolusinya menegakkan person memang ada.
 		Payload: domain.EmploymentDitugaskanPayload{
 			AssignmentID:     a.ID,
 			EmploymentID:     emp.ID,
 			PersonID:         person.ID,
 			TenantID:         in.TenantID,
-			NIK:              person.NIK,
-			NIP:              emp.NIP,
 			NamaLengkap:      person.NamaLengkap,
 			EmploymentStatus: string(emp.Status),
 			IsCrossTenant:    in.CrossTenant,
-			// Kontak person untuk mengisi clone tenant → Recipient.Email/Phone (PR-N3b).
-			Email: person.Email,
-			NoHP:  person.NoHP,
 		},
 	}); err != nil {
 		return nil, err

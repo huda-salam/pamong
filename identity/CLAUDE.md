@@ -18,7 +18,7 @@ setiap perubahan butuh review ekstra (lihat aturan PR).
 - Tenant assignment: penugasan employment ke tenant; cross-tenant (PLT/PJ) ber-otorisasi
 - Auth flow: tiga jalur (employee sentral, employee daerah, citizen publik)
 - JWT issue/verify, revocation (jti)
-- Sync engine: clone person/employment ke tenant DB via event (fat event). Clone `gov.user_profiles`
+- Sync engine: clone person/employment ke tenant DB via event. Clone `gov.user_profiles`
   membawa KONTAK (email/no_hp) untuk routing notifikasi email/SMS (PR-N3b, ADR-013) — masih tanpa
   kredensial/password. Sejak PR-3.8.5 nik/nip/email/no_hp pada clone **TERENKRIPSI dengan realm
   TENANT** (lihat §Enkripsi pengenal). Freshness kontak/nama (update-on-change lintas-tenant)
@@ -91,6 +91,16 @@ Kolom plaintext-nya **tidak ada** — bukan sekadar berhenti diisi.
 - **Kebijakan seal/index/open punya SATU implementasi: `crypto.FieldSealer`.** Repo identity,
   writer clone, dan kedua pembacanya memanggilnya, bukan menyalin aturannya. Jangan menulis ulang
   "kosong → NULL", pengikatan baris, atau pemeriksaan `PurposeOf` di tempat baru.
+- **Pengenal TIDAK ikut payload event (PR-3.8.5b, ADR-018).** Payload membawa koordinat (id) +
+  atribut non-pengenal; `identity/sync` memintanya lewat `sync.CloneSource` saat event ditangani.
+  Jangan "menambahkan kembali demi menghemat satu query": `gov.outbox_events.payload` plaintext
+  JSONB dan stream NATS punya retensi, jadi field yang ditambahkan di sini mendarat di dump.
+  `NamaLengkap` boleh ikut — kelasnya `personal`, bukan `personal_id`.
+  Konsekuensi yang disengaja: clone menerima nilai saat HANDLING, bukan saat event terbit — dan
+  itu memang kontrak `gov.user_profiles` (clone HIDUP, bukan sumber dokumen historis).
+  `CloneSource` diimplementasi di atas repo identity **dengan sengaja**: repo-lah yang membuka
+  realm sentral, sehingga kunci sentral tak pernah keluar dari sisi identity. Jangan
+  memindahkannya ke sisi tenant (mis. membaca identity DB dari `infra/*`).
 - **Sesudah lookup, yang kanonik adalah BARIS yang ditemukan — bukan nilai permintaan.** Nilai
   permintaan berhenti layak dipakai sebagai alamat tujuan, parameter kirim, atau apa pun yang
   mengalir ke sistem luar. `TrimSpace` di `normalize()` ikut membuang CR/LF, jadi ejaan yang

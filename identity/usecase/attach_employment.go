@@ -66,7 +66,7 @@ func (uc *AttachEmployment) Execute(ctx port.AuthContext, in AttachEmploymentInp
 		Name:     domain.EventEmploymentDibuat,
 		CausedBy: ctx.PersonID().String(),
 		Payload: domain.EmploymentDibuatPayload{
-			EmploymentID: e.ID, PersonID: e.PersonID, Status: string(e.Status), NIP: e.NIP,
+			EmploymentID: e.ID, PersonID: e.PersonID, Status: string(e.Status),
 		},
 	}); err != nil {
 		return nil, err

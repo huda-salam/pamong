@@ -32,6 +32,39 @@ Jalur A/B/C merujuk tiga cara pembuatan skema yang dijelaskan di `DB_SCHEMA.md` 
 
 ---
 
+### 2026-08-02 · PR-3.8.5b (payload event + cache idempotency) · `<hash>`
+**DB:** tenant · **Jalur:** — (tanpa DDL; bentuk tabel tidak berubah) · **Down:** tidak berlaku
+
+Menutup dua jalur samping terakhir yang masih menyimpan pengenal plaintext (ADR-009 §6 butir 2 &
+3). Tak ada satu pun kolom bertambah, berubah tipe, atau hilang — yang berubah **isi** dua kolom
+yang sudah ada. Dicatat di sini justru karena itu: bentuk tabel yang tak berubah membuat
+perubahannya tak terlihat dari `\d`, sementara arti kolomnya bergeser total.
+
+- `~ gov.outbox_events.payload` — **tanpa DDL**: JSONB-nya berhenti memuat pengenal karena
+  payload event identity kehilangan field-nya (`PersonDibuatPayload.NIK`,
+  `EmploymentDibuatPayload.NIP`, `EmploymentDitugaskanPayload.{NIK,NIP,Email,NoHP}`). Payload
+  TIDAK disegel — nilainya DIHAPUS; `identity/sync` memintanya lewat `CloneSource` ke identity DB
+  saat event ditangani. Alasan lengkap: **ADR-018**.
+- `~ gov.idempotency_keys.response` — **tanpa DDL** (sudah BYTEA): kini ciphertext, realm
+  **tenant**, purpose `idempotency_response`, **tanpa blind index** (nilai ini tak pernah dicari;
+  bidx atasnya hanya oracle kesamaan antar respons). Koordinat AAD baris (ADR-016) diturunkan
+  deterministik dari KEDUA bagian PK — `uuid.NewSHA1(person_id, "gov.idempotency_keys\0"+key)` —
+  karena tabel ini tak punya kolom UUID; dari `person_id` saja respons bisa dipindah antar key
+  milik orang yang sama dan tetap terbuka.
+- `~ id.data_keys` — **tanpa DDL**: bertambah baris realm tenant untuk purpose
+  `idempotency_response` (dibuat otomatis saat purpose dipakai pertama kali).
+
+**Kompatibilitas:** additive di kawat, **breaking pada data yang sudah ada**. Baris
+`gov.idempotency_keys` yang ditulis SEBELUM rilis ini memuat respons plaintext dan akan DITOLAK
+saat dibaca (`PurposeOf` gagal pada non-ciphertext) → `Reserve` mengembalikan error, middleware
+menjawab 503, klien retry. Dampak nyata nihil: TTL entri completed 24 jam dan replay bukan jalur
+kebenaran. Bila tak ingin ada 503 sama sekali, `DELETE FROM gov.idempotency_keys` saat deploy.
+
+**Sisa plaintext yang TIDAK dibersihkan mesin ini** (runbook, bukan kode): pesan yang terlanjur
+mengendap di stream NATS retensi dan baris `gov.outbox_events` lama tetap memuat pengenal —
+kelas yang sama dengan catatan `DROP COLUMN`/heap-tuple di PR-3.8.5a. Nol dampak sekarang:
+`NewOutboxStore` belum punya pemanggil produksi dan clone nol baris di semua env.
+
 ### 2026-08-01 · PR-3.8.5a (jalur clone) · `7485fc8`
 **DB:** tenant · **Jalur:** C (`identity/sync/writer_tenantdb.go`) · **Down:** tidak (jalur C)
 

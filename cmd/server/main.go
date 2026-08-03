@@ -107,9 +107,6 @@ func run() error {
 	}
 	// Rate limiter per-principal (in-memory; swap Redis untuk multi-instance — titik ekstensi #1).
 	rateLimiter := ratelimit.NewMemory(nil)
-	// Store idempotency: tabel gov.idempotency_keys per tenant DB (skema dipastikan lazy per
-	// tenant). Menegakkan "request mutasi duplikat → response sama tanpa efek ganda".
-	idempotencyStore := idempotency.NewDBStore(connMgr)
 	// Generator nomor ber-urut: tabel gov.sequences per tenant DB (skema dipastikan lazy per
 	// tenant). Atomik + reset per tahun — dipakai use case seperti CreateSuratMasuk untuk
 	// nomor agenda. Menutup kabel nil PR-5.1.1 (gap Phase-1).
@@ -127,6 +124,13 @@ func run() error {
 	userResolver, err := infrauser.NewDBResolver(connMgr, cryptoSvc)
 	if err != nil {
 		return fmt.Errorf("resolver user (clone terenkripsi): %w", err)
+	}
+	// Store idempotency: tabel gov.idempotency_keys per tenant DB (skema dipastikan lazy per
+	// tenant). Menegakkan "request mutasi duplikat → response sama tanpa efek ganda". Dirakit
+	// SESUDAH cryptoSvc: badan respons tersimpan disegel (ADR-009 §6 butir 3).
+	idempotencyStore, err := idempotency.NewDBStore(connMgr, cryptoSvc)
+	if err != nil {
+		return fmt.Errorf("store idempotency (cache respons terenkripsi): %w", err)
 	}
 
 	// Router aggregator: rute semua modul terkumpul di sini saat Bootstrap.

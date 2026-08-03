@@ -395,7 +395,7 @@ membuat "operasi gagal tidak mempublish event" benar secara struktural, bukan by
 |---|---|---|
 | `id` | UUID PK DEFAULT gen_random_uuid() | |
 | `event_name` | TEXT NOT NULL | |
-| `payload` | JSONB NOT NULL | divalidasi terhadap schema registry sebelum tulis |
+| `payload` | JSONB NOT NULL | divalidasi terhadap schema registry sebelum tulis; **tak boleh memuat pengenal** (lihat bawah) |
 | `tenant_id` | TEXT NOT NULL DEFAULT '' | |
 | `caused_by` | TEXT NOT NULL DEFAULT '' | korelasi sebab-akibat antar event |
 | `idempotency_key` | TEXT NOT NULL DEFAULT '' | |
@@ -407,6 +407,14 @@ membuat "operasi gagal tidak mempublish event" benar secara struktural, bukan by
 
 Index parsial: `idx_outbox_pending (next_retry_at NULLS FIRST, created_at) WHERE dispatched_at IS NULL
 AND failed_at IS NULL` — relay hanya men-scan baris yang benar-benar siap kirim.
+
+**`payload` tidak boleh memuat nilai kelas `personal_id`** (ADR-009 §6 butir 2, PR-3.8.5b).
+Kolom ini plaintext JSONB dan barisnya bertahan sampai relay membersihkannya, jadi pengenal yang
+lewat sini terbaca dari dump tenant — jalur samping yang sama dengan kolom yang sudah disegel.
+Aturannya ditegakkan pada **bentuk payload**: event identity membawa koordinat (id) saja, dan
+consumer yang butuh nilainya memintanya lewat port di sisi identity (`identity/sync.CloneSource`).
+Payload TIDAK disegel — ciphertext yang mengendap di baris outbox / stream NATS retensi menjadi
+kewajiban dekripsi permanen yang melintasi rotasi kunci dan patahan format (ADR-018).
 
 ### 4.4 `gov.user_profiles` — clone read-only identity *(C, `identity/sync/writer_tenantdb.go`)*
 
@@ -635,7 +643,7 @@ Hanya override **eksplisit** yang tersimpan: ketiadaan baris berarti "pakai `Def
 | `key` | TEXT NOT NULL | bagian PK |
 | `fingerprint` | TEXT NOT NULL | hash(method+path+body); key dipakai-ulang untuk request beda → 422 |
 | `status` | INT | NULL selama reservasi pending |
-| `response` | BYTEA | idem |
+| `response` | BYTEA | **ciphertext** badan respons (PR-3.8.5b); NULL selama pending |
 | `completed` | BOOLEAN NOT NULL DEFAULT false | |
 | `created_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | |
 | `expires_at` | TIMESTAMPTZ NOT NULL | pending: pendek; completed: diperpanjang ke replay window (mis. 24 jam) |
@@ -644,6 +652,23 @@ PK `(person_id, key)`. Index: `idx_idempotency_expires (expires_at)`.
 
 PK gabungan dengan `person_id` adalah kontrol keamanan: satu user tidak bisa membaca atau menimpa
 respons user lain dengan menebak nilai key.
+
+**`response` disimpan terenkripsi** (ADR-009 §6 butir 3, PR-3.8.5b). Ia badan respons API yang
+utuh, jadi ia memuat apa pun yang di-echo endpoint mutasi — termasuk pengenal pada respons use
+case identity. Menyegel kolom sumbernya sambil membiarkan cache replay menyimpan salinan
+plaintext-nya selama 24 jam tidak menutup apa pun. Tipe kolomnya **tidak berubah** (sudah BYTEA);
+yang berubah isinya.
+
+- Realm kunci = **tenant** (tabel hidup di tenant DB), purpose `idempotency_response`, dan
+  ciphertext **tanpa blind index** — nilai ini tak pernah menjadi kunci pencarian, dan bidx
+  atasnya hanya akan menjadi oracle kesamaan antar respons (`FieldSealer.SealOpaque`).
+- Koordinat AAD baris (ADR-016) diturunkan **deterministik dari kedua bagian PK**
+  (`uuid.NewSHA1(person_id, "gov.idempotency_keys\0"+key)`) karena tabel ini tak punya kolom
+  UUID. Dari `person_id` saja, respons boleh dipindah antar key milik orang yang sama dan tetap
+  terbuka — dan `fingerprint` tak menolong, karena ia ikut berpindah dalam baris yang sama.
+- `fingerprint` **tidak** disegel: ia SHA-256 atas (method+path+body), bukan nilai mentah.
+  Menyegelnya akan mematikan satu-satunya gunanya (dibandingkan saat `Reserve`, sebelum baris
+  apa pun dibuka). Ia tetap oracle kesamaan atas request utuh — diterima secara sadar.
 
 ### 4.16 `gov.sequences` — penomoran atomik *(A, `core/sequence/001`)*
 

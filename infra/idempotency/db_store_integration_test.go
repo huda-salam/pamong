@@ -4,7 +4,9 @@ package idempotency_test
 
 import (
 	"context"
+	"encoding/hex"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -14,7 +16,11 @@ import (
 	"github.com/huda-salam/pamong/infra/db"
 	infraIdem "github.com/huda-salam/pamong/infra/idempotency"
 	"github.com/huda-salam/pamong/port"
+	"github.com/huda-salam/pamong/testkit/cryptokit"
 )
+
+// itTenant adalah tenant uji — sekaligus REALM kunci kolom `response`.
+const itTenant = "pemkot-a"
 
 // fixedResolver mengembalikan satu tenant yang menunjuk ke DB test (host kosong → fallback ke
 // shared.Host manager). Cukup untuk menguji store DB via TenantConnManager tanpa registry.
@@ -52,12 +58,20 @@ func newIdemEnv(t *testing.T) (*infraIdem.DBStore, *db.Pool, context.Context) {
 	}
 	pool := db.NewPool(pgpool)
 	_, _ = pool.Exec(ctx, `DROP SCHEMA IF EXISTS gov CASCADE`)
+	cryptokit.Cleanup(t, pool)
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), `DROP SCHEMA IF EXISTS gov CASCADE`)
+		cryptokit.Cleanup(t, pool)
 		pgpool.Close()
 	})
 
-	return infraIdem.NewDBStore(connMgr), pool, ctx
+	// Kripto NYATA: yang diuji justru bahwa badan respons benar-benar tak terbaca di kolom
+	// dan tetap pulih utuh saat replay. MockCrypto akan meluluskan keduanya tanpa membuktikan.
+	store, err := infraIdem.NewDBStore(connMgr, cryptokit.NewService(t, pool, itTenant))
+	if err != nil {
+		t.Fatalf("NewDBStore: %v", err)
+	}
+	return store, pool, ctx
 }
 
 func TestDBStore_ReserveCompleteReplay(t *testing.T) {
@@ -65,7 +79,7 @@ func TestDBStore_ReserveCompleteReplay(t *testing.T) {
 	person := uuid.New()
 
 	// Reservasi pertama → reserved.
-	rec, reserved, err := store.Reserve(ctx, "pemkot-a", person, "k1", "fp1")
+	rec, reserved, err := store.Reserve(ctx, itTenant, person, "k1", "fp1")
 	if err != nil {
 		t.Fatalf("reserve#1: %v", err)
 	}
@@ -74,7 +88,7 @@ func TestDBStore_ReserveCompleteReplay(t *testing.T) {
 	}
 
 	// Sebelum Complete: reservasi kedua (kembar in-flight) → tidak reserved, belum completed.
-	rec, reserved, err = store.Reserve(ctx, "pemkot-a", person, "k1", "fp1")
+	rec, reserved, err = store.Reserve(ctx, itTenant, person, "k1", "fp1")
 	if err != nil {
 		t.Fatalf("reserve#2: %v", err)
 	}
@@ -83,10 +97,10 @@ func TestDBStore_ReserveCompleteReplay(t *testing.T) {
 	}
 
 	// Complete lalu Reserve lagi → replay dengan status+body tersimpan.
-	if err := store.Complete(ctx, "pemkot-a", person, "k1", 201, []byte(`{"id":"x"}`)); err != nil {
+	if err := store.Complete(ctx, itTenant, person, "k1", 201, []byte(`{"id":"x"}`)); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
-	rec, reserved, err = store.Reserve(ctx, "pemkot-a", person, "k1", "fp1")
+	rec, reserved, err = store.Reserve(ctx, itTenant, person, "k1", "fp1")
 	if err != nil {
 		t.Fatalf("reserve#3: %v", err)
 	}
@@ -100,14 +114,14 @@ func TestDBStore_ScopePerPrincipal(t *testing.T) {
 	a, b := uuid.New(), uuid.New()
 
 	// Person A reserve & complete key "shared".
-	if _, _, err := store.Reserve(ctx, "pemkot-a", a, "shared", "fpA"); err != nil {
+	if _, _, err := store.Reserve(ctx, itTenant, a, "shared", "fpA"); err != nil {
 		t.Fatalf("reserve A: %v", err)
 	}
-	if err := store.Complete(ctx, "pemkot-a", a, "shared", 200, []byte("A")); err != nil {
+	if err := store.Complete(ctx, itTenant, a, "shared", 200, []byte("A")); err != nil {
 		t.Fatalf("complete A: %v", err)
 	}
 	// Person B pakai NILAI key sama → HARUS reservasi baru (bukan replay respons A).
-	rec, reserved, err := store.Reserve(ctx, "pemkot-a", b, "shared", "fpB")
+	rec, reserved, err := store.Reserve(ctx, itTenant, b, "shared", "fpB")
 	if err != nil {
 		t.Fatalf("reserve B: %v", err)
 	}
@@ -120,18 +134,94 @@ func TestDBStore_ReleaseMembolehkanRetry(t *testing.T) {
 	store, _, ctx := newIdemEnv(t)
 	person := uuid.New()
 
-	if _, _, err := store.Reserve(ctx, "pemkot-a", person, "k1", "fp1"); err != nil {
+	if _, _, err := store.Reserve(ctx, itTenant, person, "k1", "fp1"); err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	if err := store.Release(ctx, "pemkot-a", person, "k1"); err != nil {
+	if err := store.Release(ctx, itTenant, person, "k1"); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	// Setelah Release, key bebas → reservasi baru berhasil.
-	_, reserved, err := store.Reserve(ctx, "pemkot-a", person, "k1", "fp1")
+	_, reserved, err := store.Reserve(ctx, itTenant, person, "k1", "fp1")
 	if err != nil {
 		t.Fatalf("reserve setelah release: %v", err)
 	}
 	if !reserved {
 		t.Fatal("setelah Release, reservasi ulang harus reserved=true")
+	}
+}
+
+// TestDBStore_ResponsTakTerbacaDiKolom adalah DoD ADR-009 §6 butir 3: badan respons yang
+// disimpan untuk replay tidak boleh terbaca dari dump. Ia diperiksa pada BENTUK TERSIMPAN,
+// bukan lewat API store — Reserve akan mendekripsinya dan meluluskan test apa pun.
+//
+// Dua bentuk diperiksa: `response::text` (Postgres merender bytea sebagai HEX, sehingga nilai
+// mentah TAK akan terlihat sebagai substring di sana) dan hex dari nilai itu sendiri. Pelajaran
+// dari PR-3.8.5a: memeriksa satu bentuk saja membuat test lolos padahal kolom masih plaintext.
+func TestDBStore_ResponsTakTerbacaDiKolom(t *testing.T) {
+	store, pool, ctx := newIdemEnv(t)
+	person := uuid.New()
+	const body = `{"nik":"3578010101900001","nama":"Budi"}`
+
+	if _, _, err := store.Reserve(ctx, itTenant, person, "k1", "fp1"); err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	if err := store.Complete(ctx, itTenant, person, "k1", 201, []byte(body)); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	var asText, asHex string
+	if err := pool.QueryRow(ctx,
+		`SELECT response::text, encode(response, 'hex')
+		   FROM gov.idempotency_keys WHERE person_id = $1 AND key = $2`, person, "k1",
+	).Scan(&asText, &asHex); err != nil {
+		t.Fatalf("baca kolom response: %v", err)
+	}
+	for _, jarum := range []string{body, "3578010101900001", "Budi"} {
+		if strings.Contains(asText, jarum) {
+			t.Fatalf("kolom response memuat %q dalam bentuk teks — tak terenkripsi", jarum)
+		}
+		if strings.Contains(asHex, hex.EncodeToString([]byte(jarum))) {
+			t.Fatalf("kolom response memuat %q dalam bentuk hex — tak terenkripsi", jarum)
+		}
+	}
+
+	// Sesudah semua itu, replay tetap harus mengembalikan badan yang UTUH.
+	rec, _, err := store.Reserve(ctx, itTenant, person, "k1", "fp1")
+	if err != nil {
+		t.Fatalf("reserve replay: %v", err)
+	}
+	if string(rec.Body) != body {
+		t.Fatalf("badan respons tidak pulih utuh: %q", rec.Body)
+	}
+}
+
+// TestDBStore_ResponsTerikatBaris: blob yang dipindah ke baris lain HARUS gagal dibuka
+// (ADR-016). Koordinat AAD tabel ini diturunkan dari (person_id, key) — jadi memindahkannya
+// ke KEY LAIN MILIK ORANG YANG SAMA pun harus gagal. Kalau koordinatnya hanya person_id,
+// pemindahan ini akan lolos dan respons request A bisa disajikan sebagai jawaban request B.
+func TestDBStore_ResponsTerikatBaris(t *testing.T) {
+	store, pool, ctx := newIdemEnv(t)
+	person := uuid.New()
+
+	for _, k := range []string{"k1", "k2"} {
+		if _, _, err := store.Reserve(ctx, itTenant, person, k, "fp-"+k); err != nil {
+			t.Fatalf("reserve %s: %v", k, err)
+		}
+		if err := store.Complete(ctx, itTenant, person, k, 200, []byte(`{"key":"`+k+`"}`)); err != nil {
+			t.Fatalf("complete %s: %v", k, err)
+		}
+	}
+
+	// Pindahkan ciphertext k1 → baris k2 (person yang SAMA).
+	if _, err := pool.Exec(ctx, `
+		UPDATE gov.idempotency_keys SET response = (
+			SELECT response FROM gov.idempotency_keys WHERE person_id = $1 AND key = 'k1')
+		WHERE person_id = $1 AND key = 'k2'`, person); err != nil {
+		t.Fatalf("pindahkan ciphertext: %v", err)
+	}
+
+	_, _, err := store.Reserve(ctx, itTenant, person, "k2", "fp-k2")
+	if err == nil {
+		t.Fatal("ciphertext yang dipindah antar key harus DITOLAK — pengikatan baris tak menggigit")
 	}
 }

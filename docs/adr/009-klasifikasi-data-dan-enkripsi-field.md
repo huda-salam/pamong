@@ -6,6 +6,11 @@ ADR-015 (metode keempat `PurposeOf`, mengikat ciphertext ke KOLOM-nya) dan ADR-0
 (identitas BARIS masuk ke AAD; `Encrypt`/`Decrypt` menerima `FieldRef`/`RowRef`, dan versi
 format ciphertext §3 naik ke `0x02`). Tidak di-supersede oleh keduanya.
 
+**Mekanisme §6 butir 2 (payload event) diamandemen ADR-018**: "di-mask/enc" → nilainya
+**dihapus** dari payload, consumer meresolusi lewat port di sisi pemilik data. Kewajiban §6
+("jalur samping wajib ditutup") tidak berubah — hanya caranya untuk jalur itu. Butir 3 (cache
+idempotency) dijalankan sesuai bunyinya (disegel). Tidak di-supersede.
+
 ## Konteks
 Regulasi pemerintah (UU 27/2022 PDP, PP 71/2019 PSTE, arahan kriptografi BSSN/SPBE)
 dan praktik industri (SNI ISO/IEC 27001 kontrol kriptografi) menuntut "langkah teknis
@@ -158,7 +163,13 @@ Enkripsi satu kolom sia-sia bila nilai mentah bocor lewat jalur lain. Implementa
 1. **`gov.audit_logs.diff` (JSONB)** — field class `personal_id`+ ikut terenkripsi di diff
    (lihat §Hubungan dengan ADR-002). Ini lubang E2 di REVIEW_BACKLOG.
 2. **Payload event** (NATS stream) — pengenal di payload di-mask/enc.
+   → **Diamandemen ADR-018**: nilainya DIHAPUS dari payload (consumer meresolusi lewat port di
+   sisi pemilik data), bukan disegel — blob tersegel yang mengendap di stream retensi &
+   `gov.outbox_events` menjadi kewajiban dekripsi permanen, dan realm ciphertext identity
+   (`_central`) berbeda dari realm tujuannya (tenant) sehingga tak bisa diteruskan apa adanya.
 3. **Cache idempotency** (`gov.idempotency_keys`) — response tersimpan tak boleh muat pengenal mentah.
+   → Ditutup PR-3.8.5b dengan **menyegel** kolom `response` (di sini tak ada yang bisa dihapus:
+   badan respons memang datanya). Realm tenant, tanpa blind index, AAD dari kedua bagian PK.
 4. **Staging table** pipeline migrasi legacy — data mentah; enkripsi saat commit ke production.
 5. **Log & trace** (OTEL span, query log Postgres) — pengenal `redacted`/`never` per tabel §1.
 6. **Clone `gov.user_profiles`** — NIK/NIP di clone tenant ikut terenkripsi.
