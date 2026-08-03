@@ -47,6 +47,14 @@ func (s *RepoCloneSource) Identifiers(ctx context.Context, personID, employmentI
 	if err != nil {
 		return Identifiers{}, fmt.Errorf("identity/sync: baca employment %s untuk clone: %w", employmentID, err)
 	}
+	// Kedua id datang dari payload event dan diambil TERPISAH, jadi pasangannya harus dibuktikan
+	// di sini — bukan dipercaya. Tanpa ini, satu event yang keliru (atau dipalsukan di bus)
+	// menghasilkan clone bergabung: NIK milik satu orang bersama NIP milik orang lain, dalam satu
+	// baris yang tampak sah dan menjadi jawaban ResolveByNIK/ResolveByNIP sesudahnya.
+	if e.PersonID != personID {
+		return Identifiers{}, fmt.Errorf(
+			"identity/sync: employment %s bukan milik person %s — event tak konsisten", employmentID, personID)
+	}
 	out.NIP = e.NIP
 	return out, nil
 }

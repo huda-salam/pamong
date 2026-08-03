@@ -101,6 +101,10 @@ Kolom plaintext-nya **tidak ada** — bukan sekadar berhenti diisi.
   `CloneSource` diimplementasi di atas repo identity **dengan sengaja**: repo-lah yang membuka
   realm sentral, sehingga kunci sentral tak pernah keluar dari sisi identity. Jangan
   memindahkannya ke sisi tenant (mis. membaca identity DB dari `infra/*`).
+  Karena person & employment dibaca TERPISAH dari dua id yang datang di payload, pasangannya
+  dibuktikan di `RepoCloneSource` (`e.PersonID == personID`) — bukan dipercaya. Tanpa itu satu
+  event keliru/palsu menghasilkan clone bergabung (NIK satu orang + NIP orang lain) yang tampak
+  sah dan menjadi jawaban `ResolveByNIK`/`ResolveByNIP` sesudahnya.
 - **Sesudah lookup, yang kanonik adalah BARIS yang ditemukan — bukan nilai permintaan.** Nilai
   permintaan berhenti layak dipakai sebagai alamat tujuan, parameter kirim, atau apa pun yang
   mengalir ke sistem luar. `TrimSpace` di `normalize()` ikut membuang CR/LF, jadi ejaan yang

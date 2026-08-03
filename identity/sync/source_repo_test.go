@@ -111,6 +111,37 @@ func TestRepoCloneSource_EmploymentNilMenghasilkanNIPKosong(t *testing.T) {
 	}
 }
 
+// Pasangan (person, employment) dari payload event harus DIBUKTIKAN, bukan dipercaya: keduanya
+// dibaca terpisah, jadi employment milik orang lain akan menghasilkan clone bergabung — NIK satu
+// orang bersama NIP orang lain, dalam baris yang tampak sah. Ini juga yang membatasi primitif
+// yang tersedia bagi event palsu di bus: ia tak bisa menyuruh engine memungut pengenal NYATA
+// milik person sembarang lalu memasangkannya dengan employment lain.
+func TestRepoCloneSource_EmploymentMilikPersonLainDitolak(t *testing.T) {
+	src, _, emp := seedSource(t)
+
+	orangLain := uuid.New()
+	// Person lain itu sendiri ADA di repo — supaya yang diuji betul-betul pemeriksaan pasangan,
+	// bukan sekadar "person tak ditemukan".
+	srcLain, err := sync.NewRepoCloneSource(
+		&repoPersons{byID: map[uuid.UUID]*domain.Person{orangLain: {
+			ID: orangLain, NIK: "3578010101900002", NamaLengkap: "Siti", IsActive: true,
+		}}},
+		&repoEmployments{byID: map[uuid.UUID]*domain.Employment{emp.ID: emp}},
+	)
+	if err != nil {
+		t.Fatalf("NewRepoCloneSource: %v", err)
+	}
+	_ = src
+
+	ids, err := srcLain.Identifiers(context.Background(), orangLain, emp.ID)
+	if err == nil {
+		t.Fatalf("employment milik person lain harus DITOLAK, dapat %+v", ids)
+	}
+	if ids.NIK != "" || ids.NIP != "" {
+		t.Fatalf("penolakan tak boleh membawa pengenal apa pun: %+v", ids)
+	}
+}
+
 // Person/employment tak ditemukan HARUS error — bukan Identifiers kosong. Clone berpengenal
 // kosong tak bisa dibedakan dari non-ASN, dan ia melumpuhkan ResolveByNIK tanpa gejala.
 func TestRepoCloneSource_TakDitemukanMenghasilkanError(t *testing.T) {
