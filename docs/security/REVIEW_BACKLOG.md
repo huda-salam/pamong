@@ -443,10 +443,27 @@ kebutuhannya dibangun (keputusan user 2026-07-27) — bukan bug aktif, tapi jang
 - TERSISA: nilai bidx belum dipakai kolom nyata (itu PR-3.8.3/3.8.6) — verifikasi "UNIQUE di
   `_bidx`" ikut H1.
 
-### H3. Jalur kebocoran samping — `DEFERRED(kripto)` (ADR-009 §6)
+### H3. Jalur kebocoran samping — `SEBAGIAN DITUTUP (PR-3.8.5a/3.8.5b)` (ADR-009 §6, ADR-018)
 - audit diff (E2), payload event (NATS stream), `gov.idempotency_keys`, staging table
   migrasi, log/trace (OTEL, query log), clone `gov.user_profiles`
 - Cek: tiap jalur tak membocorkan pengenal mentah. Enkripsi kolom saja = teater keamanan.
+- TERTUTUP: audit diff, log/trace, clone (3.8.5a), payload event + cache idempotency (3.8.5b).
+- SISA: **staging table migrasi** — pipeline legacy-import belum ada; aturannya harus mendarat
+  bersama pipeline-nya.
+- SISA: **residu plaintext yang terlanjur mengendap** (stream NATS retensi, baris
+  `gov.outbox_events` lama). Runbook, bukan kode. Nol dampak selama outbox belum berpemanggil.
+
+### H7. Aturan "payload tanpa `personal_id`" tanpa penegak — `OPEN` (dicatat PR-3.8.5b)
+- Aturan ADR-018 Keputusan #2 hidup di ADR + tiga CLAUDE.md + satu test yang hanya menutup
+  payload yang sudah ada. Modul baru yang menambah `NIK string` ke payload-nya sendiri lolos
+  semua gate. Kelas yang sama dengan "naikkan versi schema" — checklist tanpa mesin.
+- Bentuk yang dipertimbangkan: struct tag pada field payload (mis. `pamong:"class=personal_id"`)
+  + analyzer yang menolak class terenkripsi di tipe yang terdaftar ke `SchemaRegistry`. Ini
+  mengikuti cara industri menegakkannya — anotasi pada schema lalu tooling yang bertindak atas
+  anotasi itu (tag PII di Confluent data contracts; `debug_redact`/custom field option + buf
+  check plugin di protobuf) — bukan pencocokan nama field yang rapuh.
+- Prasyarat: kosakata `DataClass` sudah ada di `FieldDef`; yang belum ada jembatannya ke tipe
+  payload event.
 
 ### H4. Key custody & rotasi — `SEBAGIAN DITUTUP (PR-3.8.2)` (ADR-010)
 - `infra/crypto/envelope.go`, KeyProvider driver, KMS

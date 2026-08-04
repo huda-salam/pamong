@@ -82,9 +82,9 @@ func seedSource(t *testing.T) (*sync.RepoCloneSource, *domain.Person, *domain.Em
 func TestRepoCloneSource_MembacaPengenalPersonDanEmployment(t *testing.T) {
 	src, person, emp := seedSource(t)
 
-	ids, err := src.Identifiers(context.Background(), person.ID, emp.ID)
+	ids, err := src.Attributes(context.Background(), person.ID, emp.ID)
 	if err != nil {
-		t.Fatalf("Identifiers: %v", err)
+		t.Fatalf("Attributes: %v", err)
 	}
 	if ids.NIK != person.NIK || ids.Email != person.Email || ids.NoHP != person.NoHP {
 		t.Fatalf("pengenal person tidak sesuai: %+v", ids)
@@ -99,9 +99,9 @@ func TestRepoCloneSource_MembacaPengenalPersonDanEmployment(t *testing.T) {
 func TestRepoCloneSource_EmploymentNilMenghasilkanNIPKosong(t *testing.T) {
 	src, person, _ := seedSource(t)
 
-	ids, err := src.Identifiers(context.Background(), person.ID, uuid.Nil)
+	ids, err := src.Attributes(context.Background(), person.ID, uuid.Nil)
 	if err != nil {
-		t.Fatalf("Identifiers: %v", err)
+		t.Fatalf("Attributes: %v", err)
 	}
 	if ids.NIP != "" {
 		t.Fatalf("NIP harus kosong tanpa employment, dapat %q", ids.NIP)
@@ -133,7 +133,7 @@ func TestRepoCloneSource_EmploymentMilikPersonLainDitolak(t *testing.T) {
 	}
 	_ = src
 
-	ids, err := srcLain.Identifiers(context.Background(), orangLain, emp.ID)
+	ids, err := srcLain.Attributes(context.Background(), orangLain, emp.ID)
 	if err == nil {
 		t.Fatalf("employment milik person lain harus DITOLAK, dapat %+v", ids)
 	}
@@ -142,15 +142,15 @@ func TestRepoCloneSource_EmploymentMilikPersonLainDitolak(t *testing.T) {
 	}
 }
 
-// Person/employment tak ditemukan HARUS error — bukan Identifiers kosong. Clone berpengenal
+// Person/employment tak ditemukan HARUS error — bukan CloneAttributes kosong. Clone berpengenal
 // kosong tak bisa dibedakan dari non-ASN, dan ia melumpuhkan ResolveByNIK tanpa gejala.
 func TestRepoCloneSource_TakDitemukanMenghasilkanError(t *testing.T) {
 	src, person, emp := seedSource(t)
 
-	if _, err := src.Identifiers(context.Background(), uuid.New(), emp.ID); err == nil {
+	if _, err := src.Attributes(context.Background(), uuid.New(), emp.ID); err == nil {
 		t.Fatal("person tak ditemukan harus error")
 	}
-	if _, err := src.Identifiers(context.Background(), person.ID, uuid.New()); err == nil {
+	if _, err := src.Attributes(context.Background(), person.ID, uuid.New()); err == nil {
 		t.Fatal("employment tak ditemukan harus error")
 	}
 }
@@ -170,7 +170,7 @@ func TestRepoCloneSource_ErrorTakMengutipPengenal(t *testing.T) {
 		t.Fatalf("NewRepoCloneSource: %v", err)
 	}
 
-	_, gotErr := src.Identifiers(context.Background(), person.ID, uuid.Nil)
+	_, gotErr := src.Attributes(context.Background(), person.ID, uuid.Nil)
 	if gotErr == nil {
 		t.Fatal("error repo harus diteruskan")
 	}

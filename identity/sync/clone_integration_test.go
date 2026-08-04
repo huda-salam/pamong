@@ -71,8 +71,9 @@ func TestSyncClone_EmploymentDitugaskan(t *testing.T) {
 	pool, ctx := setupTenantDB(t)
 
 	writer, svc := newWriter(t, pool)
-	// Pengenal datang dari CloneSource, bukan dari event (PR-3.8.5b). Nilai fixture-nya sama
-	// dengan yang diperiksa di bawah, sehingga yang diuji tetap jalur tulis ujung-ke-ujung.
+	// SELURUH isi clone datang dari CloneSource, bukan dari event (PR-3.8.5b) — termasuk
+	// nama, yang fixture-nya sengaja berbeda dari nama di payload agar terlihat mana yang
+	// benar-benar mendarat di kolom.
 	engine := newEngine(t, writer, newSource())
 	bus := newBus(t)
 	if err := engine.Register(bus); err != nil {
@@ -114,7 +115,7 @@ func TestSyncClone_EmploymentDitugaskan(t *testing.T) {
 		&gotAssignment, &gotCross, &emailEnc, &noHPEnc); err != nil {
 		t.Fatalf("clone tidak ditemukan: %v", err)
 	}
-	if gotNama != "Budi Santoso" || gotStatus != "asn" || gotAssignment != assignmentID || gotCross {
+	if gotNama != "Budi Santoso, S.Kom." || gotStatus != "asn" || gotAssignment != assignmentID || gotCross {
 		t.Fatalf("data clone salah: nama=%s status=%s assignment=%s cross=%v",
 			gotNama, gotStatus, gotAssignment, gotCross)
 	}

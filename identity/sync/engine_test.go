@@ -34,24 +34,27 @@ func (w *fakeWriter) Upsert(_ context.Context, tenantID string, c sync.UserProfi
 // fakeSource memerankan CloneSource: mengembalikan pengenal tetap, merekam koordinat yang
 // diminta, atau memaksa error (identity DB tak terbaca saat event ditangani).
 type fakeSource struct {
-	ids   sync.Identifiers
+	ids   sync.CloneAttributes
 	err   error
 	calls []sourceCall
 }
 
 type sourceCall struct{ personID, employmentID uuid.UUID }
 
-func (s *fakeSource) Identifiers(_ context.Context, personID, employmentID uuid.UUID) (sync.Identifiers, error) {
+func (s *fakeSource) Attributes(_ context.Context, personID, employmentID uuid.UUID) (sync.CloneAttributes, error) {
 	s.calls = append(s.calls, sourceCall{personID, employmentID})
 	if s.err != nil {
-		return sync.Identifiers{}, s.err
+		return sync.CloneAttributes{}, s.err
 	}
 	return s.ids, nil
 }
 
+// Nama di source SENGAJA berbeda dari nama di payload: hanya dengan begitu test bisa
+// membuktikan mana dari keduanya yang mendarat di clone.
 func newSource() *fakeSource {
-	return &fakeSource{ids: sync.Identifiers{
-		NIK: "3578010101900001", NIP: "199001012015011001",
+	return &fakeSource{ids: sync.CloneAttributes{
+		NamaLengkap: "Budi Santoso, S.Kom.",
+		NIK:         "3578010101900001", NIP: "199001012015011001",
 		Email: "budi@example.test", NoHP: "0812340001",
 	}}
 }
@@ -111,10 +114,16 @@ func TestEngine_ClonesOnDitugaskan(t *testing.T) {
 	got := writer.calls[0]
 	want := ev.Payload.(domain.EmploymentDitugaskanPayload)
 	if got.tenantID != "pemkot-surabaya" || got.clone.PersonID != want.PersonID ||
-		got.clone.NamaLengkap != "Budi" || got.clone.EmploymentStatus != "asn" {
+		got.clone.EmploymentStatus != "asn" {
 		t.Fatalf("clone tidak sesuai payload: %+v", got)
 	}
-	// Pengenal berasal dari CloneSource, bukan dari event.
+	// SELURUH isi clone berasal dari CloneSource, bukan dari event — termasuk NamaLengkap,
+	// yang juga ada di payload. Satu baris clone tak boleh mencampur nilai saat event terbit
+	// dengan nilai saat event ditangani; fixture sengaja membuat keduanya berbeda.
+	if got.clone.NamaLengkap != source.ids.NamaLengkap {
+		t.Fatalf("NamaLengkap clone harus dari CloneSource (%q), bukan dari payload: %q",
+			source.ids.NamaLengkap, got.clone.NamaLengkap)
+	}
 	if got.clone.NIK != source.ids.NIK || got.clone.NIP != source.ids.NIP ||
 		got.clone.Email != source.ids.Email || got.clone.NoHP != source.ids.NoHP {
 		t.Fatalf("pengenal clone tidak berasal dari CloneSource: %+v", got.clone)

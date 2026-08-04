@@ -1,7 +1,7 @@
 # ADR-013: Contact seam — kontak (email/no_hp) di clone tenant untuk routing notifikasi
 
 ## Status
-Accepted — keputusan tetap berlaku. **Kurir pada Keputusan #1 diganti ADR-018**: kontak tetap
+Accepted — keputusan tetap berlaku. **Amended by ADR-018** — kurir pada Keputusan #1 diganti: kontak tetap
 di-clone ke `gov.user_profiles` dan jalur KIRIM notifikasi tetap satu join same-schema (itulah
 keputusannya), tapi nilainya tidak lagi menumpang field di `EmploymentDitugaskanPayload` —
 `identity/sync` memintanya lewat port saat menangani event, karena payload adalah jalur samping

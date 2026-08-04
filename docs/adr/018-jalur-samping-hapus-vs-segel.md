@@ -1,9 +1,10 @@
 # ADR-018: Menutup jalur samping — menghapus nilai vs menyegelnya
 
 ## Status
-Proposed — menunggu keputusan. Mengamandemen **mekanisme** ADR-009 §6 butir 2 (tidak
-men-supersede keputusannya) dan mengganti **kurir** pada Keputusan #1 ADR-013 (keputusannya
-tetap berlaku). Pola yang sama dengan ADR-009 yang memperbarui mekanisme ADR-002.
+Accepted (2026-08-04). **Amends** ADR-009 §6 butir 2 dan **amends** ADR-013 Keputusan #1 —
+keduanya tetap `Accepted` dan tidak di-supersede; yang berubah hanya mekanisme/kurir pada klausul
+yang disebut. Pola yang sama dengan ADR-009 yang memperbarui mekanisme ADR-002. Relasi
+`Amends`/`Amended by` ini dibakukan di DOCUMENTATION_CONVENTION §5 bersama ADR ini.
 
 ## Konteks
 
@@ -38,20 +39,41 @@ lewat ADR.
 **1. Jalur samping ditutup dengan MENGHAPUS nilainya bila consumer bisa meresolusi sendiri;
 menyegel hanya bila tidak bisa.**
 
-Aturan pemilihnya: *apakah jalur ini menyimpan data, atau sekadar mengangkutnya?*
+Aturan pemilihnya: **apakah nilai ini punya rumah yang otoritatif di tempat lain, dan bisakah
+consumer menjangkaunya dengan kontrol akses yang lebih ketat?** Bila ya → kirim koordinatnya
+saja. Bila tidak → nilai itu memang datanya, dan yang tersisa hanya menyegel.
+
+Jangan memakai "menyimpan vs mengangkut" sebagai pemilih: `gov.outbox_events` **menyimpan**
+(kolom JSONB di tabel nyata, baris yang hidup lebih lama dari dispatch-nya) dan tetap masuk
+kategori hapus. Yang menentukan adalah keberadaan rumah otoritatif, bukan keawetan salinannya.
 
 | | Payload event | `gov.idempotency_keys.response` |
 |---|---|---|
-| Sifat | pengangkut; nilainya ada di tempat lain | penyimpan; badan respons memang datanya |
+| Rumah otoritatif | ADA — `id.persons`/`id.employments` | TIDAK ADA — badan respons ini satu-satunya |
+| Consumer menjangkaunya? | ya, ia bertetangga dengan identity | – |
 | Tindakan | **hapus** dari payload | **segel** |
 | Consumer | minta lewat port di sisi pemilik data | dibuka store yang sama saat replay |
+
+Ini penerapan **claim-check pattern**: pesan membawa referensi, nilainya diambil dari
+penyimpanan yang berkontrol akses lebih ketat. Literatur pola itu menyebut "payload memuat data
+sensitif yang tak ingin terlihat oleh sistem pesan" sebagai salah satu pemicu utamanya — persis
+kasus di sini. Bedanya hanya: claim check kita bukan token yang dibuat khusus, melainkan
+`person_id`/`employment_id` yang memang sudah menjadi koordinat event.
 
 **2. Payload event identity berhenti membawa nilai kelas `personal_id`.**
 `PersonDibuatPayload.NIK`, `EmploymentDibuatPayload.NIP`, dan
 `EmploymentDitugaskanPayload.{NIK,NIP,Email,NoHP}` dihapus. Payload menyisakan koordinat (id) +
-atribut non-pengenal. `NamaLengkap` **tetap**: kelasnya `personal`, dan ADR-009 sengaja tidak
-mengenkripsinya di kolom — mengeluarkannya dari payload akan menerapkan standar yang lebih ketat
-di jalur angkut daripada yang berlaku at-rest.
+atribut non-pengenal. `NamaLengkap` **tetap ikut payload**: kelasnya `personal`, dan ADR-009
+sengaja tidak mengenkripsinya di kolom — mengeluarkannya akan menerapkan standar yang lebih ketat
+di jalur angkut daripada yang berlaku at-rest. Ia juga yang membuat baris outbox/DLQ masih bisa
+dibaca operator; event berisi UUID belaka mahal saat ada yang harus diperiksa manual.
+
+**Tetapi clone TIDAK memakai nilai itu** — ia mengambil `NamaLengkap` dari `CloneSource` bersama
+keempat pengenal. Alasannya bukan kerahasiaan melainkan **satu basis waktu**: mencampur nilai
+saat event terbit dengan nilai saat event ditangani membuat satu baris `gov.user_profiles`
+punya dua umur, dan clone yang menjawab "siapa user ini sekarang" tak boleh begitu. Biayanya nol
+— baris person-nya toh sudah dibaca. Di payload, `NamaLengkap` karena itu **informasional, bukan
+sumber kebenaran**; jangan "merapikannya" dengan memakai nilai payload di writer.
 
 **3. Consumer meresolusi lewat port di sisi PEMILIK data, bukan dengan membaca DB-nya sendiri.**
 `identity/sync.CloneSource` diimplementasi di atas repo identity — repo itulah yang membuka realm
@@ -59,11 +81,28 @@ sentral. Kunci sentral tak pernah keluar dari sisi identity. Ini yang membedakan
 "consumer membaca identity DB": yang dipindahkan adalah panggilan, bukan kunci.
 
 **4. Tak-ditemukan / gagal baca = gagal LANTANG, bukan clone berpengenal kosong.**
-Handler mengembalikan error sehingga event di-retry. Clone berpengenal kosong tak bisa dibedakan
+Handler mengembalikan error tanpa menulis apa pun. Clone berpengenal kosong tak bisa dibedakan
 dari non-ASN yang memang tak punya NIP, dan ia melumpuhkan `ResolveByNIK` serta routing
 notifikasi tanpa satu pun gejala.
 
-**5. `gov.idempotency_keys.response` disegel — realm tenant, tanpa blind index.**
+**Gagal lantang di sini TIDAK berarti event otomatis diulang.** Driver produksi hari ini NATS
+Core: error handler hanya dicatat, tak ada re-delivery (`infra/eventbus/nats.go`). Retry & DLQ
+yang sudah ada hidup di sisi TERBIT (`OutboxRelay`), bukan sisi konsumsi. Jadi kegagalan berarti
+**clone tidak tertulis** sampai salah satu dari ini dibangun: JetStream dengan durable consumer +
+ack eksplisit + `MaxDeliver`/backoff (jalur baku NATS untuk redelivery & DLQ), atau job
+rekonsiliasi yang menyapu assignment tanpa clone. Keduanya di luar lingkup PR ini dan **belum
+ada** — dicatat di sini supaya tak ada yang mengandalkan pemulihan yang tak pernah ditulis.
+Pilihannya sendiri tidak berubah: tak-tertulis-dan-tercatat lebih baik daripada tertulis-cacat
+dan senyap.
+
+**5. Pemeriksaan pasangan person↔employment di `CloneSource`.**
+Kedua id datang dari payload dan dibaca terpisah, jadi `e.PersonID == personID` dibuktikan, bukan
+dipercaya. Tanpa itu satu event keliru menghasilkan clone bergabung (NIK satu orang + NIP orang
+lain) dalam baris yang tampak sah. Ini juga membatasi apa yang bisa dilakukan event palsu di bus:
+tanpa pemeriksaan, ia berubah dari "menulis nilai yang sudah kupegang" menjadi "menyuruh sistem
+memungut pengenal nyata milik orang lain".
+
+**6. `gov.idempotency_keys.response` disegel — realm tenant, tanpa blind index.**
 Nilai ini tak pernah menjadi kunci pencarian; blind index deterministik atasnya hanya menjadi
 oracle kesamaan antar respons API plus satu kunci lagi untuk dirotasi (`FieldSealer.SealOpaque`).
 Koordinat AAD diturunkan deterministik dari KEDUA bagian PK
@@ -115,6 +154,16 @@ dibuka). Ia tetap oracle kesamaan atas request utuh — diterima secara sadar.
   mesin baru, bukan pemakaian mesin yang ada; (b) `PersonDibuat`/`EmploymentDibuat` tak punya
   `TenantID`, jadi opsi ini tak punya jawaban untuk keduanya. Kewajiban dekripsi permanen tetap
   berlaku.
+- **Enkripsi field di dalam payload, digerakkan tag pada schema** — bentuk industrinya adalah
+  *client-side field level encryption* ala Confluent Schema Registry data contracts: field
+  ditandai tag (`PII`), aturan enkripsi menyebut tag + KEK, klien menyegel/membuka otomatis.
+  Ini alternatif yang PALING dekat dengan bunyi harfiah ADR-009 §6 butir 2, dan ia nyata dipakai
+  orang. Ditolak untuk sekarang karena prasyaratnya: schema registry yang menyimpan tag &
+  aturan, plus lapis klien yang menegakkannya. `SchemaRegistry` kita mencocokkan identitas TIPE
+  GO dan tak punya konsep tag maupun versi — membangun keduanya jauh lebih besar daripada
+  masalah yang sedang dipecahkan, dan hasilnya tetap menyisakan kewajiban dekripsi permanen atas
+  blob yang mengendap. Bila kelak ada consumer di luar identity yang benar-benar butuh nilainya,
+  ini kandidat pertama untuk ditinjau ulang.
 - **Masking (bukan enkripsi) di payload.** Ditolak: consumer butuh nilai penuh untuk menulis
   clone; nilai ter-mask membuat event tak berguna sekaligus tetap membocorkan bentuk & prefiks.
 - **Menghapus `NamaLengkap` sekalian.** Ditolak: menerapkan standar `personal_id` pada field
@@ -122,6 +171,21 @@ dibuka). Ia tetap oracle kesamaan atas request utuh — diterima secara sadar.
 - **Membiarkan payload apa adanya dan mengandalkan enkripsi disk (L2).** Ditolak dengan alasan
   yang sama seperti ADR-009 menolaknya untuk kolom: L2 tidak melindungi terhadap dump logis,
   akses baca DB yang sah, maupun `pg_dump` — dan seluruh pekerjaan 3.8 berangkat dari premis itu.
+
+## Rujukan luar (prior art)
+
+- **Claim-check / reference-based messaging** (Enterprise Integration Patterns; Azure
+  Architecture Center) — pesan membawa referensi, nilainya di penyimpanan berkontrol akses lebih
+  ketat. Keputusan #1 adalah pola ini dengan koordinat event sebagai claim check-nya.
+- **Event notification vs event-carried state transfer** (Fowler) — trade-off yang sama dengan
+  yang dibalik di sini: ECST menghindari panggilan balik tapi menyiarkan lebih banyak data; pada
+  data pribadi, notification + lookup justru yang dianjurkan karena akses dikendalikan di API,
+  bukan disiarkan ke bus. Yang kita lakukan = ECST untuk atribut biasa, notification untuk
+  pengenal.
+- **Confluent Schema Registry data contracts + CSFLE** — bentuk matang dari alternatif "segel di
+  payload" (tag `PII` pada field + aturan enkripsi ber-KEK). Lihat Alternatif.
+- **NATS JetStream** (durable consumer, ack eksplisit, `MaxDeliver`/backoff, DLQ advisory) —
+  mekanisme baku untuk redelivery sisi konsumsi yang Keputusan #4 sebut belum ada di sini.
 
 ## Hubungan dengan ADR lain
 

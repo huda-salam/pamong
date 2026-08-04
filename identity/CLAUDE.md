@@ -95,7 +95,11 @@ Kolom plaintext-nya **tidak ada** — bukan sekadar berhenti diisi.
   atribut non-pengenal; `identity/sync` memintanya lewat `sync.CloneSource` saat event ditangani.
   Jangan "menambahkan kembali demi menghemat satu query": `gov.outbox_events.payload` plaintext
   JSONB dan stream NATS punya retensi, jadi field yang ditambahkan di sini mendarat di dump.
-  `NamaLengkap` boleh ikut — kelasnya `personal`, bukan `personal_id`.
+  `NamaLengkap` boleh ikut payload — kelasnya `personal`, bukan `personal_id`, dan ia yang
+  membuat baris outbox/DLQ masih terbaca operator. Tapi **clone tidak memakainya**: writer
+  mengambil nama dari `CloneSource` juga, supaya satu baris clone tidak mencampur nilai saat
+  event terbit dengan nilai saat event ditangani. Di payload ia informasional, bukan sumber
+  kebenaran — jangan "merapikannya" dengan memakai `p.NamaLengkap` di engine.
   Konsekuensi yang disengaja: clone menerima nilai saat HANDLING, bukan saat event terbit — dan
   itu memang kontrak `gov.user_profiles` (clone HIDUP, bukan sumber dokumen historis).
   `CloneSource` diimplementasi di atas repo identity **dengan sengaja**: repo-lah yang membuka

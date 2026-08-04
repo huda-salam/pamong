@@ -11,8 +11,16 @@ import (
 // Engine mendaftarkan handler clone ke event bus dan menuliskan hasilnya lewat Writer.
 // Ia adalah driven consumer: event masuk → clone keluar ke tenant DB.
 //
-// Pengenal (nik/nip/email/no_hp) TIDAK datang dari event — Engine memintanya ke CloneSource
-// (lihat clone.go). Event hanya membawa koordinat (id) + atribut non-pengenal.
+// Isi clone TIDAK datang dari event — Engine memintanya ke CloneSource (lihat clone.go).
+// Event hanya membawa koordinat (id) + atribut yang informasional.
+//
+// PENTING soal kegagalan handler: dengan driver NATS Core hari ini, error yang dikembalikan
+// handler hanya DICATAT, tidak memicu pengiriman ulang (lihat infra/eventbus/nats.go —
+// NATS Core tak punya re-delivery). Retry/DLQ yang ada berada di sisi TERBIT (OutboxRelay),
+// bukan sisi konsumsi. Jadi gagal di sini berarti clone tidak tertulis sampai ada yang
+// menanganinya: JetStream (durable consumer, ack eksplisit, MaxDeliver) atau job rekonsiliasi.
+// Itu tetap pilihan yang benar dibanding menulis clone cacat secara senyap — tapi jangan
+// mengandalkan "nanti juga di-retry" sebelum salah satu dari keduanya ada.
 type Engine struct {
 	writer Writer
 	source CloneSource
@@ -38,26 +46,30 @@ func (e *Engine) Register(sub port.EventSubscriber) error {
 // onEmploymentDitugaskan meng-clone person ke gov.user_profiles tenant tujuan. Payload
 // di-assert ke tipe terdaftar; ketidakcocokan tipe = bug schema, dikembalikan sebagai error.
 //
-// Pengenal diambil dari identity DB di sini, bukan dari payload (PR-3.8.5b). Kegagalan baca
-// menggagalkan handler → event di-retry; tak ada clone parsial yang ditulis.
+// Isi clone diambil dari identity DB di sini, bukan dari payload (PR-3.8.5b). Kegagalan baca
+// menggagalkan handler tanpa menulis clone parsial — lihat catatan kegagalan di Engine.
+//
+// `NamaLengkap` sengaja diambil dari CloneAttributes meski payload juga membawanya: satu baris
+// clone tak boleh mencampur nilai saat event terbit dengan nilai saat event ditangani. Yang di
+// payload informasional (keterbacaan operator), bukan sumber kebenaran.
 func (e *Engine) onEmploymentDitugaskan(ctx context.Context, ev port.Event) error {
 	p, ok := ev.Payload.(domain.EmploymentDitugaskanPayload)
 	if !ok {
 		return fmt.Errorf("sync: payload %q bertipe %T, harap domain.EmploymentDitugaskanPayload", ev.Name, ev.Payload)
 	}
-	ids, err := e.source.Identifiers(ctx, p.PersonID, p.EmploymentID)
+	attr, err := e.source.Attributes(ctx, p.PersonID, p.EmploymentID)
 	if err != nil {
 		return err
 	}
 	return e.writer.Upsert(ctx, p.TenantID, UserProfileClone{
 		PersonID:         p.PersonID,
 		AssignmentID:     p.AssignmentID,
-		NIK:              ids.NIK,
-		NIP:              ids.NIP,
-		NamaLengkap:      p.NamaLengkap,
+		NIK:              attr.NIK,
+		NIP:              attr.NIP,
+		NamaLengkap:      attr.NamaLengkap,
 		EmploymentStatus: p.EmploymentStatus,
 		IsCrossTenant:    p.IsCrossTenant,
-		Email:            ids.Email,
-		NoHP:             ids.NoHP,
+		Email:            attr.Email,
+		NoHP:             attr.NoHP,
 	})
 }

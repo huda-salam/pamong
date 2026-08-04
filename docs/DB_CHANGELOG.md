@@ -45,6 +45,11 @@ perubahannya tak terlihat dari `\d`, sementara arti kolomnya bergeser total.
   `EmploymentDibuatPayload.NIP`, `EmploymentDitugaskanPayload.{NIK,NIP,Email,NoHP}`). Payload
   TIDAK disegel — nilainya DIHAPUS; `identity/sync` memintanya lewat `CloneSource` ke identity DB
   saat event ditangani. Alasan lengkap: **ADR-018**.
+- `~ gov.user_profiles.nama_lengkap` — **tanpa DDL**: yang bergeser ARTINYA. Nilainya kini
+  dibaca dari identity saat event DITANGANI (bersama keempat pengenal), bukan disalin dari
+  payload event saat terbit. Sebelumnya satu baris clone mencampur dua basis waktu; sekarang
+  seluruh baris seumur. `NamaLengkap` tetap ada di payload event, tapi hanya informasional
+  (keterbacaan operator saat memeriksa outbox/DLQ) — bukan sumber kebenaran clone (ADR-018 #2).
 - `~ gov.idempotency_keys.response` — **tanpa DDL** (sudah BYTEA): kini ciphertext, realm
   **tenant**, purpose `idempotency_response`, **tanpa blind index** (nilai ini tak pernah dicari;
   bidx atasnya hanya oracle kesamaan antar respons). Koordinat AAD baris (ADR-016) diturunkan

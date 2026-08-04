@@ -39,16 +39,25 @@ type Writer interface {
 	Upsert(ctx context.Context, tenantID string, c UserProfileClone) error
 }
 
-// Identifiers adalah keempat pengenal kelas personal_id (ADR-009) yang dibutuhkan clone.
-// Ia TIDAK ikut di payload event — Engine memintanya ke CloneSource saat event ditangani.
-type Identifiers struct {
-	NIK   string
-	NIP   string // kosong untuk employment non-ASN
-	Email string
-	NoHP  string
+// CloneAttributes adalah nilai yang dibaca-balik dari identity untuk mengisi clone.
+//
+// Keempat pengenal kelas `personal_id` ada di sini karena mereka DIHAPUS dari payload event
+// (ADR-018). `NamaLengkap` ikut karena alasan berbeda: ia datang dari baris person yang toh
+// sudah dibaca — nol query tambahan — dan mengambilnya dari sini membuat SELURUH clone berada
+// pada satu basis waktu. Menariknya dari payload sementara pengenal dibaca-balik akan membuat
+// satu baris `gov.user_profiles` mencampur nilai saat event TERBIT dengan nilai saat event
+// DITANGANI; clone yang menjawab "siapa user ini sekarang" tak boleh punya dua umur.
+// `NamaLengkap` TETAP ikut di payload event, tapi di sana ia informasional (keterbacaan
+// operator saat memeriksa outbox/DLQ), bukan sumber kebenaran clone.
+type CloneAttributes struct {
+	NamaLengkap string
+	NIK         string
+	NIP         string // kosong untuk employment non-ASN
+	Email       string
+	NoHP        string
 }
 
-// CloneSource membaca pengenal person+employment dari identity DB saat event ditangani.
+// CloneSource membaca atribut person+employment dari identity DB saat event ditangani.
 //
 // Ia ada karena pengenal DIBUANG dari payload event (PR-3.8.5b, ADR-009 §6 butir 2): jalur
 // samping ditutup dengan menghapus nilainya, bukan menyegelnya. Menyegel di payload akan
@@ -65,12 +74,13 @@ type Identifiers struct {
 // Implementasinya (source_repo.go) berdiri di atas repo identity yang SUDAH mendekripsi realm
 // sentral — jadi kunci sentral tak pernah keluar dari sisi identity.
 type CloneSource interface {
-	// Identifiers mengembalikan pengenal person + NIP employment-nya. employmentID boleh
+	// Attributes mengembalikan atribut person + NIP employment-nya. employmentID boleh
 	// uuid.Nil (person tanpa employment) → NIP kosong.
 	//
 	// Person/employment yang tak ditemukan WAJIB menghasilkan error, bukan nilai kosong:
 	// clone berpengenal kosong tak bisa dibedakan dari person yang memang tak punya NIP, dan
 	// ia melumpuhkan lookup (`ResolveByNIK`) serta routing notifikasi tanpa satu pun gejala.
-	// Error di sini menahan event agar di-retry — gagal lantang, bukan clone cacat senyap.
-	Identifiers(ctx context.Context, personID, employmentID uuid.UUID) (Identifiers, error)
+	// Gagal LANTANG: handler berhenti tanpa menulis apa pun, dan kegagalannya tercatat.
+	// Perhatikan bahwa itu TIDAK berarti event otomatis diulang — lihat catatan di Engine.
+	Attributes(ctx context.Context, personID, employmentID uuid.UUID) (CloneAttributes, error)
 }

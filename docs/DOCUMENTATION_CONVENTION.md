@@ -173,6 +173,16 @@ Format: `docs/adr/NNN-judul-kebab-case.md`, nomor urut, mengikuti template `000-
 Aturan:
 - ADR yang sudah `Accepted` **tidak diubah**. Keputusan berubah → ADR baru yang
   `Supersedes` ADR lama; ADR lama ditandai `Superseded by ADR-XXX`.
+- **Supersede bukan satu-satunya relasi.** Bila yang berubah hanya SEBAGIAN — satu klausul,
+  satu mekanisme — pakai `Amends` / `Amended by ADR-XXX`. ADR lama **tetap `Accepted`**; yang
+  ditambahkan ke Status-nya hanya pointer, keputusannya tidak ditulis ulang. Syaratnya dua:
+  (a) ADR baru menyebut **klausul persisnya** yang ia ganti, bukan "memperbarui ADR-XXX" saja;
+  (b) tautannya **dua arah** — ADR lama menunjuk yang baru, yang baru menunjuk yang lama.
+  Men-supersede satu ADR utuh demi mengubah satu kalimat justru merusak: seluruh keputusan lain
+  di dalamnya ikut berhenti berlaku padahal masih dipakai. Ini juga praktik yang dipakai di luar
+  (adr-tools menyediakan tautan dua arah untuk relasi selain supersede; kumpulan konvensi ADR
+  yang beredar merumuskannya sebagai "ADR bersifat append-only: amandemen atau supersede,
+  jangan sunting"). Contoh berjalan: ADR-018 amends ADR-009 §6 butir 2 & ADR-013 Keputusan #1.
 - Tulis juga **alternatif yang ditolak** dan alasannya — ini bagian paling berharga,
   mencegah orang mengusulkan ulang opsi yang sudah dipertimbangkan.
 - Singkat lebih baik. ADR bukan esai; ia keputusan + konteks + konsekuensi.

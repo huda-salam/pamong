@@ -6,7 +6,7 @@ ADR-015 (metode keempat `PurposeOf`, mengikat ciphertext ke KOLOM-nya) dan ADR-0
 (identitas BARIS masuk ke AAD; `Encrypt`/`Decrypt` menerima `FieldRef`/`RowRef`, dan versi
 format ciphertext §3 naik ke `0x02`). Tidak di-supersede oleh keduanya.
 
-**Mekanisme §6 butir 2 (payload event) diamandemen ADR-018**: "di-mask/enc" → nilainya
+**Amended by ADR-018** — mekanisme §6 butir 2 (payload event): "di-mask/enc" → nilainya
 **dihapus** dari payload, consumer meresolusi lewat port di sisi pemilik data. Kewajiban §6
 ("jalur samping wajib ditutup") tidak berubah — hanya caranya untuk jalur itu. Butir 3 (cache
 idempotency) dijalankan sesuai bunyinya (disegel). Tidak di-supersede.

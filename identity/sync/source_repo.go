@@ -28,16 +28,16 @@ func NewRepoCloneSource(p domain.PersonRepository, e domain.EmploymentRepository
 	return &RepoCloneSource{persons: p, employments: e}, nil
 }
 
-// Identifiers membaca person (NIK/email/no_hp) dan employment (NIP) dari identity DB.
+// Attributes membaca person (nama/NIK/email/no_hp) dan employment (NIP) dari identity DB.
 //
 // Pesan error TIDAK memuat nilai pengenal apa pun — hanya id baris. Pesan FrameworkError
 // mengalir ke log; ia jalur samping yang sama dengan yang sedang ditutup (ADR-009 §6).
-func (s *RepoCloneSource) Identifiers(ctx context.Context, personID, employmentID uuid.UUID) (Identifiers, error) {
+func (s *RepoCloneSource) Attributes(ctx context.Context, personID, employmentID uuid.UUID) (CloneAttributes, error) {
 	p, err := s.persons.FindByID(ctx, personID)
 	if err != nil {
-		return Identifiers{}, fmt.Errorf("identity/sync: baca person %s untuk clone: %w", personID, err)
+		return CloneAttributes{}, fmt.Errorf("identity/sync: baca person %s untuk clone: %w", personID, err)
 	}
-	out := Identifiers{NIK: p.NIK, Email: p.Email, NoHP: p.NoHP}
+	out := CloneAttributes{NamaLengkap: p.NamaLengkap, NIK: p.NIK, Email: p.Email, NoHP: p.NoHP}
 
 	// Employment opsional: person tanpa kepegawaian tak punya NIP, dan non-ASN pun tidak.
 	if employmentID == uuid.Nil {
@@ -45,14 +45,14 @@ func (s *RepoCloneSource) Identifiers(ctx context.Context, personID, employmentI
 	}
 	e, err := s.employments.FindByID(ctx, employmentID)
 	if err != nil {
-		return Identifiers{}, fmt.Errorf("identity/sync: baca employment %s untuk clone: %w", employmentID, err)
+		return CloneAttributes{}, fmt.Errorf("identity/sync: baca employment %s untuk clone: %w", employmentID, err)
 	}
 	// Kedua id datang dari payload event dan diambil TERPISAH, jadi pasangannya harus dibuktikan
 	// di sini — bukan dipercaya. Tanpa ini, satu event yang keliru (atau dipalsukan di bus)
 	// menghasilkan clone bergabung: NIK milik satu orang bersama NIP milik orang lain, dalam satu
 	// baris yang tampak sah dan menjadi jawaban ResolveByNIK/ResolveByNIP sesudahnya.
 	if e.PersonID != personID {
-		return Identifiers{}, fmt.Errorf(
+		return CloneAttributes{}, fmt.Errorf(
 			"identity/sync: employment %s bukan milik person %s — event tak konsisten", employmentID, personID)
 	}
 	out.NIP = e.NIP
