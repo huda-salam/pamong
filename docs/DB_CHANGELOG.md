@@ -32,7 +32,7 @@ Jalur A/B/C merujuk tiga cara pembuatan skema yang dijelaskan di `DB_SCHEMA.md` 
 
 ---
 
-### 2026-08-02 · PR-3.8.5b (payload event + cache idempotency) · `<hash>`
+### 2026-08-03 · PR-3.8.5b (payload event + cache idempotency) · `13e5860`
 **DB:** tenant · **Jalur:** — (tanpa DDL; bentuk tabel tidak berubah) · **Down:** tidak berlaku
 
 Menutup dua jalur samping terakhir yang masih menyimpan pengenal plaintext (ADR-009 §6 butir 2 &
