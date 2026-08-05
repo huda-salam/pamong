@@ -68,3 +68,41 @@ type EmploymentDitugaskanPayload struct {
 	EmploymentStatus string
 	IsCrossTenant    bool
 }
+
+// EventSchemaRegistrar adalah subset eventbus.SchemaRegistry (metode Register) — seam agar
+// identity/domain tak mengimport infra. eventbus.SchemaRegistry memenuhinya. Bentuknya sama
+// persis dengan core/customization.EventSchemaRegistrar; keduanya sengaja tak berbagi tipe
+// supaya tak ada paket domain yang bergantung pada paket domain lain hanya demi satu interface
+// sebaris.
+type EventSchemaRegistrar interface {
+	Register(name string, schema any) error
+}
+
+// RegisterEventSchemas mendaftarkan schema payload ketiga event identity ke registry event bus.
+// **WAJIB dipanggil saat wiring** (`domain.RegisterEventSchemas(bus.Schema())`): identity BUKAN
+// Module ber-manifest, jadi tak ada registrasi otomatis lewat EventManifest.Produces. Tanpa ini
+// `eventbus.Bus.Publish` menolak setiap event identity ("event tak terdaftar") — dan karena
+// beberapa pemanggil membuang error publish, kegagalannya bisa tak bergejala sama sekali.
+//
+// Tabelnya hidup DI SINI, bersebelahan dengan konstanta & tipe payload-nya, bukan di composition
+// root: event identity baru yang lupa didaftarkan akan lolos compile dan lolos unit test, lalu
+// gagal saat runtime SESUDAH tulisan DB-nya commit. Menaruh daftarnya satu file dengan
+// deklarasinya membuat kelalaian itu terlihat saat menambah event, bukan saat produksi.
+// Idempoten (registrasi ulang tipe yang sama diizinkan registry). Pola & seam mengikuti
+// core/customization.RegisterEventSchemas.
+func RegisterEventSchemas(r EventSchemaRegistrar) error {
+	schemas := []struct {
+		name    string
+		payload any
+	}{
+		{EventPersonDibuat, PersonDibuatPayload{}},
+		{EventEmploymentDibuat, EmploymentDibuatPayload{}},
+		{EventEmploymentDitugaskan, EmploymentDitugaskanPayload{}},
+	}
+	for _, s := range schemas {
+		if err := r.Register(s.name, s.payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
