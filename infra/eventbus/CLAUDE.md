@@ -22,7 +22,17 @@ Driven adapter: implementasi port.EventPublisher + EventSubscriber. Driver memor
 ## Konvensi khusus
 - Event name terdaftar di manifest modul; schema divalidasi saat publish.
 - Outbox: tulis event ke tabel outbox dalam transaksi bisnis; relay async.
-- Driver memory hanya untuk test.
+- **Driver memory hanya untuk dev/test — kini DITEGAKKAN config.** `AppConfig.Validate` menolak
+  `eventbus.driver` memory ATAU KOSONG di luar development (`""` dipetakan `newDriver` ke driver
+  yang sama). Alasannya bukan sekadar durability: memory mengantar SINKRON dan `errors.Join`
+  error handler kembali ke pemanggil `Publish`, jadi satu subscriber yang gagal menggagalkan use
+  case SESUDAH mutasi bisnisnya commit — dan percobaan ulang menabrak invariant anti-duplikat
+  yang dibuat percobaan pertama.
+- **Ada subscriber = wajib `Bus.Drain()` saat shutdown**, sesudah server berhenti menerima
+  request dan SEBELUM pool DB ditutup. Driver tanpa `Drainer` = no-op. `NATSDriver.Drain`
+  MENUNGGU sampai koneksi tertutup (batas 10 dtk): `nats.Conn.Drain()` sendiri kembali seketika,
+  jadi meneruskannya apa adanya membuat pemanggil menutup pool di bawah kaki handler yang
+  masih berjalan.
 - **Payload tak boleh memuat nilai kelas `personal_id`** (ADR-009 §6, ADR-018).
   `gov.outbox_events.payload` adalah JSONB plaintext dan stream NATS punya retensi, jadi pengenal
   yang lewat sini terbaca dari dump. Ditutup dengan MENGHAPUS nilainya (consumer meresolusi lewat

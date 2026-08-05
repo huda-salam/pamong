@@ -4,6 +4,7 @@ package eventbus_test
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -272,5 +273,50 @@ func TestNewFromConfig_DriverNATS(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout")
+	}
+}
+
+// TestNATSDriver_DrainMenungguHandlerSelesai membuktikan Drain BLOKIR sampai handler in-flight
+// selesai. Ini bukan detail kosmetik: `nats.Conn.Drain()` sendiri kembali seketika (pengurasan
+// berjalan di goroutine klien), jadi meneruskannya apa adanya membuat pemanggil mengira sudah
+// aman. Di cmd/server, "sudah aman" itu berarti defer menutup pool DB — tepat di bawah kaki
+// handler clone identity yang masih menulis, dengan NATS Core yang tak bisa me-redeliver.
+func TestNATSDriver_DrainMenungguHandlerSelesai(t *testing.T) {
+	url := startEmbeddedNATS(t)
+	schema := newNATSSchema(t)
+
+	sub := eventbus.NewNATSDriver(newNATSConn(t, url), schema)
+	mulai := make(chan struct{})
+	var selesai atomic.Bool
+	if err := sub.Subscribe(eventSuratDiterima, func(_ context.Context, _ port.Event) error {
+		close(mulai)
+		// Handler yang lambat mewakili tulisan clone ke tenant DB.
+		time.Sleep(300 * time.Millisecond)
+		selesai.Store(true)
+		return nil
+	}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	pub := eventbus.NewNATSDriver(newNATSConn(t, url), schema)
+	if err := pub.Dispatch(context.Background(), port.Event{
+		Name: eventSuratDiterima, Payload: suratDiterima{NomorSurat: "001/IN/2025"},
+	}); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	// Tunggu handler benar-benar MASUK sebelum drain, supaya yang diuji adalah "menunggu yang
+	// sedang berjalan" — bukan kebetulan menang balapan sebelum pesan tiba.
+	select {
+	case <-mulai:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler tak pernah dipanggil dalam 2 detik")
+	}
+
+	if err := sub.Drain(); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if !selesai.Load() {
+		t.Fatal("Drain kembali sementara handler masih berjalan — pemanggil akan menutup pool DB di bawah kakinya")
 	}
 }

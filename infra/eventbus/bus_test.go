@@ -131,3 +131,41 @@ func assertValidationError(t *testing.T, err error) {
 		t.Errorf("mau VALIDATION_ERROR, dapat: %v", err)
 	}
 }
+
+// drainerPalsu adalah Driver yang sekaligus Drainer — untuk membuktikan Bus meneruskan
+// Drain ke driver yang mendukungnya, tanpa perlu koneksi NATS.
+type drainerPalsu struct {
+	dipanggil int
+	err       error
+}
+
+func (d *drainerPalsu) Subscribe(string, port.EventHandler) error  { return nil }
+func (d *drainerPalsu) Dispatch(context.Context, port.Event) error { return nil }
+func (d *drainerPalsu) Drain() error                               { d.dipanggil++; return d.err }
+
+// TestBusDrain_DiteruskanKeDriver: driver ber-Drainer harus benar-benar dikuras, dan errornya
+// diteruskan ke pemanggil (shutdown perlu tahu bahwa ada handler yang ditinggalkan).
+func TestBusDrain_DiteruskanKeDriver(t *testing.T) {
+	d := &drainerPalsu{}
+	bus := eventbus.New(eventbus.NewSchemaRegistry(), d)
+	if err := bus.Drain(); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if d.dipanggil != 1 {
+		t.Fatalf("Drain driver dipanggil %d kali, mau 1", d.dipanggil)
+	}
+
+	d.err = errors.New("drain gagal")
+	if err := bus.Drain(); err == nil {
+		t.Fatal("error drain driver harus diteruskan, bukan ditelan")
+	}
+}
+
+// TestBusDrain_DriverTanpaDrainerNoop: driver memory mengantar sinkron di goroutine pemanggil —
+// tak ada yang perlu dikuras, dan Drain tak boleh gagal hanya karena driver tak mendukungnya
+// (kalau tidak, jalur shutdown dev akan selalu melaporkan error palsu).
+func TestBusDrain_DriverTanpaDrainerNoop(t *testing.T) {
+	if err := eventbus.NewMemory().Drain(); err != nil {
+		t.Fatalf("Drain driver tanpa Drainer harus no-op sukses, dapat %v", err)
+	}
+}

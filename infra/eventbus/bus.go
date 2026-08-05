@@ -19,6 +19,14 @@ type Driver interface {
 	Dispatch(ctx context.Context, event port.Event) error
 }
 
+// Drainer adalah kemampuan OPSIONAL sebuah Driver: menutup transport secara graceful dengan
+// menunggu handler yang sedang berjalan selesai. Sengaja bukan bagian dari Driver — driver
+// in-process (memory) mengantar sinkron di goroutine pemanggil, jadi baginya tak ada apa pun
+// yang perlu dikuras dan memaksanya mengimplementasi metode kosong hanya menambah kebisingan.
+type Drainer interface {
+	Drain() error
+}
+
 // Bus menggabungkan SchemaRegistry dengan sebuah Driver. Ia satu-satunya pintu
 // publish: event tanpa schema atau payload tak sesuai ditolak sebelum menyentuh
 // transport (PRD eventbus F2).
@@ -59,4 +67,18 @@ func (b *Bus) Publish(ctx context.Context, event port.Event) error {
 // Subscribe mendaftarkan handler untuk satu event lewat driver.
 func (b *Bus) Subscribe(event string, handler port.EventHandler) error {
 	return b.driver.Subscribe(event, handler)
+}
+
+// Drain menutup transport secara graceful bila driver-nya mendukung (lihat Drainer); driver
+// tanpa dukungan = no-op sukses.
+//
+// WAJIB dipanggil saat shutdown aplikasi bila ada subscriber terdaftar, SESUDAH server HTTP
+// berhenti menerima request dan SEBELUM pool DB ditutup. Tanpa itu, handler yang sedang
+// berjalan kehilangan koneksi DB di tengah jalan dan pesan yang sudah ter-buffer di klien
+// dibuang — pada NATS Core keduanya berarti kehilangan permanen (tak ada re-delivery).
+func (b *Bus) Drain() error {
+	if d, ok := b.driver.(Drainer); ok {
+		return d.Drain()
+	}
+	return nil
 }

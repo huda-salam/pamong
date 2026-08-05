@@ -5,9 +5,18 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/huda-salam/pamong/port"
 	"github.com/nats-io/nats.go"
+)
+
+// Batas tunggu pengurasan saat shutdown. Sengaja lebih pendek dari timeout shutdown HTTP
+// (15 detik di cmd/server) agar drain yang macet tetap menyisakan waktu bagi sisa penutupan,
+// dan bukan berubah menjadi proses yang menggantung sampai dibunuh orchestrator.
+const (
+	drainTimeout      = 10 * time.Second
+	drainPollInterval = 20 * time.Millisecond
 )
 
 // NATSDriver adalah Driver yang menggunakan NATS Core sebagai transport. Volatile:
@@ -98,6 +107,23 @@ func (d *NATSDriver) Subscribe(event string, handler port.EventHandler) error {
 
 // Drain menguras semua subscription secara graceful: menunggu message in-flight
 // selesai diproses sebelum koneksi ditutup. Dipanggil saat shutdown aplikasi.
+//
+// `nats.Conn.Drain()` sendiri ASINKRON — ia hanya menaruh koneksi ke state draining lalu
+// kembali seketika; pengurasan berjalan di goroutine klien dan koneksi baru tertutup setelah
+// selesai. Mengembalikannya apa adanya berarti pemanggil mengira sudah aman padahal handler
+// masih berjalan, dan proses yang langsung keluar (atau menutup pool DB) memotongnya di tengah.
+// Karena itu di sini ditunggu sampai koneksi benar-benar tertutup, dengan batas waktu supaya
+// shutdown tak menggantung selamanya bila satu handler tak kunjung selesai.
 func (d *NATSDriver) Drain() error {
-	return d.nc.Drain()
+	if err := d.nc.Drain(); err != nil {
+		return fmt.Errorf("eventbus: mulai drain NATS: %w", err)
+	}
+	deadline := time.Now().Add(drainTimeout)
+	for !d.nc.IsClosed() {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("eventbus: drain NATS tak selesai dalam %s — handler in-flight ditinggalkan", drainTimeout)
+		}
+		time.Sleep(drainPollInterval)
+	}
+	return nil
 }
