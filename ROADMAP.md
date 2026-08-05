@@ -927,6 +927,41 @@ Tujuan: API gateway lengkap, pamongctl lengkap, linter lengkap, dokumentasi kont
   - Endpoint CRUD dasar dari entity def
   - DoD: entity baru otomatis punya endpoint GET/POST/PATCH/DELETE
 
+- **PR-5.1.4** Live wiring clone engine identity ← 5.1.1, 2.2.4, 3.8.5b ✅
+  - Rakit `identity/sync` di composition root: Engine (subscriber) + `TenantDBWriter` +
+    `RepoCloneSource`, plus pendaftaran schema event identity ke registry bus
+  - DoD: `identity.employment.ditugaskan` terbit di bus nyata → baris `gov.user_profiles`
+    muncul di DB tenant dengan pengenal TERENKRIPSI, dan `UserResolver.ResolveByNIK`
+    menemukannya lewat blind index ✅
+  - Impl: `cmd/server/identity_sync.go` (`wireIdentitySync`) + `identity/domain.RegisterEventSchemas`
+    (daftar event hidup bersama konstantanya, pola `core/customization.RegisterEventSchemas`),
+    dipanggil dari `run()`. Repo identity dipakai tanpa dekorator audit (jalur clone murni
+    baca); `cryptoSvc` yang sama disuntik ke kedua sisi — realm SENTRAL dibuka repo identity,
+    realm TENANT disegel writer (ADR-017). Tak ada DDL baru: `gov.user_profiles` tetap
+    ensure-on-write milik writer (DB_CHANGELOG 3.8.5a).
+  - Menyusul review: (i) `eventbus.Drainer` + `Bus.Drain()`, `NATSDriver.Drain` kini MENUNGGU
+    koneksi tertutup (batas 10 dtk) — `nats.Conn.Drain()` asinkron; `run()` menguras SESUDAH
+    `srv.Shutdown` dan SEBELUM defer menutup pool, kalau tidak handler clone dipotong di tengah
+    dan pesannya hilang (NATS Core tanpa re-delivery). (ii) `AppConfig.Validate` menolak
+    `eventbus.driver` memory/KOSONG di luar development: driver memory mengantar sinkron dan
+    mengembalikan error subscriber ke pemanggil `Publish`, sehingga clone yang gagal
+    menggagalkan use case SESUDAH commit dan retry-nya menabrak invariant anti-duplikat.
+  - Bukti: `cmd/server/identity_sync_integration_test.go` — NATS embedded (asinkron, bukan
+    driver memory), migrasi identity nyata, dump `row::text` diperiksa termasuk bentuk hex;
+    `infra/eventbus` drain (unit + integration "Drain menunggu handler selesai");
+    `identity/domain/events_test.go` (cakupan daftar schema).
+  - GAP diketahui (bukan lingkup 5.1.4): (a) event `Manifest().Events.Produces` MODUL belum
+    didaftarkan ke schema registry — publish dari modul ditolak "event tak terdaftar", dan
+    `surat_masuk` membuang error publish (`_ =`) sehingga hilangnya TANPA gejala;
+    (b) use case identity belum punya adapter HTTP, jadi produsen event penugasan di server
+    hidup belum ada; (c) outbox transaksional belum punya penulis produksi (`OutboxStore`
+    tak pernah dirakit), jadi `OutboxRelay` SENGAJA tidak di-wire — relay tanpa produsen
+    hanya mem-poll tabel kosong; (d) subscription NATS berjalan SERIAL dan handler tak
+    ber-deadline: satu tenant DB yang macet menahan antrean tenant lain. Tak ditambal timeout
+    per-handler (pada transport tanpa re-delivery, membatalkan handler = kehilangan yang sama);
+    yang menyelesaikan = consumer durable ber-ack + dispatch konkuren,
+    DEFERRED(Phase-3.1.x) bersama rekonsiliasi clone.
+
 ### Sub-phase 5.2 — pamongctl lengkap
 
 - **PR-5.2.1** Scaffold module ← 1.1.1, 0.3.1

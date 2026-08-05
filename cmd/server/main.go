@@ -18,6 +18,7 @@ import (
 	"github.com/huda-salam/pamong/gateway"
 	identitydb "github.com/huda-salam/pamong/identity/adapter/db"
 	identitytoken "github.com/huda-salam/pamong/identity/adapter/token"
+	identitydomain "github.com/huda-salam/pamong/identity/domain"
 	"github.com/huda-salam/pamong/infra/crypto"
 	"github.com/huda-salam/pamong/infra/db"
 	"github.com/huda-salam/pamong/infra/eventbus"
@@ -83,6 +84,13 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("event bus: %w", err)
 	}
+	// Schema event identity WAJIB terdaftar sebelum ada yang publish: Bus.Publish menolak nama
+	// event tak terdaftar (gerbang "event tanpa schema"). Registry yang kosong membuat SELURUH
+	// jalur event identity — termasuk clone ke tenant — mati sejak baris pertama. Daftarnya
+	// hidup bersama konstanta event-nya (identity/domain/events.go), bukan di sini.
+	if err := identitydomain.RegisterEventSchemas(bus.Schema()); err != nil {
+		return fmt.Errorf("schema event identity: %w", err)
+	}
 
 	// Storage (minio/s3/local) & metrics (Prometheus) — adapter siap pakai.
 	store, err := storage.NewFromConfig(cfg.Storage)
@@ -132,6 +140,30 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("store idempotency (cache respons terenkripsi): %w", err)
 	}
+	// Clone engine identity: subscribe identity.employment.ditugaskan → tulis gov.user_profiles
+	// pada DB tenant tujuan. Ini SISI TULIS dari clone yang dibaca userResolver di atas; tanpanya
+	// resolver membaca tabel yang tak pernah terisi. Lihat identity_sync.go untuk alasan tiap
+	// pilihan perakitan (realm kunci, repo tanpa dekorator audit, semantik kegagalan handler).
+	if err := wireIdentitySync(identityPool, connMgr, cryptoSvc, bus); err != nil {
+		return fmt.Errorf("clone engine identity (identity/sync): %w", err)
+	}
+	// Sejak baris di atas ada subscriber terdaftar, jadi setiap jalan keluar dari run() wajib
+	// menguras bus DULU. Sengaja defer, bukan panggilan di ujung alur sukses: handler clone
+	// berjalan di goroutine driver dan memakai pool tenant, sementara run() bisa kembali lewat
+	// banyak jalur (bootstrap modul gagal, serve gagal, Shutdown timeout) — dan justru pada
+	// Shutdown yang TIMEOUT-lah handler paling mungkin masih berjalan.
+	//
+	// Urutannya dijamin LIFO: defer ini terdaftar SESUDAH defer penutup pool (identityPool,
+	// connMgr) sehingga berjalan SEBELUM keduanya. Terbalik = pool tertutup di bawah kaki
+	// handler, dan pada NATS Core pesannya hilang permanen (tak ada re-delivery).
+	defer func() {
+		if err := bus.Drain(); err != nil {
+			logger.Error(ctx, "drain event bus gagal; ada clone yang mungkin tak tertulis",
+				port.F("err", err.Error()))
+			return
+		}
+		logger.Info(ctx, "event bus terkuras; subscriber selesai")
+	}()
 
 	// Router aggregator: rute semua modul terkumpul di sini saat Bootstrap.
 	router := gateway.NewRouter()
@@ -230,7 +262,9 @@ func run() error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
-	logger.Info(ctx, "pamong berhenti dengan bersih")
+	// Pengurasan bus terjadi di defer (lihat sesudah wireIdentitySync), jadi ia tetap berjalan
+	// pada jalur gagal — termasuk `return` di atas saat Shutdown timeout.
+	logger.Info(ctx, "server HTTP berhenti; menguras event bus")
 	return nil
 }
 
