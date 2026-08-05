@@ -342,6 +342,22 @@ func (c *AppConfig) Validate() error {
 			"messaging.driver=log hanya untuk development (body OTP bocor ke log; env=%q butuh smtp/provider nyata)", c.Env))
 	}
 
+	// Driver eventbus "memory" mengantar SINKRON di goroutine pemanggil dan tanpa durability:
+	// tak ada persistence, tak ada retry, dan error handler MENGALIR BALIK ke pemanggil Publish.
+	// Konsekuensinya di luar development bukan sekadar "kurang tangguh" — ia mengubah semantik
+	// use case: satu subscriber yang gagal (mis. clone identity ke tenant DB yang sedang tak
+	// terjangkau) menggagalkan use case SESUDAH mutasi bisnisnya commit, dan percobaan ulang
+	// menabrak invariant anti-duplikat yang justru dibuat oleh percobaan pertama. Ditolak di luar
+	// development, pola sama messaging=log & kms_driver=local.
+	// Driver KOSONG ikut ditolak, bukan dibiarkan: infra/eventbus.newDriver memetakan "" dan
+	// "memory" ke driver yang SAMA, jadi section eventbus yang lupa diisi menghasilkan persis
+	// perilaku di atas — tanpa satu pun kata "memory" di file config yang bisa dicurigai.
+	if (c.EventBus.Driver == "memory" || c.EventBus.Driver == "") && c.Env != "development" {
+		errs = append(errs, fmt.Sprintf(
+			"eventbus.driver=%q hanya untuk development (sinkron, tanpa durability/retry; env=%q butuh nats)",
+			c.EventBus.Driver, c.Env))
+	}
+
 	// Driver KMS "local" memakai kunci turunan tetap yang ada di kode — cukup untuk dev/test,
 	// TIDAK untuk data nyata. Ditolak di luar development (ADR-010), pola sama messaging=log.
 	// Nama driver lain TIDAK divalidasi di sini: daftar driver hidup di registry infra/crypto

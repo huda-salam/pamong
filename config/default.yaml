@@ -48,6 +48,9 @@ provision_db:
   maintenance: postgres
 
 eventbus:
+  # memory = HANYA development (dispatch sinkron, tanpa durability/retry, error subscriber
+  # mengalir balik ke pemanggil Publish). Ditolak Validate() di staging & production — isi
+  # driver: nats + url di {env}.yaml atau GOV_EVENTBUS_DRIVER/GOV_EVENTBUS_URL.
   driver: memory
   url: ""
   stream: pamong

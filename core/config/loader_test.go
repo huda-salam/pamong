@@ -231,12 +231,48 @@ auth:
   token_secret: "0123456789012345678901234567890123"
 messaging:
   driver: smtp
+eventbus:
+  driver: nats
+  url: nats://bus:4222
 observability:
   log_format: json
 `)
 
 	if _, err := config.Load(config.WithDir(dir), config.WithEnv("production")); err != nil {
 		t.Fatalf("production tanpa konfigurasi crypto harus tetap boot: %v", err)
+	}
+}
+
+// TestLoad_EventBusMemoryDitolakDiLuarDevelopment: driver memory mengantar SINKRON dan tanpa
+// durability — error subscriber mengalir balik ke pemanggil Publish, sehingga satu clone yang
+// gagal menggagalkan use case SESUDAH mutasinya commit. Driver KOSONG ikut diuji karena
+// infra/eventbus memetakan "" ke driver yang sama: section yang lupa diisi memberi perilaku
+// identik tanpa kata "memory" di file config mana pun.
+func TestLoad_EventBusMemoryDitolakDiLuarDevelopment(t *testing.T) {
+	for _, env := range []string{"staging", "production"} {
+		for name, section := range map[string]string{
+			"eksplisit memory": "eventbus:\n  driver: memory\n",
+			"driver kosong":    "",
+		} {
+			dir := t.TempDir()
+			writeYAML(t, dir, env+".yaml", "env: "+env+"\n"+section)
+
+			if _, err := config.Load(config.WithDir(dir), config.WithEnv(env)); err == nil {
+				t.Errorf("env=%s (%s): eventbus driver memory harus ditolak Validate()", env, name)
+			}
+		}
+	}
+}
+
+// TestLoad_EventBusMemoryDiizinkanDiDevelopment adalah kontrol negatif: aturan di atas tak boleh
+// menutup jalur dev/test yang memang mengandalkan driver memory (dispatch sinkron = test
+// deterministik).
+func TestLoad_EventBusMemoryDiizinkanDiDevelopment(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "development.yaml", "env: development\neventbus:\n  driver: memory\n")
+
+	if _, err := config.Load(config.WithDir(dir), config.WithEnv("development")); err != nil {
+		t.Fatalf("eventbus.driver=memory harus boleh di development: %v", err)
 	}
 }
 
