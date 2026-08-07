@@ -31,6 +31,8 @@ endpoint CRUD, permission default, audit, dan fiscal check. Komponen yang membua
 - manifest.go — interface Module, struct Manifest, validasi
 - entity.go — EntityDef, FieldDef, validasi
 - field_types.go — enum tipe field + aturan validasi per tipe
+- event_schema.go — Registry.RegisterEventSchemas (Produces semua modul → registry bus,
+  seam interface agar tak import infra) + ExternalSubscriptions (Consumes tanpa produsen)
 - hook.go — HookSet, hook runner, urutan eksekusi
 - tier.go — resolusi tier, kontrak Tier 1 runtime
 - generation.go — orkestrasi auto-generate dari EntityDef

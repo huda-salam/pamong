@@ -117,7 +117,7 @@ func TestIdentitySync_ClonePersonKeTenantDB(t *testing.T) {
 
 	// Bus NYATA di atas NATS embedded — asinkron, lintas koneksi, dengan schema registry.
 	bus, err := eventbus.NewFromConfig(
-		config.EventBusConfig{Driver: "nats", URL: startEmbeddedNATSForSync(t)},
+		config.EventBusConfig{Driver: "nats", URL: startEmbeddedNATS(t)},
 		eventbus.NewSchemaRegistry(),
 	)
 	if err != nil {
@@ -279,9 +279,9 @@ func waitForClone(t *testing.T, ctx context.Context, pool *db.Pool, personID uui
 	}
 }
 
-// startEmbeddedNATSForSync menjalankan NATS in-process pada port acak (pola yang sama dengan
+// startEmbeddedNATS menjalankan NATS in-process pada port acak (pola yang sama dengan
 // infra/eventbus/nats_integration_test.go).
-func startEmbeddedNATSForSync(t *testing.T) string {
+func startEmbeddedNATS(t *testing.T) string {
 	t.Helper()
 	srv, err := natssrv.NewServer(&natssrv.Options{Host: "127.0.0.1", Port: -1, NoLog: true, NoSigs: true})
 	if err != nil {

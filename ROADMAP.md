@@ -952,7 +952,8 @@ Tujuan: API gateway lengkap, pamongctl lengkap, linter lengkap, dokumentasi kont
     `identity/domain/events_test.go` (cakupan daftar schema).
   - GAP diketahui (bukan lingkup 5.1.4): (a) event `Manifest().Events.Produces` MODUL belum
     didaftarkan ke schema registry — publish dari modul ditolak "event tak terdaftar", dan
-    `surat_masuk` membuang error publish (`_ =`) sehingga hilangnya TANPA gejala;
+    `surat_masuk` membuang error publish (`_ =`) sehingga hilangnya TANPA gejala
+    → **ditutup PR-5.1.5** (sisi registrasi; `_ =` di use case belum diputuskan);
     (b) use case identity belum punya adapter HTTP, jadi produsen event penugasan di server
     hidup belum ada; (c) outbox transaksional belum punya penulis produksi (`OutboxStore`
     tak pernah dirakit), jadi `OutboxRelay` SENGAJA tidak di-wire — relay tanpa produsen
@@ -961,6 +962,38 @@ Tujuan: API gateway lengkap, pamongctl lengkap, linter lengkap, dokumentasi kont
     per-handler (pada transport tanpa re-delivery, membatalkan handler = kehilangan yang sama);
     yang menyelesaikan = consumer durable ber-ack + dispatch konkuren,
     DEFERRED(Phase-3.1.x) bersama rekonsiliasi clone.
+
+- **PR-5.1.5** Registrasi schema event modul di composition root ← 5.1.4, 3.1.1 ✅
+  - Daftarkan `Manifest().Events.Produces` SEMUA modul terdaftar ke registry schema bus;
+    menutup GAP (a) PR-5.1.4
+  - DoD: modul ter-bootstrap menerbitkan event yang dideklarasikan manifest-nya → subscriber
+    di bus NYATA menerimanya dengan payload bertipe konkret ✅
+  - Impl: `core/domain.Registry.RegisterEventSchemas(EventSchemaRegistrar)` — agregasi lintas
+    modul hidup di registry (pola `StrictPermissions`), seam-nya interface sebaris agar
+    `core/domain` tak menyentuh `infra/eventbus`; dipanggil dari
+    `cmd/server/module_events.go` (`wireModuleEventSchemas`) SESUDAH `registry.Validate()` dan
+    SEBELUM Bootstrap modul (Bootstrap = titik pertama modul bisa menerbitkan event).
+  - Keputusan: (i) aturan nama→tipe TIDAK diduplikasi di `core/domain` — tetap milik
+    `SchemaRegistry`, sehingga tabrakan dengan event non-modul (identity/customization) yang
+    menumpang registry yang sama ikut tertangkap; dua modul dengan nama event sama & tipe
+    payload berbeda MENGGAGALKAN BOOT, nama sama & tipe sama lolos (idempoten).
+    (ii) `Events.Consumes` yang produsennya tak terpasang TIDAK menggagalkan boot — Consumes
+    antar modul memang loose coupling (modul referensi sengaja tanpa `DependsOn` ke
+    kepegawaian) dan deployment berbeda memasang himpunan modul berbeda; tapi kondisinya
+    DILAPORKAN saat boot (`Registry.ExternalSubscriptions` → log warn), sebab pada jalur NATS
+    pesan untuk event tanpa schema dibuang diam-diam sehingga "subscriber tuli" dan "produsen
+    tak terpasang" mustahil dibedakan dari luar.
+  - Bukti: `cmd/server/e2e_integration_test.go` — bus NATS embedded (sisi TERIMA merekonstruksi
+    payload lewat schema registry; driver memory tak bisa membedakan terdaftar/tidak),
+    POST /surat-masuk 201 → subscriber menerima `surat_masuk.surat.diterima` bertipe
+    `SuratDiterimaPayload` dengan nomor agenda & tenant benar; `core/domain/event_schema_test.go`
+    (agregasi, atribusi modul pada konflik, Consumes menggantung). Tiga mutasi diverifikasi
+    gagal: registrasi dilewati, event dihapus dari `Produces`, tipe payload manifest diganti.
+  - Tidak ada perubahan struktur DB (tak ada DDL/ensure-on-write baru).
+  - GAP tersisa: `_ = uc.publisher.Publish(...)` di `modules/surat_masuk/usecase` SENGAJA tak
+    disentuh — mengubahnya = keputusan semantik (event best-effort vs use case gagal SESUDAH
+    commit), yang jawaban sebenarnya adalah outbox transaksional (belum punya penulis produksi,
+    GAP (c) PR-5.1.4). Kini setidaknya event-nya benar-benar terkirim, bukan hilang di gerbang.
 
 ### Sub-phase 5.2 — pamongctl lengkap
 

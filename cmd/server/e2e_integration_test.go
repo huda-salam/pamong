@@ -6,6 +6,11 @@
 // PR-5.1.x (live-path completion): POST /surat-masuk dengan token valid mengembalikan 201,
 // bukan 500 (kabel Sequence/UserResolver yang dulu nil kini tersambung).
 //
+// PR-5.1.5 menambah ujung yang selama ini putus tanpa gejala: event yang dideklarasikan
+// manifest modul benar-benar SAMPAI ke subscriber. 201 saja tak pernah membuktikannya — use
+// case membuang error publish, jadi event yang ditolak bus (schema tak terdaftar) tetap
+// menghasilkan 201 dan baris tersimpan.
+//
 // Membutuhkan Postgres nyata (PAMONG_TEST_DB_DSN), satu database untuk identity (schema id.*)
 // dan tenant (schema gov.*/surat_masuk.*) — tak bertabrakan karena beda schema; tenant registry
 // diarahkan ke database yang sama (db_host kosong → shared host, db_name = DB test).
@@ -42,6 +47,7 @@ import (
 	"github.com/huda-salam/pamong/infra/storage"
 	infrauser "github.com/huda-salam/pamong/infra/user"
 	"github.com/huda-salam/pamong/modules"
+	smdomain "github.com/huda-salam/pamong/modules/surat_masuk/domain"
 	"github.com/huda-salam/pamong/port"
 	tenantroledb "github.com/huda-salam/pamong/tenantrole/adapter/db"
 	tenantroledomain "github.com/huda-salam/pamong/tenantrole/domain"
@@ -119,7 +125,17 @@ func TestE2E_CreateSuratMasuk_201(t *testing.T) {
 		t.Fatalf("seed tenant role: %v", err)
 	}
 
-	bus, err := eventbus.NewFromConfig(config.EventBusConfig{Driver: "memory"}, eventbus.NewSchemaRegistry())
+	// Bus NATS nyata (server embedded), BUKAN driver memory. Alasannya bukan realisme umum:
+	// pada jalur NATS, sisi TERIMA merekonstruksi payload lewat schema registry
+	// (unmarshalEvent → SchemaRegistry.Unmarshal) dan MEMBUANG pesan yang schema-nya tak
+	// terdaftar tanpa satu pun error. Driver memory meneruskan payload apa adanya, sehingga ia
+	// tak bisa membedakan "schema modul terdaftar" dari "tidak" — persis yang diuji di sini.
+	// Lagipula memory mengantar sinkron di goroutine pemanggil, jadi ia juga tak menguji
+	// ketepatan waktu registrasi subscriber.
+	bus, err := eventbus.NewFromConfig(
+		config.EventBusConfig{Driver: "nats", URL: startEmbeddedNATS(t)},
+		eventbus.NewSchemaRegistry(),
+	)
 	if err != nil {
 		t.Fatalf("event bus: %v", err)
 	}
@@ -166,6 +182,25 @@ func TestE2E_CreateSuratMasuk_201(t *testing.T) {
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("validate modul: %v", err)
 	}
+	// === Perakitan produksi yang diuji (PR-5.1.5) ===
+	// Urutan sama dengan run(): SESUDAH Validate, SEBELUM Bootstrap. Yang dipanggil adalah
+	// fungsi wiring produksi, bukan pendaftaran manual per-event di test — kalau daftar
+	// Produces sebuah manifest hilang, test ini yang gagal.
+	if err := wireModuleEventSchemas(ctx, registry, bus, logger); err != nil {
+		t.Fatalf("wireModuleEventSchemas: %v", err)
+	}
+
+	// Pengamat event: berdiri di seam yang sama dengan modul konsumen (app.Subscribe →
+	// Bus.Subscribe). Didaftarkan SEBELUM ada yang menerbitkan; NATSDriver.Subscribe blokir
+	// sampai server mencatat SUB, jadi tak ada jendela pesan hilang.
+	diterima := make(chan port.Event, 4)
+	if err := bus.Subscribe(smdomain.EventSuratDiterima, func(_ context.Context, ev port.Event) error {
+		diterima <- ev
+		return nil
+	}); err != nil {
+		t.Fatalf("subscribe %s: %v", smdomain.EventSuratDiterima, err)
+	}
+
 	for _, m := range registry.Modules() {
 		if err := m.Bootstrap(ctx, app); err != nil {
 			t.Fatalf("bootstrap modul %q: %v", m.Manifest().Name, err)
@@ -235,6 +270,33 @@ func TestE2E_CreateSuratMasuk_201(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("ingin 1 surat tersimpan, dapat %d", count)
+	}
+
+	// --- Bukti event modul benar-benar terkirim (PR-5.1.5) ---
+	// Sebelum registrasi schema modul, publish ini ditolak Bus ("event tak terdaftar") dan
+	// use case MEMBUANG error-nya — request tetap 201, baris tetap tersimpan, dan tak ada satu
+	// pun gejala. Karena itu 201 di atas bukan bukti apa pun soal event; yang membuktikan hanya
+	// pesan yang benar-benar sampai ke subscriber.
+	select {
+	case ev := <-diterima:
+		payload, ok := ev.Payload.(smdomain.SuratDiterimaPayload)
+		if !ok {
+			// Tipe konkret = bukti payload direkonstruksi lewat schema TERDAFTAR, bukan
+			// map[string]any hasil tebakan.
+			t.Fatalf("payload bertipe %T, mau smdomain.SuratDiterimaPayload", ev.Payload)
+		}
+		if payload.NomorAgenda != "2025/AG/00001" {
+			t.Errorf("nomor agenda di payload = %q, mau 2025/AG/00001", payload.NomorAgenda)
+		}
+		if payload.SuratID == uuid.Nil {
+			t.Error("surat_id di payload kosong — payload tak terisi dari use case")
+		}
+		if ev.TenantID != tenantID {
+			t.Errorf("tenant_id event = %q, mau %q", ev.TenantID, tenantID)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("event surat_masuk.surat.diterima tak diterima dalam 10 detik — " +
+			"schema modul tak terdaftar (publish ditolak diam-diam) atau subscriber tak aktif")
 	}
 }
 

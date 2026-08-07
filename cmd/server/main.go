@@ -200,6 +200,14 @@ func run() error {
 		return fmt.Errorf("registry modul tidak valid: %w", err)
 	}
 
+	// Schema event MODUL (Manifest().Events.Produces) ke registry yang sama dengan event identity
+	// di atas. Tanpa ini Bus.Publish menolak setiap event modul — tanpa gejala, karena use case
+	// membuang error publish. Dipanggil SESUDAH Validate & SEBELUM Bootstrap; alasan urutannya di
+	// module_events.go.
+	if err := wireModuleEventSchemas(ctx, registry, bus, logger); err != nil {
+		return fmt.Errorf("schema event modul: %w", err)
+	}
+
 	// Factory evaluator: bangun port.PermissionEvaluator per-request (composite central+tenant),
 	// disuntik ke middleware auth agar gateway.Context.RequirePermission menegakkan RBAC live.
 	// Permission strict (SoD) dikumpulkan dari manifest modul terdaftar (ADR-014); dibangun

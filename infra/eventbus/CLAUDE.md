@@ -38,6 +38,12 @@ Driven adapter: implementasi port.EventPublisher + EventSubscriber. Driver memor
   yang lewat sini terbaca dari dump. Ditutup dengan MENGHAPUS nilainya (consumer meresolusi lewat
   port di sisi pemilik data), bukan menyegelnya: blob yang mengendap di stream/outbox menjadi
   kewajiban dekripsi permanen yang melintasi rotasi kunci dan patahan format ciphertext.
+- **Registry schema diisi dari MANIFEST, bukan daftar tangan di composition root** (PR-5.1.5).
+  `domain.Registry.RegisterEventSchemas(bus.Schema())` mendaftarkan `Events.Produces` semua modul;
+  dipanggil `cmd/server` sesudah `registry.Validate()` dan SEBELUM Bootstrap (titik pertama modul
+  bisa menerbitkan event). Komponen non-modul (identity, customization) tetap punya registrar
+  sendiri karena tak ber-manifest. Nama event yang diklaim dua modul dengan tipe payload berbeda
+  = gagal boot.
 - **Tak ada konsep versi schema.** `SchemaRegistry` mencocokkan identitas TIPE GO, dan `Unmarshal`
   memakai encoding/json yang mengabaikan key tak dikenal. Menambah ATAU menghapus field karena itu
   backward-tolerant di kawat; yang ditolak hanya tipe payload yang berbeda untuk nama event yang
