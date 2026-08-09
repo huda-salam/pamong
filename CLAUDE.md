@@ -1724,7 +1724,26 @@ Sebelum minta review, pastikan semua item berikut terpenuhi:
 [ ] Jika ada perubahan event schema: versi schema dinaikkan
 [ ] Jika ada permission baru: terdaftar di manifest dan docs/contracts/
 [ ] Jika ada perubahan core framework: ADR baru atau ADR update sudah ada
+[ ] Komponen baru TERPASANG di composition root (cmd/server / pamongctl) di PR ini juga,
+    dengan test atas RAKITANNYA — bukan hanya atas komponennya (lihat "Wiring" di bawah)
 ```
+
+### Wiring — tidak ada komponen "selesai tapi dorman"
+
+**Adapter, middleware, subscriber, job, store, dan use case ber-handler tidak boleh
+dinyatakan selesai tanpa wiring-nya di `cmd/server` (atau `pamongctl`) pada PR yang sama.**
+DoD 11 di ROADMAP.md memuat aturan lengkap + alasannya.
+
+Ringkasnya: pola "adapter di-test dulu, live wiring menyusul" sudah dicoba di Phase 2–3
+repo ini dan menghasilkan empat cacat yang mustahil terlihat sebelum dirakit — event
+hilang permanen (`Subscribe` tanpa Flush), semua publish modul ditolak (schema registry
+kosong), clone gagal menggagalkan use case sesudah commit (semantik driver memory),
+handler terpotong saat shutdown (`Drain` tak menunggu). Semuanya ditemukan berbulan-bulan
+kemudian, dan sepanjang itu test per-komponen hijau.
+
+Bila wiring benar-benar terhalang dependensi yang belum ada: komponen itu **BELUM
+SELESAI** — beri status `SEBAGIAN`, penanda `DEFERRED(...)` di kode, entri backlog
+ROADMAP, dan **jangan** tandai ✅.
 
 ### Template PR description
 
@@ -1917,6 +1936,7 @@ ADR Accepted tidak diubah. Buat ADR baru yang supersede dengan referensi ke ADR 
 7. Dependency baru sudah `go mod tidy`
 8. Perubahan core sudah ada ADR-nya
 9. Permission baru sudah terdaftar di manifest dan `docs/contracts/permissions.md`
+10. Komponen baru ter-wire di composition root + ada test atas rakitannya (lihat "Wiring")
 
 ---
 

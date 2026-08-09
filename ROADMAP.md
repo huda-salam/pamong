@@ -900,6 +900,124 @@ Tujuan: regulasi sebagai data, constraint bertingkat, bisa diubah tanpa redeploy
 
 Tujuan: API gateway lengkap, pamongctl lengkap, linter lengkap, dokumentasi kontrak.
 
+### Sub-phase 5.0 — Sprint wiring (bayar utang live-wiring)
+
+**Mendahului semua pekerjaan baru, termasuk Phase 4.** Sub-phase ini tidak menambah
+kemampuan; ia menyalakan kemampuan yang sudah ditulis, diuji, dan dinyatakan SELESAI di
+Phase 2–3 tapi tak pernah dirakit di `cmd/server`.
+
+Temuan yang melahirkannya (audit 10 Agu 2026, ROADMAP vs kode aktual):
+
+- Server hanya melayani `/healthz` + rute `surat_masuk`. **Satu-satunya driving adapter
+  HTTP di seluruh repo** adalah `modules/surat_masuk/adapter/http/handler.go`.
+- `buildServerHandler` memasang `RequireAuth()` untuk semua rute non-healthz, sementara
+  tak ada endpoint login. Server rakitan sekarang **tak bisa melayani klien mana pun**:
+  token hanya bisa dicetak di luar sistem.
+- `RequirePermissionInUnit` **fail-open** bila evaluator nil (`gateway/context.go`), dan
+  tak ada yang memanggil `SetScopedEvaluator` → seluruh ABAC unit kerja + hierarki OPD +
+  delegasi (PR-2.3.5) tidak menegakkan apa pun di produksi.
+- `core/workflow.Engine`, `core/scheduler.Runner`, `core/notification.*`,
+  `core/customization.Manager`, `core/audit.Reader` — **nol** pemanggil di `cmd/server`.
+  Itu 13 PR (3.2 ×7, 3.5 ×2, 3.6 ×2, N1–N3b ×4) yang tak punya jalur eksekusi produksi.
+  `workflowActions` di `main.go` adalah map yang tak pernah di-dispatch.
+- 15 dari 32 penanda `DEFERRED(` menunjuk fase yang **sudah lewat** (8× Phase-2.4,
+  3× Phase-5.1.1, 3× Phase-5.1.2, 1× PR-3.8.3) — gerbang "Audit DEFERRED saat tutup fase"
+  terlewat dua kali.
+
+Aturan DoD 11 (lihat Definition of Done) mencegah utang jenis ini bertambah; sub-phase
+ini membayar yang terlanjur ada. Urutan W1→W6 adalah urutan ketergantungan, bukan selera:
+tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
+
+- **PR-W1** Handler HTTP alur auth (`/auth/*`) ← 2.4.3, 2.4.4, 5.1.2
+  - Driving adapter `identity/adapter/http`: `POST /auth/login` (`LoginEmployee`),
+    `POST /auth/select-tenant` (`SelectTenant`), `POST /auth/public/login` (`LoginCitizen`),
+    `POST /auth/public/otp/request` + `/auth/public/otp/verify` (`RequestOTP`/`VerifyOTP`).
+  - Rakit di `cmd/server`: `identity/adapter/auth.NewBcryptVerifier`, `JWTCodec` sebagai
+    **TokenIssuer** (sisi verify sudah ter-wire PR-5.1.2), `identitydb.CentralRoleResolver`,
+    `TenantRoleResolver` per-tenant di atas `TenantConnManager`, `port.MessagingPort` dari
+    `infra/messaging.NewFromConfig` (jalur OTP N3a), `port.RateLimiter` (sudah ada).
+  - **Rute auth harus lolos `RequireAuth`** — jelas, tapi ia titik paling mudah salah:
+    memasangnya di dalam business chain membuat login menuntut token untuk mendapatkan
+    token. Pasang di top mux (seperti `/healthz`) dengan stack terbatas
+    (Recovery/CORS/RequestID/RateLimit), TANPA Auth/RequireAuth/TenantResolver.
+  - Menutup: backlog "[Phase-2.4] Live wiring alur login" + "Live wiring token codec"
+    (sisa sisi issuer); marker `DEFERRED` di `identity/usecase/login.go:37` &
+    `login_citizen.go:52` (yang terakhir sudah basi — OTP selesai di 2.4.4).
+  - Belum ada use case pembuatan credential ber-password (`PasswordVerifier.Hash`) —
+    dibutuhkan untuk seed admin pertama; masuk W2 bersama sentinel SYSTEM actor.
+  - DoD: `cmd/server` e2e — boot → `POST /auth/login` mengembalikan token → token itu
+    dipakai memanggil `POST /surat-masuk` dan diterima (bukan 401). Tanpa test ini, W1
+    tidak selesai.
+
+- **PR-W2** Handler HTTP admin identity (`/admin/identity/*`) ← W1, 2.1.2, 2.4.5
+  - `CreatePerson`, `AttachEmployment`, `AssignEmploymentToTenant`, `CreateCredential`
+    (baru — butuh `PasswordVerifier.Hash`), `AssignCentralRole`.
+  - Menutup GAP (b) PR-5.1.4: produsen event `identity.employment.ditugaskan` di server
+    hidup. Clone engine sudah ter-wire (PR-5.1.4) tapi **tak ada yang menerbitkan
+    event-nya** — jalur clone produksi belum pernah berjalan di luar test.
+  - Sekalian tutup backlog "Sentinel SYSTEM actor": `assigned_by` NOT NULL membuat admin
+    pertama chicken-and-egg. Seed lewat migrasi identity baru + `domain.SystemActorID`.
+  - SENSITIF (identity) — review ekstra per CLAUDE.md.
+  - DoD: `POST /admin/identity/assignments` → baris `gov.user_profiles` muncul di DB
+    tenant tujuan dengan pengenal terenkripsi (bukti lewat bus NYATA, bukan driver memory).
+
+- **PR-W3** Wiring Authority live → `SetScopedEvaluator` ← W1, 2.3.5
+  - Bangun `permission.Authority` (RoleNames + RoleGrants dari resolver tenant, emitter
+    central-role→Grant `TenantWide`, DelegatedGrants dari resolver delegasi) →
+    `ScopedEngine.Bind` → `gateway.Context.SetScopedEvaluator` di middleware Auth.
+  - **Mengubah default dari permisif ke menegakkan** — begitu evaluator terpasang,
+    `RequirePermissionInUnit` mulai menolak. Cari dulu pemanggilnya (`grep`) agar
+    perubahan perilaku ini disengaja, bukan kejutan.
+  - Emitter central-role→Grant belum dibuat (sengaja tak disentuh di PR-2.3.5).
+  - Menutup: marker `DEFERRED(Phase-2.4)` di `gateway/middleware/auth.go:73`; backlog
+    "[Phase-2.4] Wiring Authority live + seam scoped".
+  - DoD: dua request token identik beda `unit_kerja` → satu lolos satu 403, lewat stack
+    HTTP nyata (bukan pemanggilan engine langsung).
+
+- **PR-W4** Runtime workflow + notifikasi + scheduler ← W1, 3.2.x, 3.5.x, 3.6.x, N1–N3b
+  - Blok dorman terbesar. Rakit: `DBStore` (definition) + `DBTemplateStore` + `Engine`
+    dengan `WithTemplates`/`WithDeadlines`/`WithNotifier`, `ActionDispatcher` nyata
+    menggantikan map `workflowActions`, `scheduler.Runner` + `DBLocker` dijalankan di
+    goroutine ber-shutdown, `SchedulerDeadlines` + `EscalationJob` + `NotifierEscalator` +
+    `NotifierTransition`, `ChannelRegistry` + `DBTemplateStore` notifikasi +
+    `DBRecipientDirectory` + messaging driver.
+  - **Kandidat dipecah W4a (engine + dispatch + definition/template store) dan W4b
+    (scheduler runner + SLA deadline + notifier)** bila diff > 600 baris inti.
+  - Yang akan ketahuan di sini (prediksi, bukan janji): `workflowActions` sebagai map
+    `any` tak punya kontrak dispatch — kemungkinan butuh seam baru di `domain.App` agar
+    action modul bisa dipanggil engine tanpa `core/workflow` mengimpor modul.
+  - DoD: `surat_masuk` disposisi lewat workflow dari template tenant → transisi memicu
+    notifikasi ke inbox pemegang role konkret → SLA lewat memicu eskalasi, seluruhnya
+    lewat server yang di-boot `run()`.
+
+- **PR-W5** Wiring customization write-path ← W1, 3.4.1, 3.4.2
+  - Urutan WAJIB sudah tertulis lengkap di backlog "[Phase-5.1.1] Live wiring
+    customization write-path" butir (a)–(e) — ikuti apa adanya, termasuk
+    `customization.RegisterEventSchemas(bus.Schema())` SEBELUM `Manager` dipakai
+    (tanpanya setiap write gagal di langkah publish).
+  - Sekalian tutup butir "Atomicity store-write + publish" (alihkan ke outbox) bila
+    outbox sudah punya penulis produksi; bila belum, catat ulang eksplisit.
+  - Menutup: marker `DEFERRED(Phase-5.1.1)` di `core/customization/admin.go:22` &
+    `events.go:45`.
+
+- **PR-W6** Observability endpoint + audit reader ← W1, 3.7.2, 1.3.x
+  - (a) Mount `GET /metrics` (`PrometheusMetrics.Handler()`, auth-free atau ber-auth
+    sesuai kebijakan ops) + `observability.NewTracerProvider` di boot dengan
+    `defer tp.Shutdown(ctx)` agar batch span ter-flush. Menutup marker
+    `DEFERRED(Phase-5.1.1)` di `infra/observability/metrics.go:56` + backlog
+    "[Phase-5.1.1] Live wiring metrics endpoint".
+  - (b) Rakit `audit.NewReader` + handler baca audit ber-permission. **Menuntut keputusan
+    REVIEW_BACKLOG E1 lebih dulu:** entri audit identity ber-realm `_central` tak akan
+    pernah cocok dengan tenant aktor di `Reader` — siapa yang berwenang membaca audit
+    sentral (kandidat: central role platform)? Putuskan sebelum menulis kode; kemungkinan
+    butuh ADR.
+
+**Setelah W1–W6 tutup:** jalankan audit DEFERRED penuh
+(`grep -rn 'DEFERRED(' --include='*.go'`) dan pastikan tak ada lagi penanda ber-fase lewat.
+Baru sesudah itu ambil keputusan urutan berikutnya — Phase 4 (rule engine, pilar pendiri
+yang memblokir 3.3.4/`core/fiscal`/5.2.2) vs entity tiers & `pamongctl eject` (janji DX
+terbesar CLAUDE.md, **nol** baris rencana sampai sekarang — lihat backlog di bawah).
+
 ### Sub-phase 5.1 — API gateway
 
 - **PR-5.1.1** Router aggregator ← 1.1.1, 2.4.2 ✅
@@ -1118,6 +1236,44 @@ Sebuah PR dianggap selesai jika:
 8. ADR dibuat bila menyentuh interface publik core
 9. PR description mengikuti template di CLAUDE.md
 10. Tidak ada `TODO`/`FIXME` tanpa issue terkait
+11. **Terpasang di composition root pada PR yang sama** — lihat aturan di bawah
+
+### Aturan 11 — tidak ada komponen "selesai tapi dorman"
+
+**Sebuah komponen tidak boleh dinyatakan SELESAI tanpa wiring-nya di `cmd/server`
+(atau `pamongctl`, bila di situ tempatnya) pada PR yang sama.** Berlaku untuk apa pun
+yang punya jalur eksekusi produksi: adapter, middleware, use case ber-handler, subscriber
+event, job scheduler, store.
+
+Alasannya bukan kerapian, melainkan pengalaman terukur di repo ini. Pola lama
+("adapter di-test dulu, live wiring menyusul") dipakai berulang di Phase 2–3 dan
+menghasilkan empat cacat yang tak mungkin terlihat sebelum dirakit, semuanya baru
+muncul berbulan-bulan kemudian saat Phase 5.1:
+
+- `NATSDriver.Subscribe` tanpa Flush → event hilang permanen (PR-3.1.3 dinyatakan
+  selesai Juni; cacatnya baru ketahuan akhir Juli lewat test yang dikira "flaky").
+- `SchemaRegistry` selalu kosong di `run()` → **semua** publish modul ditolak (PR-5.1.4).
+- Driver `memory` mengantar sinkron → clone gagal menggagalkan use case SESUDAH commit
+  (fix `f5f1a65`).
+- `Bus.Drain` tak menunggu koneksi tertutup → handler clone terpotong saat shutdown
+  (fix `438c6df`).
+
+Test unit & integrasi per-komponen semuanya hijau selama itu. Yang tidak diuji adalah
+**rakitannya**, dan itu satu-satunya bentuk yang dijalankan di produksi.
+
+Konsekuensi praktis:
+
+- PR yang menambah adapter WAJIB menyentuh `cmd/server` (atau menyatakan eksplisit di
+  deskripsi PR mengapa komponen ini memang tak punya jalur produksi — mis. mock testkit).
+- Bukti DoD-nya adalah test yang menjalankan **rakitan**, bukan komponen: pola
+  `cmd/server/e2e_integration_test.go` (bus NATS embedded + `buildServerHandler`),
+  bukan pemanggilan konstruktor langsung.
+- Bila wiring benar-benar terhalang dependensi yang belum ada, komponen itu **BELUM
+  SELESAI**: statusnya `SEBAGIAN` dengan penanda `DEFERRED(...)` di kode + entri backlog,
+  dan sub-phase-nya tidak boleh ditutup. Jangan diberi ✅.
+
+Ini aturan yang mengoreksi cara kerja Phase 2–3, bukan penilaian ulang atasnya —
+utang yang terlanjur ada dibayar lewat sprint PR-W1..W5 (Sub-phase 5.0).
 
 ---
 
@@ -1162,6 +1318,56 @@ per-milestone seperti TODO/FIXME), saat menutup sebuah Phase/sub-phase jalankan
 tujuannya sudah tiba/lewat tanpa dikerjakan. DEFERRED yang fasenya lewat = utang yang
 harus ditutup atau dijadwalkan ulang secara eksplisit. Ini gerbang manusia (belum ada
 rule linter `markerref`).
+
+- **[Sub-phase 5.0] Hasil audit DEFERRED 10 Agu 2026 — 15 penanda ber-fase LEWAT.**
+  Gerbang di atas terlewat saat menutup Phase 2.4 dan saat menutup PR-5.1.1/5.1.2, jadi
+  audit dijalankan mundur. Dari 32 penanda `DEFERRED(` di kode, yang fase tujuannya sudah
+  tiba/lewat:
+  - `DEFERRED(Phase-2.4)` ×8 — publish event role sentral/tenant/delegasi
+    (`identity/usecase/create_central_role.go`, `assign_central_role.go`,
+    `tenantrole/usecase/create_tenant_role.go`, `assign_tenant_role.go`,
+    `delegation/usecase/create_delegation.go`, `delegation/domain/policy.go`),
+    wiring Authority (`gateway/middleware/auth.go:73` → **PR-W3**), live wiring login
+    (`identity/usecase/login.go:37` → **PR-W1**).
+  - `DEFERRED(Phase-5.1.1)` ×3 — metrics endpoint, customization Manager & RegisterEventSchemas
+    (→ **PR-W5/W6**).
+  - `DEFERRED(Phase-5.1.2)` ×1 — `infra/db/routing_conn.go:19` residency routing.
+    (Dua sebutan `Phase-5.1.2 #1/#2` lain di `gateway/context.go` & `infra/db/central_conn.go`
+    adalah catatan "ini MENUTUP penanda X", bukan utang terbuka — jangan ikut dihitung.)
+  - **Basi, hapus saja saat menyentuh file-nya:** `identity/usecase/login_citizen.go:52`
+    (OTP sudah selesai PR-2.4.4), `core/customization/customfield.go:18` `DEFERRED(PR-3.8.3)`
+    (enkripsi custom field — 3.8.3 selesai, tapi rekonsiliasi `CustomFieldDef.Class`
+    memang masih terbuka; ubah ref-nya ke PR-W5, jangan dibiarkan menunjuk PR yang tutup).
+  - Penanda event role sentral/tenant/delegasi (6 dari 8) **tidak** masuk W1–W6: belum ada
+    konsumen, dan konsumennya (refresh/revoke klaim token) menumpang keputusan epoch
+    `tokens_valid_after` yang juga belum diambil. Dijadwalkan ulang eksplisit ke
+    **Phase-5.0+ / bersama use case revoke** — lihat butir "[Phase-2.4] Revocation
+    per-person" di bawah. Ini penjadwalan ulang sadar, bukan kelalaian yang diperpanjang.
+
+- **[BELUM PUNYA RENCANA — perlu keputusan] Permukaan desain CLAUDE.md tanpa satu pun
+  baris di ROADMAP.** Ditemukan saat audit yang sama, dengan membandingkan konsep di
+  CLAUDE.md terhadap daftar PR. Bukan utang implementasi (tak ada kode yang menunggu),
+  melainkan **lubang perencanaan** — dan itu sebabnya ia tak pernah muncul di review
+  per-PR mana pun:
+  - **Entity tiers & progressive eject** — 16 sebutan di CLAUDE.md, **0** di ROADMAP.
+    Ini janji DX terbesar framework ("~60–70% entity Tier 1, zero Go code",
+    `pamongctl define entity`, `eject hooks`, `eject usecase`). Yang terdekat cuma
+    PR-5.1.3 (auto-CRUD endpoint, belum dikerjakan) & PR-5.2.1 (scaffold, masih stub
+    `notImplemented`). Tanpa ini, klaim "rails, bukan kebebasan" belum punya rel.
+  - **Penegakan periode fiskal (`Lockable`)** — `core/fiscal` hanya CLAUDE.md + PRD.md.
+    `port.FiscalChecker` sudah jadi seam (PR-3.3.3) tapi tak ada implementasinya, jadi
+    gerbang non-retroaktif strategy choice belum nyata.
+  - **`data_lifecycle: annual_cutoff`** — carry-forward & aggregation spec dideklarasikan
+    di manifest tapi tak ada mesin yang membacanya.
+  - **Bulk operations** — CLAUDE.md menyebutnya WAJIB disediakan framework (idempotency &
+    optimistic locking sudah; bulk belum).
+  - **Pipeline migrasi data legacy** — juga pemblokir sisa PR-3.8.5 (staging table).
+  - **Portabilitas tier tenant** (`pg_dump → restore → update registry`) — 0 sebutan.
+  - **12 dari 14 rule linter** di tabel CLAUDE.md belum ada (aktif: `domainnoinfra`,
+    `permissionregistered`). Seluruh filosofi "enforcement lewat tooling, bukan
+    dokumentasi" bersandar pada PR-5.3.1 yang belum dikerjakan.
+  Keputusan penjadwalan diambil **setelah Sub-phase 5.0 tutup**, bersama pertanyaan
+  Phase 4 vs entity tiers. Dicatat di sini supaya tak hilang lagi.
 
 - **[PR-3.3.2 — bagian INTI SELESAI] Tenant config ber-scope + resolver.** `gov.tenant_configs`
   (KV ber-scope `tenant[/unit_kerja[/resource]]`) + `core/config.Resolver` "paling spesifik
