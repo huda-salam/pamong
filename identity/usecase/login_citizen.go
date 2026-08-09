@@ -23,20 +23,27 @@ var citizenCredTypes = map[domain.CredType]bool{
 // role (central/tenant). Ini struktural — token citizen mustahil membawa role internal, sehingga
 // ASN yang login publik diperlakukan murni sebagai warga (cegah kebocoran wewenang internal).
 type LoginCitizen struct {
-	creds     domain.CredentialRepository
-	persons   domain.PersonRepository
-	passwords port.PasswordVerifier
-	issuer    port.TokenIssuer
+	auth   passwordAuthenticator
+	issuer port.TokenIssuer
 }
 
 // NewLoginCitizen merakit alur login citizen. Tidak menerima resolver role apa pun — disengaja.
+// limiter+policy: proteksi brute-force yang sama persis dengan jalur employee (PR-W1); portal
+// publik justru yang paling terekspos, jadi ia tak boleh dapat perlakuan lebih longgar.
 func NewLoginCitizen(
 	creds domain.CredentialRepository,
 	persons domain.PersonRepository,
 	passwords port.PasswordVerifier,
 	issuer port.TokenIssuer,
+	limiter port.RateLimiter,
+	policy LoginPolicy,
 ) *LoginCitizen {
-	return &LoginCitizen{creds: creds, persons: persons, passwords: passwords, issuer: issuer}
+	return &LoginCitizen{
+		auth: passwordAuthenticator{
+			creds: creds, persons: persons, passwords: passwords, limiter: limiter, policy: policy,
+		},
+		issuer: issuer,
+	}
 }
 
 // LoginCitizenInput DTO masuk dari portal publik.
@@ -49,27 +56,17 @@ type LoginCitizenInput struct {
 // Execute memverifikasi credential publik lalu menerbitkan token persona=citizen tanpa tenant
 // dan tanpa role.
 //
-// DEFERRED(Phase-2.4/PR-2.4.x): jalur OTP (no_hp/email tanpa password) + rate-limit & proteksi
-// brute-force belum dibangun di sini — lihat REVIEW_BACKLOG A5. Saat ini verifikasi via password
-// (secret_hash bcrypt); credential OTP-only (secret_hash kosong) ditolak.
+// Jalur OTP (no_hp/email tanpa password) hidup terpisah di RequestOTP/VerifyOTP (PR-2.4.4);
+// di sini verifikasi via password (secret_hash bcrypt) dan credential OTP-only (secret_hash
+// kosong) ditolak. Proteksi brute-force ada di passwordAuthenticator (PR-W1, REVIEW_BACKLOG A5).
 func (uc *LoginCitizen) Execute(ctx context.Context, in LoginCitizenInput) (string, error) {
 	if !citizenCredTypes[in.CredType] {
 		return "", errInvalidCredential()
 	}
 
-	cred, err := uc.creds.FindByTypeValue(ctx, in.CredType, in.CredValue)
+	person, err := uc.auth.authenticate(ctx, in.CredType, in.CredValue, in.Password)
 	if err != nil {
-		return "", errInvalidCredential()
-	}
-	if cred.SecretHash == "" {
-		return "", errInvalidCredential()
-	}
-	if err := uc.passwords.Verify(cred.SecretHash, in.Password); err != nil {
-		return "", errInvalidCredential()
-	}
-	person, err := uc.persons.FindByID(ctx, cred.PersonID)
-	if err != nil || !person.IsActive {
-		return "", errInvalidCredential()
+		return "", err
 	}
 
 	// Persona citizen: tanpa tenant, tanpa employment_status, tanpa role internal.

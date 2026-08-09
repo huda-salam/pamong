@@ -19,9 +19,10 @@ import (
 // tanpa RequireAuth, request anonymous lolos ke handler dan RequirePermission default permisif
 // mengizinkannya.
 //
-// DEFERRED(Phase-5.1.x): saat route-grouping publik vs internal hadir, RequireAuth hanya
-// membungkus grup internal; kini (semua rute bisnis internal) ia membungkus seluruh router
-// bisnis, sedangkan /healthz dilayani di luar stack (auth-free) oleh cmd/server.
+// Route-grouping publik vs internal SUDAH ADA sejak PR-W1: RequireAuth membungkus router BISNIS,
+// sementara grup /auth/* (login, OTP) dipasang di top mux `cmd/server` tanpa RequireAuth — alur
+// login bersifat pra-otentikasi, jadi memasangnya di dalam chain ini akan menuntut token untuk
+// MEMPEROLEH token. /healthz juga dilayani di luar stack (auth-free). Lihat mountAuthRoutes.
 //
 // Batasan tanggung jawab: RequireAuth hanya gerbang "terbukti siapa" (401). Penolakan
 // otorisasi granular "boleh aksi X?" (403) tetap di use case lewat RequirePermission.

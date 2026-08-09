@@ -21,8 +21,27 @@ type serverDeps struct {
 	rateLimiter    port.RateLimiter
 	rateLimit      config.RateLimitConfig
 	idempotency    port.IdempotencyStore // nil → middleware idempotency tidak dipasang
+	auth           authRoutes            // nil → rute /auth/* tidak dipasang
 	corsOrigins    []string
 	logger         port.Logger
+}
+
+// authRoutes adalah kontrak minimal yang dibutuhkan mountAuthRoutes, dipenuhi oleh
+// *identity/adapter/http.Handler. Seam ini ada agar PEMASANGAN rute (mana publik, mana menuntut
+// token) dapat diuji tanpa merakit seluruh alur identity beserta DB-nya — yang diuji di situ
+// adalah stack middleware di sekeliling handler, bukan isi handler-nya.
+//
+// HATI-HATI typed-nil: `var h *identityhttp.Handler; d.auth = h` menghasilkan interface yang
+// TIDAK sama dengan nil, sehingga rute tetap terpasang dan menunjuk handler nil (panic saat
+// request pertama). Karena itu wireAuth tak pernah mengembalikan (nil, nil) — kegagalan
+// perakitan selalu jadi error, dan run() gagal boot. Kelas bug yang sama pernah tercatat sebagai
+// REVIEW_BACKLOG H6.
+type authRoutes interface {
+	LoginEmployee(http.ResponseWriter, *http.Request)
+	SelectTenant(http.ResponseWriter, *http.Request)
+	LoginCitizen(http.ResponseWriter, *http.Request)
+	RequestOTP(http.ResponseWriter, *http.Request)
+	VerifyOTP(http.ResponseWriter, *http.Request)
 }
 
 // buildServerHandler merakit stack middleware KEAMANAN (PR-5.1.2/5.1.2b) di sekeliling router
@@ -73,10 +92,52 @@ func buildServerHandler(d serverDeps) http.Handler {
 
 	top := http.NewServeMux()
 	top.HandleFunc("GET /healthz", healthz)
+	if d.auth != nil {
+		mountAuthRoutes(top, d)
+	}
 	top.Handle("/", businessChain)
 
 	// Recovery membungkus keduanya (panic di /healthz pun jadi 500 anggun).
 	return middleware.Recovery(d.logger)(top)
+}
+
+// mountAuthRoutes memasang grup /auth/* pada top mux — DI LUAR business chain (PR-W1).
+//
+// Ini bukan preferensi tata letak melainkan syarat kebenaran: business chain memuat RequireAuth,
+// jadi alur login yang dipasang di sana akan menuntut token untuk MEMPEROLEH token. Grup ini
+// juga menutup DEFERRED(Phase-5.1.x) di require_auth.go yang mengantisipasi persis pemisahan
+// publik vs internal ini.
+//
+// Middleware yang SENGAJA tidak dipasang di sini:
+//
+//   - **TenantResolver** — belum ada tenant sebelum token terbit. (Ia sebenarnya lolos-begitu-saja
+//     saat klaim tenant kosong, tapi memasangnya menyiratkan rute ini punya tenant.)
+//   - **RateLimit (middleware gateway)** — kuncinya per-PRINCIPAL (`rateLimitKey` = tenant+person),
+//     dan pada rute pra-otentikasi principal selalu uuid.Nil. Semua penyerang anonim karena itu
+//     akan berbagi SATU bucket global: alih-alih membatasi penyerang, ia memberi siapa pun cara
+//     mematikan login bagi semua orang dengan membanjiri satu endpoint. Proteksi brute-force jalur
+//     ini hidup di use case, ber-key per KREDENSIAL (passwordAuthenticator + OTPPolicy) — sesuai
+//     port.RateLimiter §"Pola pemakaian". Rate limit per-IP adalah kebutuhan berbeda yang menuntut
+//     keputusan proxy tepercaya (X-Forwarded-For yang dipercaya buta = penyerang mencetak key tak
+//     terbatas); belum diambil, jangan dipasang setengah-setengah.
+//
+// /auth/select-tenant adalah pengecualian: ia menukar token SEMENTARA menjadi token final, jadi
+// justru menuntut token — Auth + RequireAuth dipasang, TenantResolver tetap tidak.
+func mountAuthRoutes(top *http.ServeMux, d serverDeps) {
+	public := []func(http.Handler) http.Handler{
+		middleware.CORS(d.corsOrigins),
+		middleware.RequestID(),
+	}
+	authenticated := append(append([]func(http.Handler) http.Handler{}, public...),
+		middleware.Auth(d.verifier, d.evalFactory),
+		middleware.RequireAuth(),
+	)
+
+	top.Handle("POST /auth/login", chain(http.HandlerFunc(d.auth.LoginEmployee), public...))
+	top.Handle("POST /auth/public/login", chain(http.HandlerFunc(d.auth.LoginCitizen), public...))
+	top.Handle("POST /auth/public/otp/request", chain(http.HandlerFunc(d.auth.RequestOTP), public...))
+	top.Handle("POST /auth/public/otp/verify", chain(http.HandlerFunc(d.auth.VerifyOTP), public...))
+	top.Handle("POST /auth/select-tenant", chain(http.HandlerFunc(d.auth.SelectTenant), authenticated...))
 }
 
 // healthz adalah handler liveness (tak menyentuh DB, aman dipakai orchestrator). Dilayani

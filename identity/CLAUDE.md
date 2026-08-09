@@ -31,7 +31,10 @@ setiap perubahan butuh review ekstra (lihat aturan PR).
 ## File kunci
 - domain/ — person, employment, credential, central role, assignment + ports
 - usecase/ — create person, attach employment, assign role, cross-tenant assign, login
-- adapter/ — http (auth endpoints), db (identity DB)
+  (`password_auth.go` = verifikasi kredensial + proteksi brute-force, dipakai employee & citizen)
+- adapter/ — http (endpoint auth: /auth/login, /auth/select-tenant, /auth/public/{login,otp/*}),
+  db (identity DB). Pemasangan rutenya di `cmd/server.mountAuthRoutes` — grup ini di LUAR
+  RequireAuth (login itu pra-otentikasi), kecuali select-tenant.
 - sync/ — clone engine (subscribe event, tulis ke tenant DB)
 
 ## Konvensi khusus
@@ -133,7 +136,11 @@ Kolom plaintext-nya **tidak ada** — bukan sekadar berhenti diisi.
   tak boleh menyentuh kripto.
 - Membuat habisnya kuota per-kredensial menjawab 429. Lapis itu berjalan SESUDAH lookup, jadi
   respons yang berbeda menjadikannya orakel keberadaan akun — habisnya harus meniru jalur normal
-  (request → nil senyap, verify → 401 seragam).
+  (request → nil senyap, verify → 401 seragam, **login password → 401 seragam**). Berlaku sama
+  untuk `passwordAuthenticator` (PR-W1): hanya lapis MENTAH (pra-lookup) yang boleh 429.
+- Menambahkan verifikasi kredensial sendiri di alur login baru alih-alih memakai
+  `passwordAuthenticator`. Dua salinan aturan brute-force akan menyimpang saat salah satunya
+  diperbaiki — alasan yang sama dengan `crypto.FieldSealer`.
 - **Mengirim OTP ke `in.CredValue`.** Sebelum blind index nilai itu selalu identik dengan yang
   terdaftar; sekarang tidak. `"victim@x.id\n"` me-resolve ke kredensial nyata lalu ditolak SMTP
   sebagai header injection (500), sedangkan alamat asing menjawab 200 — satu probe per target,

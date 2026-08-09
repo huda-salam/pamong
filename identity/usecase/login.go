@@ -34,7 +34,7 @@ type CentralRoleResolver interface {
 // TenantRoleResolver me-resolve nama role tenant untuk person pada satu tenant. Implementasinya
 // terikat ke DB tenant ybs (isolasi struktural), karena itu menerima tenantID untuk memilih
 // koneksi yang benar. Concrete-nya (atas tenantrole.TenantRoleResolver + TenantConnManager)
-// di-wire di layer bootstrap — lihat DEFERRED(Phase-2.4) live wiring.
+// dirakit di composition root — `cmd/server.tenantRoleResolver` (PR-W1).
 type TenantRoleResolver interface {
 	EffectiveRoles(ctx context.Context, personID uuid.UUID, tenantID string) ([]string, error)
 }

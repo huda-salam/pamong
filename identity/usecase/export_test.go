@@ -7,4 +7,6 @@ var (
 	OTPVerifyKeyForTest      = otpVerifyKey
 	OTPCredRequestKeyForTest = otpCredRequestKey
 	OTPCredVerifyKeyForTest  = otpCredVerifyKey
+	LoginRawKeyForTest       = loginRawKey
+	LoginCredKeyForTest      = loginCredKey
 )

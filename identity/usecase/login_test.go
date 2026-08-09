@@ -183,6 +183,7 @@ type loginFixture struct {
 	central     *fakeCentralResolver
 	tenantRoles *fakeTenantRoleResolver
 	issuer      *fakeIssuer
+	limiter     *fakeLimiter // proteksi brute-force jalur password (PR-W1)
 }
 
 func newLoginFixture() *loginFixture {
@@ -195,12 +196,14 @@ func newLoginFixture() *loginFixture {
 		central:     newFakeCentralResolver(),
 		tenantRoles: newFakeTenantRoleResolver(),
 		issuer:      &fakeIssuer{},
+		limiter:     newFakeLimiter(),
 	}
 }
 
 func (fx *loginFixture) loginEmployee() *usecase.LoginEmployee {
 	return usecase.NewLoginEmployee(fx.creds, fx.persons, fx.emps, fx.assigns, fx.tenants,
-		fakePasswords{}, fx.central, fx.tenantRoles, fx.issuer)
+		fakePasswords{}, fx.central, fx.tenantRoles, fx.issuer,
+		fx.limiter, usecase.DefaultLoginPolicy())
 }
 
 func (fx *loginFixture) selectTenant() *usecase.SelectTenant {
@@ -208,7 +211,8 @@ func (fx *loginFixture) selectTenant() *usecase.SelectTenant {
 }
 
 func (fx *loginFixture) loginCitizen() *usecase.LoginCitizen {
-	return usecase.NewLoginCitizen(fx.creds, fx.persons, fakePasswords{}, fx.issuer)
+	return usecase.NewLoginCitizen(fx.creds, fx.persons, fakePasswords{}, fx.issuer,
+		fx.limiter, usecase.DefaultLoginPolicy())
 }
 
 // seedEmployee membuat person aktif + employment ASN aktif + credential NIP berpassword.

@@ -222,6 +222,16 @@ func run() error {
 		logger.Info(ctx, "modul ter-bootstrap", port.F("module", m.Manifest().Name))
 	}
 
+	// Alur auth (PR-W1): sisi PENERBIT token. Dirakit SESUDAH registry & evaluator agar seluruh
+	// dependensinya (pool identity, connMgr tenant, kripto, limiter) sudah berdiri. Tanpa ini
+	// server tak punya pintu masuk sama sekali — RequireAuth memagari semua rute bisnis sementara
+	// tak ada cara memperoleh token. Codec yang sama dipakai sebagai issuer DAN verifier: satu
+	// secret, jadi token yang diterbitkan pasti lolos verifikasi stack ini.
+	authHandler, err := wireAuth(identityPool, connMgr, cryptoSvc, verifier, rateLimiter, cfg.Messaging)
+	if err != nil {
+		return fmt.Errorf("alur auth (identity): %w", err)
+	}
+
 	// --- HTTP server + middleware stack + graceful shutdown ---
 	handler := buildServerHandler(serverDeps{
 		router:         router,
@@ -231,6 +241,7 @@ func run() error {
 		rateLimiter:    rateLimiter,
 		rateLimit:      cfg.RateLimit,
 		idempotency:    idempotencyStore,
+		auth:           authHandler,
 		corsOrigins:    cfg.CORS.AllowedOrigins, // allowlist dari config; kosong = same-origin only (aman)
 		logger:         logger,
 	})

@@ -74,6 +74,28 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
     menolak tenant di luar penugasan aktif / persona non-employee.
 - Cek lanjutan reviewer: tak ada jalur yang menerbitkan token sebelum verifikasi tuntas; token
   sementara benar-benar tak berdaya (RequirePermission menolak karena role kosong).
+- **Proteksi brute-force jalur password — DITUTUP di PR-W1** (`identity/usecase/password_auth.go`).
+  Sebelumnya OPEN: jalur OTP terlindungi sejak PR-2.4.4, jalur password tidak. Ia tak terjangkau
+  selama alur login tanpa handler HTTP; PR-W1 memasang `/auth/login` & `/auth/public/login`, jadi
+  proteksinya mendarat di PR yang sama — kalau tidak, wiring justru mempromosikan kelemahan dorman
+  menjadi permukaan serang.
+  - `passwordAuthenticator` = SATU implementasi untuk employee & citizen (aturan yang disalin akan
+    menyimpang); rate limit **berlapis dua** meniru RequestOTP: lapis mentah pra-lookup (429) +
+    lapis **ID kredensial** pasca-lookup (kanonik by construction, pelajaran A7).
+  - **Habisnya lapis 2 menjawab 401 SERAGAM, bukan 429** — lapis itu hanya tercapai untuk kredensial
+    yang benar-benar ada, jadi 429 di sana menjadi orakel keberadaan akun satu-probe-per-target.
+    **Diuji**: `TestLoginEmployee_KuotaKredensialHabis_401BukanOrakel` membandingkan pesan errornya
+    dengan jalur "kredensial tak dikenal" dan menuntut keduanya identik.
+  - Limiter error → **fail-closed**. Ambang default 10/15 menit per kredensial (bukan per IP).
+  - **Keterbatasan sadar**: `port.RateLimiter` hanya menghitung (tanpa Reset), jadi login BERHASIL
+    pun memakai kuota. Menambah Reset = menyediakan jalur "nolkan penghitung"; butuh ADR bila kelak
+    dianggap perlu.
+  - **Belum ada rate limit per-IP** pada rute pra-otentikasi. Middleware `RateLimit` gateway SENGAJA
+    tidak dipasang di grup `/auth/*`: kuncinya per-principal, dan pada request anonim principal
+    selalu `uuid.Nil` → satu bucket global, sehingga ia justru memberi siapa pun cara mematikan
+    login bagi semua orang. Per-IP menuntut keputusan proxy tepercaya (X-Forwarded-For yang
+    dipercaya buta = penyerang mencetak key tak terbatas) — **OPEN**, ambil saat deployment
+    menentukan topologi proxy.
 ### A6. Jalur OTP citizen + rate-limit (PR-2.4.4) — `HARDENED`, perlu konfirmasi reviewer
 - `identity/usecase/request_otp.go`, `verify_otp.go`, `otp.go` (policy+helper seragam);
   `identity/adapter/auth/otp.go` (crypto/rand + bcrypt); `identity/adapter/db/otp_repository.go`;

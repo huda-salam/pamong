@@ -928,7 +928,7 @@ Aturan DoD 11 (lihat Definition of Done) mencegah utang jenis ini bertambah; sub
 ini membayar yang terlanjur ada. Urutan W1→W6 adalah urutan ketergantungan, bukan selera:
 tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
 
-- **PR-W1** Handler HTTP alur auth (`/auth/*`) ← 2.4.3, 2.4.4, 5.1.2
+- **PR-W1** Handler HTTP alur auth (`/auth/*`) ← 2.4.3, 2.4.4, 5.1.2 ✅
   - Driving adapter `identity/adapter/http`: `POST /auth/login` (`LoginEmployee`),
     `POST /auth/select-tenant` (`SelectTenant`), `POST /auth/public/login` (`LoginCitizen`),
     `POST /auth/public/otp/request` + `/auth/public/otp/verify` (`RequestOTP`/`VerifyOTP`).
@@ -947,7 +947,32 @@ tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
     dibutuhkan untuk seed admin pertama; masuk W2 bersama sentinel SYSTEM actor.
   - DoD: `cmd/server` e2e — boot → `POST /auth/login` mengembalikan token → token itu
     dipakai memanggil `POST /surat-masuk` dan diterima (bukan 401). Tanpa test ini, W1
-    tidak selesai.
+    tidak selesai. ✅
+  - **SELESAI.** Yang berdiri: `identity/adapter/http/handler.go` (5 endpoint, DTO kawat
+    snake_case terpisah dari struct use case, body dibatasi 64 KiB karena rute ini menerima
+    kiriman siapa pun); `cmd/server/auth.go` (`wireAuth` + `tenantRoleResolver` yang memilih
+    pool tenant lalu mendelegasikan ke resolver tenantrole yang sengaja tak ber-tenantID);
+    `mountAuthRoutes` di top mux dengan seam `authRoutes` agar pemasangannya bisa diuji tanpa DB.
+  - **Proteksi brute-force jalur password ikut mendarat di sini, dan itu bukan scope creep**:
+    memasang `/auth/login` tanpa proteksi = mempromosikan kelemahan yang selama ini dorman
+    (REVIEW_BACKLOG A5, jalur OTP sudah terlindungi sejak 2.4.4) menjadi permukaan serang nyata.
+    `usecase.passwordAuthenticator` — satu implementasi untuk employee & citizen, rate limit
+    berlapis dua meniru `RequestOTP`. Kuncinya: **habisnya kuota lapis-2 menjawab 401 SERAGAM,
+    bukan 429**, sebab lapis itu hanya tercapai untuk kredensial yang ada → 429 di sana adalah
+    orakel keberadaan akun. `NewLoginEmployee`/`NewLoginCitizen` menerima limiter+policy sebagai
+    parameter WAJIB (kontrol keamanan yang menunggu pemanggil ingat memasangnya bukan kontrol).
+  - **RateLimit middleware gateway SENGAJA tidak dipasang di grup ini**: kuncinya per-principal,
+    dan pada rute pra-otentikasi principal selalu `uuid.Nil` → semua penyerang berbagi SATU bucket
+    global, sehingga ia memberi siapa pun cara mematikan login bagi semua orang. Rate limit per-IP
+    menuntut keputusan proxy tepercaya yang belum diambil — tetap OPEN di REVIEW_BACKLOG A5.
+  - **Empat mutasi kode produksi diverifikasi membuat test gagal:** (1) lapis-2 menjawab 429
+    (orakel) → test pembanding pesan error gagal; (2) lapis-2 kembali ber-key nilai mentah
+    (regresi A7) → 2 test gagal; (3) `/auth/login` dipasang di balik `RequireAuth` → test rute
+    gagal dengan pesan "butuh token untuk memperoleh token"; (4) role tenant dibuang setelah
+    di-resolve → klaim kosong + `POST /surat-masuk` jadi 403.
+  - Menutup penanda: `DEFERRED(Phase-5.1.x)` route-grouping di `require_auth.go`,
+    `DEFERRED(Phase-2.4)` live wiring di `login.go`, dan penanda basi di `login_citizen.go`.
+  - Tidak ada perubahan struktur DB (tak ada DDL/ensure-on-write baru), tak ada permission/event baru.
 
 - **PR-W2** Handler HTTP admin identity (`/admin/identity/*`) ← W1, 2.1.2, 2.4.5
   - `CreatePerson`, `AttachEmployment`, `AssignEmploymentToTenant`, `CreateCredential`

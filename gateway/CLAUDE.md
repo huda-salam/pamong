@@ -35,6 +35,12 @@ audit). gateway.Context mengimplementasi port.AuthContext.
   CORS allowlist dari config (GOV_CORS_ALLOWED_ORIGINS).
 - PR-5.1.2c (SELESAI): strict-perm dari manifest → Engine (ADR-014) + refresh catalog tenant
   TTL-based (GOV_PERMISSION_CATALOG_TTL; invalidasi event-driven DEFERRED).
+- PR-W1 (SELESAI): route-grouping PUBLIK vs INTERNAL. Grup `/auth/*` (login employee/citizen, OTP)
+  dipasang di top mux `cmd/server` TANPA RequireAuth; `/auth/select-tenant` ber-auth (menukar token
+  sementara). Sebelumnya RequireAuth memagari semua rute non-healthz sementara tak ada endpoint
+  login — server tak bisa dilayani klien mana pun. Middleware `RateLimit` gateway SENGAJA tidak
+  dipasang di grup ini (kuncinya per-principal; pada request anonim = satu bucket global) —
+  proteksi brute-force ada di use case, per-kredensial.
 
 ## Konvensi khusus
 - Urutan middleware penting (lihat PRD). Auth & tenant resolver di awal.

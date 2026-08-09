@@ -4,8 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/huda-salam/pamong/core"
 	"github.com/huda-salam/pamong/identity/domain"
 	"github.com/huda-salam/pamong/port"
@@ -23,16 +21,16 @@ var employeeCredTypes = map[domain.CredType]bool{
 // Tenant tunggal langsung menerbitkan token scoped final; >1 tenant mengembalikan daftar pilihan
 // + token sementara (pemilihan dilanjutkan SelectTenant). Ditolak bila tak ada employment aktif.
 type LoginEmployee struct {
-	creds     domain.CredentialRepository
-	persons   domain.PersonRepository
-	passwords port.PasswordVerifier
-	resolver  employeeTenantResolver
-	minter    scopedTokenMinter
-	issuer    port.TokenIssuer
+	auth     passwordAuthenticator
+	resolver employeeTenantResolver
+	minter   scopedTokenMinter
+	issuer   port.TokenIssuer
 }
 
 // NewLoginEmployee merakit alur login employee. central/tenantRoles disaring per-tenant saat
-// penerbitan token (invariant scope).
+// penerbitan token (invariant scope). limiter+policy menegakkan proteksi brute-force jalur
+// password (PR-W1) — parameter WAJIB, bukan opsi: kontrol keamanan yang menunggu tiap pemanggil
+// ingat memasangnya bukan kontrol keamanan.
 func NewLoginEmployee(
 	creds domain.CredentialRepository,
 	persons domain.PersonRepository,
@@ -43,14 +41,16 @@ func NewLoginEmployee(
 	central CentralRoleResolver,
 	tenantRoles TenantRoleResolver,
 	issuer port.TokenIssuer,
+	limiter port.RateLimiter,
+	policy LoginPolicy,
 ) *LoginEmployee {
 	return &LoginEmployee{
-		creds:     creds,
-		persons:   persons,
-		passwords: passwords,
-		resolver:  employeeTenantResolver{employments: employments, assigns: assigns, tenants: tenants, now: time.Now},
-		minter:    scopedTokenMinter{central: central, tenantRoles: tenantRoles, issuer: issuer},
-		issuer:    issuer,
+		auth: passwordAuthenticator{
+			creds: creds, persons: persons, passwords: passwords, limiter: limiter, policy: policy,
+		},
+		resolver: employeeTenantResolver{employments: employments, assigns: assigns, tenants: tenants, now: time.Now},
+		minter:   scopedTokenMinter{central: central, tenantRoles: tenantRoles, issuer: issuer},
+		issuer:   issuer,
 	}
 }
 
@@ -68,10 +68,11 @@ func (uc *LoginEmployee) Execute(ctx context.Context, in LoginEmployeeInput) (*L
 		return nil, errInvalidCredential()
 	}
 
-	personID, err := uc.authenticate(ctx, in.CredType, in.CredValue, in.Password)
+	person, err := uc.auth.authenticate(ctx, in.CredType, in.CredValue, in.Password)
 	if err != nil {
 		return nil, err
 	}
+	personID := person.ID
 
 	opts, hasActiveEmployment, err := uc.resolver.resolve(ctx, personID)
 	if err != nil {
@@ -104,27 +105,6 @@ func (uc *LoginEmployee) Execute(ctx context.Context, in LoginEmployeeInput) (*L
 		choices = append(choices, o.choice())
 	}
 	return &LoginResult{Token: temp, NeedTenantSelection: true, Tenants: choices}, nil
-}
-
-// authenticate memverifikasi credential + password dan mengembalikan person yang aktif. Semua
-// kegagalan dipetakan ke respons seragam (errInvalidCredential) agar tak membocorkan sebab.
-func (uc *LoginEmployee) authenticate(ctx context.Context, t domain.CredType, value, password string) (uuid.UUID, error) {
-	cred, err := uc.creds.FindByTypeValue(ctx, t, value)
-	if err != nil {
-		return uuid.Nil, errInvalidCredential()
-	}
-	if cred.SecretHash == "" {
-		// Credential tanpa password (SSO/OTP-only) tak bisa login lewat jalur password.
-		return uuid.Nil, errInvalidCredential()
-	}
-	if err := uc.passwords.Verify(cred.SecretHash, password); err != nil {
-		return uuid.Nil, errInvalidCredential()
-	}
-	person, err := uc.persons.FindByID(ctx, cred.PersonID)
-	if err != nil || !person.IsActive {
-		return uuid.Nil, errInvalidCredential()
-	}
-	return cred.PersonID, nil
 }
 
 // SelectTenant menerbitkan token scoped final setelah person dengan banyak tenant memilih satu.
