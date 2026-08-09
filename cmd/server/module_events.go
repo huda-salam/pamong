@@ -47,12 +47,19 @@ func wireModuleEventSchemas(
 		return err
 	}
 	for _, s := range registry.ExternalSubscriptions() {
-		// Bukan error: Consumes memang loose (lihat domain.Registry.ExternalSubscriptions).
-		// Tapi harus TERLIHAT — pada jalur NATS, pesan untuk event tanpa schema dibuang diam-diam,
-		// jadi tanpa baris ini "subscriber tuli" dan "produsen tak terpasang" mustahil dibedakan
-		// dari luar. Sebagian di antaranya sah: event komponen non-modul (identity, customization)
-		// mendaftarkan schema-nya lewat registrar sendiri dan tetap terhitung di sini.
-		logger.Warn(ctx, "modul men-subscribe event yang tak diproduksi modul terpasang mana pun",
+		// INFO, bukan WARN — ini keadaan NORMAL, bukan anomali. Consumes memang loose (lihat
+		// domain.Registry.ExternalSubscriptions), jadi setiap deployment yang tak memasang
+		// produsennya akan menghasilkan baris ini di SETIAP boot. Baris WARN yang selalu muncul
+		// berhenti dibaca, dan kejadian yang benar-benar perlu perhatian ikut tenggelam bersamanya.
+		// Yang dicari di sini adalah keterlihatan (inventaris saat boot), bukan alarm.
+		//
+		// CAKUPANNYA SEMPIT, jangan dibaca lebih luas: ia hanya menyatakan "tak ada modul terpasang
+		// yang memproduksi event ini". Ia TIDAK membuktikan subscription-nya hidup — `App.Subscribe`
+		// membuang error `Bus.Subscribe`, jadi subscribe yang gagal (mis. Flush NATS) tetap
+		// menghasilkan consumer tuli tanpa gejala. Itu seam terpisah (core/domain/app.go).
+		// Event komponen non-modul juga ikut terhitung di sini meski schema-nya terdaftar lewat
+		// registrar sendiri (identity di run(); customization belum dirakit di composition root).
+		logger.Info(ctx, "modul men-subscribe event yang tak diproduksi modul terpasang mana pun",
 			port.F("module", s.Module),
 			port.F("event", s.Event),
 			port.F("handler", s.Handler))
