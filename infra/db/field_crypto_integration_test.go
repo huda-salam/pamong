@@ -428,6 +428,23 @@ func TestFieldCrypto_CiphertextDipindahAntarBarisDitolak(t *testing.T) {
 		}
 	}
 
+	// Kembalikan pertukaran Kasus 1 (tukar adalah kebalikan dirinya sendiri) sebelum lanjut.
+	// Tanpa ini baris budi memikul DUA kolom rusak sekaligus, dan assertion Kasus 2 diam-diam
+	// bergantung pada kolom mana yang kebetulan diperiksa lebih dulu. Sekalian ini menunjukkan
+	// kegagalan tadi memang akibat perpindahan, bukan kerusakan permanen pada ciphertext.
+	if _, err := f.pool.Exec(ctx, `
+		WITH b AS (SELECT no_rekening_enc e, no_rekening_bidx x FROM test_crypto.pegawais WHERE id = $1),
+		     s AS (SELECT no_rekening_enc e, no_rekening_bidx x FROM test_crypto.pegawais WHERE id = $2)
+		UPDATE test_crypto.pegawais p
+		SET no_rekening_enc  = CASE WHEN p.id = $1 THEN (SELECT e FROM s) ELSE (SELECT e FROM b) END,
+		    no_rekening_bidx = CASE WHEN p.id = $1 THEN (SELECT x FROM s) ELSE (SELECT x FROM b) END
+		WHERE p.id IN ($1, $2)`, budi.ID, siti.ID); err != nil {
+		t.Fatalf("kembalikan no_rekening: %v", err)
+	}
+	if got, err := f.repo.FindByID(f.ctx, budi.ID); err != nil || got.NoRekening != itRek {
+		t.Fatalf("setelah dikembalikan, no_rekening budi = %+v, err=%v; mau %q", got, err, itRek)
+	}
+
 	// Kasus 2 — kolom Unique. Pertukaran konsisten di sini justru ditolak DB sendiri
 	// (UNIQUE di nik_bidx bentrok di tengah statement), jadi jalur yang tersisa bagi
 	// penyerang adalah memindahkan _enc SAJA. Itu tetap membuat NIK seseorang terbaca

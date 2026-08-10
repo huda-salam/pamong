@@ -260,6 +260,13 @@ type decryptingScanner struct {
 	columns []string // kolom logis, sejajar posisi dest[1..len]
 }
 
+// encHolder adalah satu kolom terenkripsi yang tujuannya ditukar: posisi di dest dan
+// penampung ciphertext-nya.
+type encHolder struct {
+	pos int
+	raw *[]byte
+}
+
 // Scan mengharapkan urutan dest: id, data..., version — kontrak yang sama dengan selectCols.
 func (s *decryptingScanner) Scan(dest ...any) error {
 	want := len(s.columns) + 2 // id + data + version
@@ -271,16 +278,20 @@ func (s *decryptingScanner) Scan(dest ...any) error {
 		return err
 	}
 
-	holders := make(map[int]*[]byte, len(s.fc.byColumn))
+	// Urut menurut posisi kolom, bukan map: bila SATU baris memuat lebih dari satu kolom
+	// rusak, urutan pemeriksaanlah yang menentukan kolom mana yang disebut error. Dengan map,
+	// urutan itu diacak Go tiap proses — operator menerima sebab yang berbeda-beda untuk baris
+	// yang sama, dan test atas pesan error jadi undian.
+	holders := make([]encHolder, 0, len(s.fc.byColumn))
 	scanDest := make([]any, len(dest))
 	copy(scanDest, dest)
 	for i, col := range s.columns {
 		if _, ok := s.fc.spec(col); !ok {
 			continue
 		}
-		var raw []byte
-		holders[i+1] = &raw
-		scanDest[i+1] = &raw
+		raw := new([]byte)
+		holders = append(holders, encHolder{pos: i + 1, raw: raw})
+		scanDest[i+1] = raw
 	}
 
 	if err := s.row.Scan(scanDest...); err != nil {
@@ -297,7 +308,8 @@ func (s *decryptingScanner) Scan(dest ...any) error {
 		}
 	}
 
-	for pos, raw := range holders {
+	for _, h := range holders {
+		pos, raw := h.pos, h.raw
 		col := s.columns[pos-1]
 		spec, _ := s.fc.spec(col)
 		if len(*raw) == 0 { // NULL / kosong

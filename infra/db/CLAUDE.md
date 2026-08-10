@@ -121,6 +121,12 @@ Alur & aturan yang menopangnya:
   bandingkan plaintext dulu, segel sesudahnya, penanda gagal per sisi harus berbeda.
 - Menyusun `FieldCryptoSpec` dengan tangan alih-alih dari `EntityDef`: spec yang menyimpang
   dari deklarasi field tidak menimbulkan gejala apa pun, hanya kolom yang diam-diam mentah.
+- **Mengambil urutan pemeriksaan kolom terenkripsi dari map.** Bila satu baris memuat lebih
+  dari satu kolom rusak, urutan itulah yang menentukan kolom mana yang disebut error — dan Go
+  mengacak iterasi map tiap `range`. Operator menerima sebab berbeda-beda untuk baris yang
+  sama, dan tiap assertion atas pesan error jadi undian (pernah terjadi: flake di
+  `TestFieldCrypto_CiphertextDipindahAntarBarisDitolak`). `decryptingScanner` menyimpan
+  penampung sebagai SLICE ber-urutan kolom; dikunci `TestFindByID_UrutanPemeriksaanKolomDeterministik`.
 - Mengira unit test cukup untuk perubahan di jalur ini. Ia memakai koneksi palsu; kecocokan
   dengan DDL nyata hanya terbukti lewat `field_crypto_integration_test.go`.
 

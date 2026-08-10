@@ -502,3 +502,91 @@ func TestNewRepository_EntityTerenkripsiTanpaCryptoDitolak(t *testing.T) {
 		t.Fatalf("err = %v, mau penolakan karena CryptoPort tak diberikan", err)
 	}
 }
+
+// --- Determinisme urutan pemeriksaan kolom terenkripsi ---
+
+// pegawaiRek adalah varian pegawai dengan DUA kolom terenkripsi. Diperlukan karena urutan
+// pemeriksaan baru kelihatan bila satu baris memuat lebih dari satu kolom rusak.
+type pegawaiRek struct {
+	ID         uuid.UUID
+	Nama       string
+	NIK        string
+	NoRekening string
+	Version    int
+}
+
+type pegawaiRekMapper struct{}
+
+func (pegawaiRekMapper) Table() string         { return "kepegawaian.pegawais" }
+func (pegawaiRekMapper) DataColumns() []string { return []string{"nama", "nik", "no_rekening"} }
+func (pegawaiRekMapper) SearchColumns() []string {
+	return []string{"nama"}
+}
+func (pegawaiRekMapper) DataValues(e *pegawaiRek) []any {
+	return []any{e.Nama, e.NIK, e.NoRekening}
+}
+func (pegawaiRekMapper) Scan(s RowScanner) (*pegawaiRek, error) {
+	var p pegawaiRek
+	return &p, s.Scan(&p.ID, &p.Nama, &p.NIK, &p.NoRekening, &p.Version)
+}
+func (pegawaiRekMapper) ID(e *pegawaiRek) uuid.UUID      { return e.ID }
+func (pegawaiRekMapper) Version(e *pegawaiRek) int       { return e.Version }
+func (pegawaiRekMapper) SetVersion(e *pegawaiRek, v int) { e.Version = v }
+
+func pegawaiRekDef() domain.EntityDef {
+	return domain.EntityDef{
+		Name: "PegawaiRek", Schema: "kepegawaian", Tier: domain.Tier1,
+		Audit: domain.NotAudited{Reason: "uji"}, Lockable: domain.NotLockable{},
+		Fields: []domain.FieldDef{
+			{Name: "nama", Type: domain.FieldText, Class: domain.DataPersonal},
+			{Name: "nik", Type: domain.FieldText, Class: domain.DataPersonalID, Searchable: true},
+			{Name: "no_rekening", Type: domain.FieldText, Class: domain.DataPersonalID},
+		},
+	}
+}
+
+// TestFindByID_UrutanPemeriksaanKolomDeterministik mengunci SEBAB yang dilaporkan, bukan
+// sekadar fakta gagalnya. Saat satu baris memuat lebih dari satu kolom rusak, kolom mana
+// yang disebut error ditentukan urutan pemeriksaan; bila urutan itu diambil dari map, Go
+// mengacaknya tiap pemanggilan. Akibatnya operator menerima sebab berbeda-beda untuk baris
+// yang sama, dan setiap assertion atas pesan error jadi undian — persis bentuk flake yang
+// pernah menjangkiti test integrasi jalur ini.
+//
+// Diulang banyak kali dalam satu proses karena pengacakan map terjadi per-`range`, bukan
+// per-proses: satu kali panggil tidak membuktikan apa-apa.
+func TestFindByID_UrutanPemeriksaanKolomDeterministik(t *testing.T) {
+	mock := testkit.NewMockCrypto()
+	budi, siti := uuid.New(), uuid.New()
+
+	// Kedua kolom sama-sama rusak (terikat baris lain), jadi keduanya berhak menggagalkan
+	// pembacaan. Yang diuji: yang dilaporkan selalu kolom pertama menurut DataColumns.
+	segel := func(purpose, plain string) []byte {
+		t.Helper()
+		ct, err := mock.Encrypt(tenantCtx(), port.FieldRef{
+			TenantID: "pemkot-surabaya", Purpose: purpose, RecordID: siti.String(),
+		}, []byte(plain))
+		if err != nil {
+			t.Fatalf("siapkan ciphertext %s: %v", purpose, err)
+		}
+		return ct
+	}
+	nikSiti := segel("nik", "3578010101010002")
+	rekSiti := segel("no_rekening", "5555555555")
+
+	conn := &fakeCryptoConn{row: scriptedRow{values: []any{budi, "Budi", nikSiti, rekSiti, 1}}}
+	repo, err := NewSQLRepository[pegawaiRek](conn, pegawaiRekMapper{},
+		WithFieldCrypto(mock, FieldCryptoFromEntity(pegawaiRekDef())))
+	if err != nil {
+		t.Fatalf("repo: %v", err)
+	}
+
+	for i := 0; i < 50; i++ {
+		_, err := repo.FindByID(tenantCtx(), budi)
+		if err == nil {
+			t.Fatalf("iterasi %d: harus gagal", i)
+		}
+		if !strings.Contains(err.Error(), "dekripsi kolom nik") {
+			t.Fatalf("iterasi %d: err = %v, mau kolom nik (kolom terenkripsi pertama) yang dilaporkan", i, err)
+		}
+	}
+}
