@@ -383,7 +383,7 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
   permukaan admin bertambah, dan apakah baris `gov.tenant_role_permissions` yang terlanjur ada
   (di deployment mana pun) perlu disapu — hari ini tidak ada deployment.
 
-### B7. Containment aktor→TARGET pada mutasi identity — `OPEN` (butuh keputusan port + kebijakan)
+### B7. Containment aktor→TARGET pada mutasi identity — `OPEN` (gerbang: PR-W3)
 - `identity/usecase/create_credential.go` (**paling kuat — PR-W2**),
   `identity/usecase/assign_employment_tenant.go` (`validateAssignment`),
   `identity/usecase/assign_central_role.go`
@@ -418,8 +418,12 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
   jadi pemegangnya selalu ditunjuk admin platform — bukan siapa pun yang bisa mengelola role
   tenantnya sendiri. Itu memperkecil POPULASI penyerang, bukan menutup properti; ia juga tak
   membatasi eskalasi LATERAL antar principal platform, maupun scoped → global.
+- **Gerbang penutupan (ROADMAP PR-W3, DoD butir c):** ditutup bersama B8 lewat SATU ADR, di PR
+  yang membangun `permission.Authority` + `ScopedEngine.Bind` — seam tempat wewenang aktor mulai
+  dibawa sampai ke titik keputusan. Bila W3 tergeser: WAJIB tutup sebelum onboarding tenant nyata
+  pertama ATAU sebelum `tenantrole` punya permukaan HTTP, mana yang lebih dulu.
 
-### B8. Nama role TENANT yang bertabrakan dengan nama role SENTRAL naik ke LayerGlobal — `OPEN` (butuh ADR core)
+### B8. Nama role TENANT yang bertabrakan dengan nama role SENTRAL naik ke LayerGlobal — `OPEN` (gerbang: PR-W3)
 - `core/permission/composite.go` (`CompositeCatalog.Lookup`), `core/permission/engine.go`
   (`Allows` membaca `role.Layer` dari hasil Lookup), `gateway/context.go` (`roleList` meratakan
   `TenantRoles`+`CentralRoles` jadi satu daftar NAMA), `tenantrole/domain/entity.go`
@@ -446,6 +450,10 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
   boleh berubah lewat ADR (CLAUDE.md). Penutup sempit (menolak nama role tenant yang bertabrakan
   dengan katalog sentral di pintu tulis) pun butuh port baru: katalog sentral hidup di identity DB,
   sedangkan `TenantRole.Validate` ada di domain tenant.
+- **Gerbang penutupan (ROADMAP PR-W3, DoD butir b):** satu ADR bersama B7 — keduanya cacat yang
+  sama dari dua sisi (wewenang tak terbawa ke titik keputusan: B8 kehilangan lapis asal role, B7
+  kehilangan scope aktor). Batas waktu sama: sebelum onboarding tenant nyata pertama ATAU sebelum
+  `tenantrole` punya permukaan HTTP.
 
 ### B3. Fail-closed scope central role (PR-2.3.2) — `HARDENED`
 - `identity/adapter/db/central_role_resolver.go`, `identity/domain/central_role.go` (`AppliesTo`)

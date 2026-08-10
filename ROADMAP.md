@@ -1033,7 +1033,8 @@ tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
     pilihannya untuk person mana pun yang id-nya ia ketahui (id terbaca di `gov.user_profiles`
     tenantnya sendiri), lalu login sebagai orang itu. Ditutup dengan mereservasi namespace
     `identity:` bagi lapis sentral — ditolak di domain, ditegakkan di PINTU TULIS repo tenantrole.
-    REVIEW_BACKLOG **B6 → TERTUTUP**.
+    REVIEW_BACKLOG **B6 → TERTUTUP SEBAGIAN** — sebagian, bukan penuh, karena B8 di bawah
+    melewatinya lewat jalur NAMA tanpa pernah menyebut `identity:`.
   - **DUA properti otorisasi TIDAK ditutup di sini, dan keduanya butuh keputusan di atas level PR
     ini** (karena itu didokumentasikan, bukan ditambal):
     * **B7 — containment aktor→TARGET.** Ketiga use case mutasi memeriksa "aktor punya
@@ -1071,10 +1072,27 @@ tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
     `RequirePermissionInUnit` mulai menolak. Cari dulu pemanggilnya (`grep`) agar
     perubahan perilaku ini disengaja, bukan kejutan.
   - Emitter central-role→Grant belum dibuat (sengaja tak disentuh di PR-2.3.5).
+  - **GERBANG KERAS — REVIEW_BACKLOG B7 + B8 WAJIB tutup di PR ini, lewat SATU ADR.**
+    Keduanya satu keluarga cacat: *wewenang tidak dibawa sampai ke titik keputusan* — B8
+    kehilangan LAPIS ASAL role (nama tenant me-resolve ke definisi sentral ber-`LayerGlobal`),
+    B7 kehilangan SCOPE aktor (`tenant_scope` ada di klaim tapi tak terekspos lewat
+    `port.AuthContext`, sehingga mutasi identity tak pernah menanyakan "target dalam wewenang
+    aktor?"). W3 justru membangun seam tempat keduanya diputuskan: `permission.Authority` +
+    `ScopedEngine.Bind`. Memutuskannya di luar W3 berarti menyentuh `core/permission` dua kali
+    untuk satu masalah, dengan bentuk `Authority` yang belum terlihat.
+  - **Batas waktu gerbang itu, bila W3 tergeser:** B7+B8 harus tutup sebelum **onboarding tenant
+    NYATA pertama** ATAU sebelum **`tenantrole` mendapat permukaan HTTP**, mana yang lebih dulu.
+    Dasar penundaannya hari ini hanyalah tak adanya deployment (migrasi 009: identity DB kosong
+    di SELURUH environment per 1 Agu 2026) dan tak adanya penulis role tenant lewat HTTP —
+    dua fakta yang berhenti berlaku persis pada dua peristiwa itu. Utang tanpa gerbang adalah
+    cara utang jadi permanen; itu pola yang melahirkan Sub-phase 5.0.
   - Menutup: marker `DEFERRED(Phase-2.4)` di `gateway/middleware/auth.go:73`; backlog
-    "[Phase-2.4] Wiring Authority live + seam scoped".
-  - DoD: dua request token identik beda `unit_kerja` → satu lolos satu 403, lewat stack
-    HTTP nyata (bukan pemanggilan engine langsung).
+    "[Phase-2.4] Wiring Authority live + seam scoped"; REVIEW_BACKLOG B7 & B8.
+  - DoD: (a) dua request token identik beda `unit_kerja` → satu lolos satu 403, lewat stack
+    HTTP nyata (bukan pemanggilan engine langsung); (b) role TENANT bernama persis sama dengan
+    role SENTRAL tidak mewarisi permission maupun `LayerGlobal` milik role sentral itu (B8);
+    (c) aktor ber-scope tenant A ditolak saat memutasi identity target di luar wewenangnya —
+    termasuk `POST /admin/identity/credentials`, varian terkuat B7.
 
 - **PR-W4** Runtime workflow + notifikasi + scheduler ← W1, 3.2.x, 3.5.x, 3.6.x, N1–N3b
   - Blok dorman terbesar. Rakit: `DBStore` (definition) + `DBTemplateStore` + `Engine`
