@@ -9,11 +9,11 @@ berpasangan dengan `CODING_PHILOSOPHY.md` dan `CLAUDE.md`.
 ## Ringkasan cepat
 
 ```
-1. Buat branch dari staging (bukan main)
-2. Satu PR = satu job dari ROADMAP
-3. Commit dengan format konvensional
-4. Semua gate CI harus hijau sebelum minta review
-5. Squash-merge ke staging; staging → main hanya via release
+1. Satu PR = satu job dari ROADMAP
+2. Commit dengan format konvensional
+3. Semua gate CI harus hijau sebelum minta review
+4. Review SEBELUM push ke main (lihat "Alur kerja" di bawah)
+5. Fast-forward merge ke main; history main selalu linear
 ```
 
 ---
@@ -23,25 +23,38 @@ berpasangan dengan `CODING_PHILOSOPHY.md` dan `CLAUDE.md`.
 ### Struktur
 
 ```
-main          ← production-ready; hanya menerima merge dari staging via release
-  └── staging ← integration; menerima merge dari feat/fix/refactor
-        ├── feat/...
-        ├── fix/...
-        ├── refactor/...
-        ├── chore/...
-        └── docs/...
+main          ← satu-satunya branch tetap; history LINEAR
+  ├── feat/...
+  ├── fix/...
+  ├── refactor/...
+  ├── chore/...
+  └── docs/...
 ```
 
-- **`main`** di-protect: tidak ada push langsung, tidak ada merge tanpa CI hijau.
-- **`staging`** di-protect: tidak ada push langsung; butuh ≥ 1 approval.
-- Semua branch kerja dibuat dari `staging`, bukan dari `main`.
+- **`main`** adalah satu-satunya branch tetap. History-nya dijaga linear:
+  merge selalu `--ff-only`, tidak pernah menghasilkan merge commit.
+- Branch kerja bersifat sementara — dibuat dari `main`, dihapus setelah masuk.
 
-> **Catatan solo dev.** `staging` (integrasi sebelum rilis) berguna saat ada
-> beberapa fitur paralel yang perlu diuji bersama, atau environment integrasi yang
-> auto-deploy. Untuk solo dev tanpa kebutuhan itu, alur boleh disederhanakan menjadi
-> `main` + `feat/...` langsung — `staging` opsional. Yang tetap dianjurkan: jangan
-> push rusak ke `main` (jaga via CI/branch protection). Lihat setup proteksi di
-> `~/gitea/README.md` §5b.
+### Alur kerja: HYBRID (review sebelum push)
+
+Repo ini dikembangkan solo dengan bantuan agen. Branch panjang + PR formal tidak
+memberi apa pun yang tidak sudah diberikan review-sebelum-push, tapi menuntut biaya
+sinkronisasi tiap hari. Yang dipakai:
+
+- **Default — kerja langsung di `main`, review sebelum push.** Commit boleh menumpuk
+  di `main` lokal; `/code-review` (dan `/security-review` untuk permukaan sensitif)
+  dijalankan SEBELUM `git push`. Temuan diperbaiki lalu di-push bersama.
+- **Branch hanya untuk pekerjaan terberat** — perubahan lintas-komponen yang butuh
+  beberapa sesi, atau yang mungkin dibuang. Masuk ke `main` lewat
+  `git merge --ff-only`, bukan squash, bukan merge commit.
+- **Yang dijaga tanpa kecuali:** jangan push `main` yang rusak. Gate lokal
+  (`gofmt`/`build`/`vet`/`test -race`/`pamongctl lint`) dijalankan sebelum push,
+  bukan diserahkan ke CI.
+
+> **Kalau tim bertambah.** Alur ini dipilih karena satu orang yang menulis dan
+> me-review adalah orang yang sama, sehingga gerbang formal cuma menunda. Begitu ada
+> reviewer kedua, kembalikan PR wajib + branch protection ≥ 1 approval — bukan karena
+> alur ini gagal, tapi karena premisnya berubah. Setup proteksi: `~/gitea/README.md` §5b.
 
 ### Penamaan branch
 
@@ -68,22 +81,30 @@ chore/upgrade-pgx-v5.10
 
 ### Lifecycle branch
 
+Hanya untuk pekerjaan yang memang dipisah ke branch (lihat "Alur kerja" di atas);
+pekerjaan sehari-hari langsung di `main`.
+
 ```bash
 # Mulai kerja
-git checkout staging
-git pull origin staging
+git checkout main
+git pull origin main
 git checkout -b feat/pr-X.Y.Z-deskripsi
 
 # Selama pengerjaan — rebase, bukan merge, agar history bersih
-git fetch origin staging
-git rebase origin/staging
+git fetch origin main
+git rebase origin/main
 
-# Selesai — push dan buat PR
-git push -u origin feat/pr-X.Y.Z-deskripsi
+# Selesai — kembalikan ke main tanpa merge commit
+git checkout main
+git merge --ff-only feat/pr-X.Y.Z-deskripsi
+git branch -d feat/pr-X.Y.Z-deskripsi
 ```
 
-**Jangan merge `staging` ke dalam branch kerja** — selalu `rebase`. Ini menjaga
+**Jangan merge `main` ke dalam branch kerja** — selalu `rebase`. Ini menjaga
 history linear dan memudahkan `git bisect`.
+
+**Hapus branch setelah masuk.** Branch yang sudah nol commit unik tapi dibiarkan
+hidup lebih buruk daripada tidak ada: ia terbaca sebagai pekerjaan yang menggantung.
 
 ---
 
@@ -157,7 +178,7 @@ Pengecualian: hotfix boleh tanpa job ROADMAP, tapi harus kecil (< 100 baris inti
 Semua harus terpenuhi — CI akan menolak jika tidak:
 
 ```
-[ ] Branch up-to-date dengan staging (git rebase, bukan merge)
+[ ] Branch (bila ada) up-to-date dengan main (git rebase, bukan merge)
 [ ] go build ./... lulus
 [ ] go test -race ./... lulus
 [ ] go vet ./... bersih
@@ -222,11 +243,11 @@ Semua harus terpenuhi — CI akan menolak jika tidak:
 
 ### Merge strategy
 
-- **feat/fix/refactor → staging**: **Squash merge**. Semua commit dalam branch
-  di-squash menjadi satu commit bersih di staging. Pesan commit squash mengikuti
-  format konvensional di atas.
-- **staging → main**: **Merge commit** (bukan squash), dilakukan saat release.
-  Ini mempertahankan titik merge sebagai penanda rilis yang jelas.
+- **branch kerja → `main`**: **fast-forward** (`git merge --ff-only`). Bukan squash,
+  bukan merge commit. Commit di branch sudah ditulis per-langkah bermakna, dan
+  meng-squash-nya membuang justru riwayat yang menjelaskan urutan keputusan.
+- **`main` tidak pernah menerima merge commit.** Bila `--ff-only` ditolak, itu berarti
+  branch tertinggal — `rebase` dulu ke `origin/main`, jangan dipaksa dengan merge.
 
 ---
 
@@ -239,7 +260,7 @@ v0.2.0   ← Phase 1 selesai
 v1.0.0   ← Phase 7 selesai (framework fungsional penuh)
 ```
 
-- Tag selalu di `main`, bukan di `staging`.
+- Tag selalu di `main`.
 - Setiap tag punya release notes yang menyebut job ROADMAP yang tercakup.
 - Pre-release (alpha/beta) menggunakan suffix: `v0.3.0-alpha.1`.
 
@@ -250,7 +271,7 @@ v1.0.0   ← Phase 7 selesai (framework fungsional penuh)
 ### Rebase konflik
 
 ```bash
-git rebase origin/staging
+git rebase origin/main
 # Selesaikan konflik di setiap file
 git add .
 git rebase --continue
@@ -269,11 +290,11 @@ make vet
 
 Jangan push dengan `--no-verify` atau skip CI — temukan akar masalahnya.
 
-### Salah branch dasar (branch dari main, bukan staging)
+### Salah branch dasar (branch dari commit lama)
 
 ```bash
-# Pindah base branch ke staging tanpa kehilangan commit
-git rebase --onto staging main feat/nama-branch
+# Pindah base branch tanpa kehilangan commit
+git rebase --onto main <base-lama> feat/nama-branch
 ```
 
 ---
@@ -296,7 +317,7 @@ Gitea juga membaca `.github/workflows/` sebagai fallback, tapi untuk repo ini
 
 | File | Tujuan | Trigger |
 |---|---|---|
-| `ci.yaml` | lint → test → build per push/PR | push & PR ke `staging`, `main` |
+| `ci.yaml` | lint → test → build per push/PR | push & PR ke `main` |
 
 ### Konvensi penulisan workflow
 
@@ -331,9 +352,10 @@ tool-nya belum ada — CI harus selalu hijau untuk kode yang benar.
 
 Konfigurasi di Gitea (**Settings → Branches → Branch protection**), bukan di repo:
 
-- `main` & `staging`: wajib status check CI hijau sebelum merge.
-- `main` & `staging`: wajib ≥ 1 approval (lihat tabel review di atas).
-- Disable push langsung; semua lewat PR.
+- `main`: wajib status check CI hijau.
+- Push langsung ke `main` DIIZINKAN selama alur solo (lihat "Alur kerja"), karena
+  gerbangnya adalah review-sebelum-push + gate lokal, bukan PR. Aktifkan kembali
+  "disable push langsung" + ≥ 1 approval begitu ada reviewer kedua.
 
 ### Menjalankan ulang & debugging CI
 

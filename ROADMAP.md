@@ -55,7 +55,7 @@ Tujuan: kerangka repo yang bisa di-build, di-test, dan di-lint sejak commit pert
 
 - **PR-0.1.2** CI skeleton ← 0.1.1
   - Pipeline: lint → test → build (lihat CLAUDE.md CI/CD gates)
-  - Branch protection di `main` dan `staging`
+  - Branch protection di `main`
   - DoD: PR dummy memicu pipeline dan lulus
 
 ### Sub-phase 0.2 — Fondasi runtime

@@ -1652,13 +1652,23 @@ TestApprovePengajuan_PimpinanBelumSetuju
 ### Branch strategy
 
 ```
-main                    — production-ready, protected, merge via PR only
-  └── staging           — integration environment
-        └── feat/...    — fitur baru
-        └── fix/...     — bugfix
-        └── refactor/.. — refactoring tanpa perubahan behavior
-        └── chore/...   — dependency update, config, tooling
+main                    — satu-satunya branch tetap; history LINEAR
+  ├── feat/...          — fitur baru
+  ├── fix/...           — bugfix
+  ├── refactor/...      — refactoring tanpa perubahan behavior
+  └── chore/...         — dependency update, config, tooling
 ```
+
+**Alur HYBRID: review sebelum push, bukan PR wajib.** Pekerjaan sehari-hari langsung
+di `main` lokal; `/code-review` (plus `/security-review` untuk permukaan sensitif)
+dijalankan SEBELUM `git push`, dan temuannya diperbaiki di push yang sama. Branch
+dipakai hanya untuk pekerjaan terberat — lintas-komponen, beberapa sesi, atau yang
+mungkin dibuang — dan masuk lewat `git merge --ff-only`. `main` tidak pernah menerima
+merge commit; bila `--ff-only` ditolak, `rebase` dulu.
+
+Branch kerja DIHAPUS setelah masuk. Branch yang nol commit unik tapi dibiarkan hidup
+terbaca sebagai pekerjaan menggantung. Alasan lengkap + kapan kembali ke PR wajib:
+`docs/GIT_WORKFLOW.md`.
 
 ### Konvensi nama branch
 
@@ -1711,7 +1721,7 @@ Scope adalah nama package atau modul yang berubah:
 Sebelum minta review, pastikan semua item berikut terpenuhi:
 
 ```
-[ ] Branch up-to-date dengan staging (git rebase, bukan merge)
+[ ] Branch (bila ada) up-to-date dengan main (git rebase, bukan merge)
 [ ] go build ./... lulus
 [ ] go test ./... lulus (tanpa tag integration)
 [ ] pamongctl lint ./... lulus — tidak ada custom linter violation
