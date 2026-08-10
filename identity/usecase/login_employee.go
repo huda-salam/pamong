@@ -45,9 +45,7 @@ func NewLoginEmployee(
 	policy LoginPolicy,
 ) *LoginEmployee {
 	return &LoginEmployee{
-		auth: passwordAuthenticator{
-			creds: creds, persons: persons, passwords: passwords, limiter: limiter, policy: policy,
-		},
+		auth:     newPasswordAuthenticator(creds, persons, passwords, limiter, policy),
 		resolver: employeeTenantResolver{employments: employments, assigns: assigns, tenants: tenants, now: time.Now},
 		minter:   scopedTokenMinter{central: central, tenantRoles: tenantRoles, issuer: issuer},
 		issuer:   issuer,

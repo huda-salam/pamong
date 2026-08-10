@@ -141,6 +141,18 @@ Kolom plaintext-nya **tidak ada** — bukan sekadar berhenti diisi.
 - Menambahkan verifikasi kredensial sendiri di alur login baru alih-alih memakai
   `passwordAuthenticator`. Dua salinan aturan brute-force akan menyimpang saat salah satunya
   diperbaiki — alasan yang sama dengan `crypto.FieldSealer`.
+- **Menambahkan `return errInvalidCredential()` lebih awal di `authenticate`** — mis. "hemat satu
+  panggilan bcrypt kalau kredensialnya jelas-jelas tak ada". Itulah cacat yang ditutup di
+  REVIEW_BACKLOG A11: 401 yang seragam tak menutup apa pun selama jalur tanpa bcrypt (~2-5 ms)
+  bisa dibedakan dari jalur dengan bcrypt (~50-100 ms) — satu request per target sudah memastikan
+  sebuah pengenal terdaftar. Sesudah lapis-1, SEMUA jalur harus jatuh ke titik `Verify` tunggal
+  (`hash`+`eligible`), termasuk kredensial tak ada, `secret_hash` kosong, dan kuota lapis-2 habis.
+  Rate limit tidak menggantikannya (penyerang cuma butuh 1-3 sampel per target).
+- **Menulis hash tiruan sebagai konstanta bcrypt di kode** alih-alih memintanya ke
+  `port.PasswordVerifier`. Cost-nya akan tertinggal saat bcrypt dinaikkan, jalur tiruan menjadi
+  lebih murah dari jalur asli, dan celah timing terbuka lagi tanpa satu pun test atau linter
+  mengeluh. Alasan yang sama membuat `newPasswordAuthenticator` panic bila `Hash` gagal:
+  hash tiruan kosong mematikan kontrol ini tanpa jejak.
 - **Mengirim OTP ke `in.CredValue`.** Sebelum blind index nilai itu selalu identik dengan yang
   terdaftar; sekarang tidak. `"victim@x.id\n"` me-resolve ke kredensial nyata lalu ditolak SMTP
   sebagai header injection (500), sedangkan alamat asing menjawab 200 — satu probe per target,

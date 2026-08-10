@@ -101,10 +101,18 @@ func (f *fakeTenantRegistry) SetActive(_ context.Context, tenantID string, activ
 }
 
 // fakePasswords: Hash = "h:"+plain; Verify cocok bila hash == "h:"+plain.
-type fakePasswords struct{}
+//
+// verifyCalls MENGHITUNG panggilan Verify — itulah yang membuat "biaya kerja seragam" bisa diuji
+// secara struktural, tanpa mengukur waktu (lihat TestPasswordAuth_BiayaKerjaSeragam).
+type fakePasswords struct {
+	verifyCalls int
+}
 
-func (fakePasswords) Hash(plain string) (string, error) { return "h:" + plain, nil }
-func (fakePasswords) Verify(hash, plain string) error {
+func newFakePasswords() *fakePasswords { return &fakePasswords{} }
+
+func (f *fakePasswords) Hash(plain string) (string, error) { return "h:" + plain, nil }
+func (f *fakePasswords) Verify(hash, plain string) error {
+	f.verifyCalls++
 	if hash == "h:"+plain {
 		return nil
 	}
@@ -183,7 +191,8 @@ type loginFixture struct {
 	central     *fakeCentralResolver
 	tenantRoles *fakeTenantRoleResolver
 	issuer      *fakeIssuer
-	limiter     *fakeLimiter // proteksi brute-force jalur password (PR-W1)
+	limiter     *fakeLimiter   // proteksi brute-force jalur password (PR-W1)
+	passwords   *fakePasswords // menghitung Verify — lihat TestPasswordAuth_BiayaKerjaSeragam
 }
 
 func newLoginFixture() *loginFixture {
@@ -197,12 +206,13 @@ func newLoginFixture() *loginFixture {
 		tenantRoles: newFakeTenantRoleResolver(),
 		issuer:      &fakeIssuer{},
 		limiter:     newFakeLimiter(),
+		passwords:   newFakePasswords(),
 	}
 }
 
 func (fx *loginFixture) loginEmployee() *usecase.LoginEmployee {
 	return usecase.NewLoginEmployee(fx.creds, fx.persons, fx.emps, fx.assigns, fx.tenants,
-		fakePasswords{}, fx.central, fx.tenantRoles, fx.issuer,
+		fx.passwords, fx.central, fx.tenantRoles, fx.issuer,
 		fx.limiter, usecase.DefaultLoginPolicy())
 }
 
@@ -211,7 +221,7 @@ func (fx *loginFixture) selectTenant() *usecase.SelectTenant {
 }
 
 func (fx *loginFixture) loginCitizen() *usecase.LoginCitizen {
-	return usecase.NewLoginCitizen(fx.creds, fx.persons, fakePasswords{}, fx.issuer,
+	return usecase.NewLoginCitizen(fx.creds, fx.persons, fx.passwords, fx.issuer,
 		fx.limiter, usecase.DefaultLoginPolicy())
 }
 

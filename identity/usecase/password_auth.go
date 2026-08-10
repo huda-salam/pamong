@@ -53,11 +53,65 @@ type passwordAuthenticator struct {
 	passwords port.PasswordVerifier
 	limiter   port.RateLimiter
 	policy    LoginPolicy
+	// dummyHash adalah hash ber-cost SAMA dengan hash asli, dipakai untuk verifikasi tiruan
+	// pada jalur yang tak punya hash asli — lihat newPasswordAuthenticator & authenticate.
+	dummyHash string
+}
+
+// dummyPassword adalah plaintext yang di-hash sekali saat konstruksi. Nilainya tidak rahasia
+// (ia bukan kredensial siapa pun) dan tak perlu rahasia: kegagalan tetap dipagari flag `eligible`
+// di authenticate, sehingga seseorang yang mengirim persis string ini tetap ditolak.
+const dummyPassword = "pamong:hash-tiruan-penyeragam-biaya-login"
+
+// newPasswordAuthenticator merakit authenticator dan menyiapkan hash tiruan SEKALI di muka.
+//
+// Hash tiruan dibuat lewat port.PasswordVerifier yang sama dengan yang memverifikasi hash asli —
+// bukan konstanta hash yang ditulis tangan. Bedanya menentukan: dengan konstanta, menaikkan cost
+// bcrypt kelak akan diam-diam membuat jalur tiruan lebih murah daripada jalur asli dan membuka
+// kembali orakel timing yang ditutup di sini, tanpa satu pun test atau linter yang mengeluh.
+// Lewat verifier, cost mengikuti dengan sendirinya.
+//
+// Kegagalan Hash → panic. Ini konstruksi (boot/wiring), bukan runtime request: bcrypt hanya gagal
+// pada cost tak sah atau plaintext >72 byte, dua-duanya bug kode yang harus terlihat seketika.
+// Alternatifnya — menyimpan hash kosong — membuat verifikasi tiruan selesai instan dan mematikan
+// kontrol ini tanpa jejak apa pun. Cermin `NewRequestOTP` yang panic saat logger nil.
+func newPasswordAuthenticator(
+	creds domain.CredentialRepository,
+	persons domain.PersonRepository,
+	passwords port.PasswordVerifier,
+	limiter port.RateLimiter,
+	policy LoginPolicy,
+) passwordAuthenticator {
+	dummy, err := passwords.Hash(dummyPassword)
+	if err != nil {
+		panic("usecase.newPasswordAuthenticator: gagal menyiapkan hash tiruan — " +
+			"tanpa hash tiruan, kegagalan login menjadi orakel keberadaan akun lewat timing: " + err.Error())
+	}
+	return passwordAuthenticator{
+		creds: creds, persons: persons, passwords: passwords,
+		limiter: limiter, policy: policy, dummyHash: dummy,
+	}
 }
 
 // authenticate mengembalikan person yang aktif bila kredensial & password cocok. SEMUA kegagalan
 // spesifik-akun dipetakan ke errInvalidCredential (401 seragam) agar tak membocorkan tahap mana
-// yang gagal.
+// yang gagal — DAN menempuh biaya kerja yang sama (satu verifikasi bcrypt).
+//
+// BIAYA KERJA SERAGAM (temuan /security-review PR-W1). Body 401 sudah seragam, kontrak RequestOTP
+// sudah senyap, dan habisnya kuota lapis 2 sudah sengaja menjawab 401 alih-alih 429 — ketiganya
+// dibayar khusus untuk menutup orakel keberadaan akun. Semuanya sia-sia bila jalur "kredensial tak
+// ada" (~2-5 ms: blind index + indexed read) bisa dibedakan dari jalur "kredensial ada, password
+// salah" (~50-100 ms: bcrypt cost 10) hanya dengan stopwatch: satu request per target sudah cukup
+// memastikan sebuah NIK/NIP/email/no_hp terdaftar — pengenal kelas personal_id (ADR-009). Rate
+// limit tidak menutupnya; lapis 1 memberi 10 percobaan per nilai per 15 menit sementara penyerang
+// cuma butuh 1-3 sampel.
+//
+// Karena itu SEMUA jalur kegagalan spesifik-akun melewati SATU titik panggil Verify di bawah —
+// dengan hash asli bila ada, hash tiruan bila tidak. Bentuk "satu titik panggil" dipilih dengan
+// sengaja alih-alih menyelipkan verifikasi tiruan sebelum tiap `return`: yang terakhir mengundang
+// early-return baru yang lupa membayarnya, persis cacat yang sedang diperbaiki. Diuji secara
+// STRUKTURAL (hitungan panggilan Verify = 1 di tiap jalur), bukan dengan mengukur waktu — test
+// berbasis waktu flaky di CI dan tak membuktikan properti yang dimaksud.
 func (a passwordAuthenticator) authenticate(ctx context.Context, t domain.CredType, value, password string) (*domain.Person, error) {
 	// Lapis 1 — berjalan untuk nilai dikenal maupun tidak, jadi 429 di sini bukan orakel.
 	allowed, err := a.limiter.Allow(ctx, loginRawKey(t, value), a.policy.Limit, a.policy.Window)
@@ -68,30 +122,37 @@ func (a passwordAuthenticator) authenticate(ctx context.Context, t domain.CredTy
 		return nil, errTooManyLogin()
 	}
 
-	cred, err := a.creds.FindByTypeValue(ctx, t, value)
-	if err != nil {
+	// Mulai di sini, jangan pernah `return errInvalidCredential()` lebih awal: setiap kegagalan
+	// spesifik-akun harus jatuh ke titik Verify tunggal di bawah. hash & eligible adalah caranya
+	// — hash menentukan APA yang diverifikasi, eligible menentukan apakah hasilnya boleh dipercaya.
+	hash, eligible := a.dummyHash, false
+
+	cred, credErr := a.creds.FindByTypeValue(ctx, t, value)
+	if credErr == nil {
+		// Lapis 2 — habisnya kuota menjawab 401 SERAGAM, bukan 429. Lapis ini hanya tercapai untuk
+		// kredensial yang BENAR-BENAR ADA, jadi 429 di sini akan memberi tahu penyerang bahwa
+		// nilai yang ia tebak terdaftar — orakel keberadaan akun satu-probe-per-target. Cermin dari
+		// "diam saat kuota habis" di RequestOTP, disesuaikan dengan jalur yang responsnya 401.
+		allowed, err = a.limiter.Allow(ctx, loginCredKey(cred.ID), a.policy.Limit, a.policy.Window)
+		if err != nil {
+			// Error store → 500 di kedua lapis, untuk nilai dikenal maupun tidak (lapis 1 memakai
+			// store yang sama & gagal lebih dulu), jadi bukan orakel — dan status yang berbeda
+			// sudah membedakannya tanpa perlu timing.
+			return nil, err
+		}
+		// Kuota habis & credential tanpa password (SSO/OTP-only) TIDAK berhenti di sini: keduanya
+		// jatuh ke Verify tiruan, sama seperti kredensial yang tak ada.
+		if allowed && cred.SecretHash != "" {
+			hash, eligible = cred.SecretHash, true
+		}
+	}
+
+	// SATU-SATUNYA titik panggil Verify di alur ini. `!eligible` menjaga kasus tepi hash tiruan:
+	// password yang kebetulan sama dengan dummyPassword akan lolos Verify, dan tetap harus ditolak.
+	if verifyErr := a.passwords.Verify(hash, password); verifyErr != nil || !eligible {
 		return nil, errInvalidCredential()
 	}
 
-	// Lapis 2 — habisnya kuota menjawab 401 SERAGAM, bukan 429. Lapis ini hanya tercapai untuk
-	// kredensial yang BENAR-BENAR ADA, jadi 429 di sini akan memberi tahu penyerang bahwa
-	// nilai yang ia tebak terdaftar — orakel keberadaan akun satu-probe-per-target. Cermin dari
-	// "diam saat kuota habis" di RequestOTP, disesuaikan dengan jalur yang responsnya 401.
-	allowed, err = a.limiter.Allow(ctx, loginCredKey(cred.ID), a.policy.Limit, a.policy.Window)
-	if err != nil {
-		return nil, err
-	}
-	if !allowed {
-		return nil, errInvalidCredential()
-	}
-
-	if cred.SecretHash == "" {
-		// Credential tanpa password (SSO/OTP-only) tak bisa login lewat jalur password.
-		return nil, errInvalidCredential()
-	}
-	if err := a.passwords.Verify(cred.SecretHash, password); err != nil {
-		return nil, errInvalidCredential()
-	}
 	person, err := a.persons.FindByID(ctx, cred.PersonID)
 	if err != nil || !person.IsActive {
 		return nil, errInvalidCredential()

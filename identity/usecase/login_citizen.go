@@ -39,9 +39,7 @@ func NewLoginCitizen(
 	policy LoginPolicy,
 ) *LoginCitizen {
 	return &LoginCitizen{
-		auth: passwordAuthenticator{
-			creds: creds, persons: persons, passwords: passwords, limiter: limiter, policy: policy,
-		},
+		auth:   newPasswordAuthenticator(creds, persons, passwords, limiter, policy),
 		issuer: issuer,
 	}
 }

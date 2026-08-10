@@ -87,6 +87,8 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
     **Diuji**: `TestLoginEmployee_KuotaKredensialHabis_401BukanOrakel` membandingkan pesan errornya
     dengan jalur "kredensial tak dikenal" dan menuntut keduanya identik.
   - Limiter error → **fail-closed**. Ambang default 10/15 menit per kredensial (bukan per IP).
+  - **Biaya kerja SERAGAM di semua jalur kegagalan** — 401 seragam saja tak cukup selama jalur
+    tanpa bcrypt bisa dibedakan dengan stopwatch. Lihat **A11** (`TERTUTUP`, PR-W1).
   - **Keterbatasan sadar**: `port.RateLimiter` hanya menghitung (tanpa Reset), jadi login BERHASIL
     pun memakai kuota. Menambah Reset = menyediakan jalur "nolkan penghitung"; butuh ADR bila kelak
     dianggap perlu.
@@ -137,6 +139,39 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
 - Kini: body generik `{"code":"INTERNAL"}`, detail hanya ke log proses. **Diuji**:
   `TestWriteError_NonFrameworkError_TakBocorkanDetail`. Konsekuensi disengaja — pembedaan yang
   berguna bagi klien harus dinyatakan sebagai `FrameworkError`, bukan bocor lewat teks error infra.
+
+### A11. Orakel enumerasi kredensial lewat timing bcrypt — `TERTUTUP` (PR-W1)
+- `identity/usecase/password_auth.go` (`authenticate`, `newPasswordAuthenticator`).
+- Ditemukan saat `/security-review` PR-W1. `authenticate` punya tiga jalur cepat yang pulang tanpa
+  pernah menjalankan bcrypt — kredensial tak ditemukan (hanya blind index + indexed read, ~2-5 ms),
+  `secret_hash` kosong (SSO/OTP-only), dan kuota lapis-2 habis — sedangkan kredensial yang ada &
+  berpassword membayar bcrypt cost 10 (~50-100 ms). Body 401-nya memang identik, jadi **timing
+  adalah orakel yang tersisa**: satu request per target memastikan sebuah NIK/NIP/email/no_hp
+  terdaftar (`personal_id`, ADR-009), di `/auth/login` maupun `/auth/public/login`.
+  Ini mengembalikan persis apa yang sudah dibayar mahal untuk ditutup — 401 seragam (A5), kontrak
+  senyap `RequestOTP` (A6), dan keputusan sengaja membuat kuota lapis-2 menjawab 401 bukan 429.
+  Rate limit tidak menutupnya: lapis-1 memberi 10 percobaan per nilai per 15 menit, penyerang cuma
+  butuh 1-3 sampel.
+- Kini: SEMUA jalur kegagalan spesifik-akun melewati **satu titik panggil `Verify`** — hash asli
+  bila ada, **hash tiruan ber-cost sama** bila tidak. Bentuk "satu titik panggil" (variabel
+  `hash`+`eligible`, tak ada `return errInvalidCredential()` lebih awal sesudah lapis-1) dipilih
+  alih-alih menyelipkan verifikasi tiruan sebelum tiap `return`: yang terakhir mengundang
+  early-return baru yang lupa membayarnya — persis cacat yang diperbaiki di sini.
+  - **Hash tiruan dibuat lewat `port.PasswordVerifier` yang sama**, sekali saat konstruksi, BUKAN
+    konstanta hash yang ditulis tangan. Dengan konstanta, menaikkan cost bcrypt kelak diam-diam
+    membuat jalur tiruan lebih murah dan membuka celah ini lagi tanpa satu pun test mengeluh.
+    Kegagalan `Hash` → panic saat wiring (menyimpan hash kosong = mematikan kontrol tanpa jejak).
+  - **Diuji STRUKTURAL, bukan temporal**: `TestPasswordAuth_BiayaKerjaSeragam` menghitung panggilan
+    `Verify` dan menuntut tepat 1 di kelima jalur (tak ditemukan · hash kosong · kuota habis ·
+    password salah · password benar) plus jalur citizen; `TestPasswordAuth_HashTiruanDariVerifierYangSama`
+    mengunci asal hash tiruan. Test berbasis waktu flaky di CI dan tak membuktikan propertinya.
+    Mutasi diverifikasi: mengembalikan early-return di ketiga jalur cepat membuat test GAGAL.
+- **Sisa risiko yang diterima**: jalur error store (lapis 1 & 2) tetap pulang lebih awal — ia
+  menjawab 500, jadi timing tak menambah apa pun yang tak sudah dibedakan status; dan lapis-1
+  memakai store yang sama sehingga gagal lebih dulu untuk nilai dikenal maupun tidak. Selisih waktu
+  di HULU bcrypt (jumlah query yang dijalankan sesudah verifikasi berhasil) tak menjadi orakel
+  keberadaan akun karena ia hanya tercapai setelah password benar.
+
 ### A6. Jalur OTP citizen + rate-limit (PR-2.4.4) — `HARDENED`, perlu konfirmasi reviewer
 - `identity/usecase/request_otp.go`, `verify_otp.go`, `otp.go` (policy+helper seragam);
   `identity/adapter/auth/otp.go` (crypto/rand + bcrypt); `identity/adapter/db/otp_repository.go`;
