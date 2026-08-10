@@ -29,9 +29,10 @@ type Handler struct {
 	verifyOTP     *usecase.VerifyOTP
 }
 
-// NewHandler merakit handler auth. Semua use case wajib non-nil — rute yang terdaftar tapi
-// menunjuk use case nil akan panic saat request pertama, persis jenis kegagalan yang paling
-// mahal ditemukan di produksi.
+// NewHandler merakit handler auth. Semua use case wajib non-nil, dan itu DITEGAKKAN di sini:
+// rute yang terdaftar tapi menunjuk use case nil baru panic pada request pertama — di produksi,
+// pada pengguna, bukan saat boot. Pola yang sama dipakai konstruktor seam lain di repo ini
+// (NewRepoCloneSource, NewTenantDBWriter): gagal keras saat perakitan, bukan diam lalu meledak.
 func NewHandler(
 	loginEmployee *usecase.LoginEmployee,
 	selectTenant *usecase.SelectTenant,
@@ -39,6 +40,18 @@ func NewHandler(
 	requestOTP *usecase.RequestOTP,
 	verifyOTP *usecase.VerifyOTP,
 ) *Handler {
+	switch {
+	case loginEmployee == nil:
+		panic("identity/adapter/http: LoginEmployee nil")
+	case selectTenant == nil:
+		panic("identity/adapter/http: SelectTenant nil")
+	case loginCitizen == nil:
+		panic("identity/adapter/http: LoginCitizen nil")
+	case requestOTP == nil:
+		panic("identity/adapter/http: RequestOTP nil")
+	case verifyOTP == nil:
+		panic("identity/adapter/http: VerifyOTP nil")
+	}
 	return &Handler{
 		loginEmployee: loginEmployee,
 		selectTenant:  selectTenant,

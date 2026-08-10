@@ -138,7 +138,8 @@ func (uc *VerifyOTP) Execute(ctx context.Context, in VerifyOTPInput) (string, er
 	})
 }
 
-// otpVerifyKey merakit key rate limiter verifikasi, ber-scope per (jenis kanal, nilai kredensial).
+// otpVerifyKey merakit key rate limiter verifikasi LAPIS 1, ber-scope per (jenis kanal, nilai
+// kredensial yang DI-HASH — lihat otpRequestKey/loginRawKey untuk alasannya).
 func otpVerifyKey(t domain.CredType, value string) string {
-	return "otp:verify:" + string(t) + ":" + value
+	return "otp:verify:" + string(t) + ":" + hashKeyPart(value)
 }

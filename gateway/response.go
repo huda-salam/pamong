@@ -3,6 +3,7 @@ package gateway
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/huda-salam/pamong/core"
@@ -16,10 +17,24 @@ func WriteJSON(w http.ResponseWriter, status int, body any) {
 }
 
 // WriteError memetakan FrameworkError ke HTTP status yang sesuai dan menulis respons.
+//
+// Error yang BUKAN FrameworkError adalah kegagalan tak terduga (mis. pgx: koneksi gagal, SQL
+// error). Teksnya TIDAK PERNAH masuk body: pesan pgx memuat host, port, user, dan nama database,
+// dan sejak rute /auth/* dilayani tanpa otentikasi (PR-W1) pemanggil anonim bisa memicunya. Yang
+// keluar hanya penanda generik; detailnya dicatat ke log proses (slog default — logger aplikasi
+// menulis ke sink yang sama) agar tetap bisa didiagnosis operator.
+//
+// Konsekuensi yang disengaja: klien tak bisa lagi membedakan sebab kegagalan 500. Itu memang
+// tujuannya — pembedaan yang berguna bagi klien harus dinyatakan sebagai FrameworkError, bukan
+// bocor lewat teks error infrastruktur.
 func WriteError(w http.ResponseWriter, err error) {
 	var fe *core.FrameworkError
 	if !errors.As(err, &fe) {
-		WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		slog.Error("kegagalan tak terduga dipetakan ke 500", "err", err.Error())
+		WriteJSON(w, http.StatusInternalServerError, map[string]string{
+			"code":    "INTERNAL",
+			"message": "terjadi kesalahan internal",
+		})
 		return
 	}
 	status := httpStatus(fe.Code)

@@ -1,9 +1,11 @@
 package gateway_test
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/huda-salam/pamong/core"
@@ -38,5 +40,34 @@ func TestWriteError_StatusMapping(t *testing.T) {
 				t.Errorf("Content-Type = %q, mau application/json", ct)
 			}
 		})
+	}
+}
+
+// Error yang BUKAN FrameworkError tak boleh membocorkan teksnya ke body.
+//
+// Pesan pgx memuat host, port, user, dan nama database. Sejak PR-W1 rute /auth/* dilayani tanpa
+// otentikasi, pemanggil anonim bisa memicu kegagalan DB (mis. tenant DB tak terjangkau saat
+// resolusi role) dan membaca topologi infrastruktur dari respons 500.
+func TestWriteError_NonFrameworkError_TakBocorkanDetail(t *testing.T) {
+	rahasia := "failed to connect to `user=govapp database=gov_identity`: dial tcp 10.0.3.7:5432"
+	w := httptest.NewRecorder()
+
+	gateway.WriteError(w, errors.New(rahasia))
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("mau 500, dapat %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, bocoran := range []string{"govapp", "gov_identity", "10.0.3.7", "5432"} {
+		if strings.Contains(body, bocoran) {
+			t.Fatalf("body 500 memuat detail infrastruktur %q: %s", bocoran, body)
+		}
+	}
+	var out map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("body bukan JSON: %v", err)
+	}
+	if out["code"] != "INTERNAL" {
+		t.Errorf("code = %q, mau INTERNAL", out["code"])
 	}
 }

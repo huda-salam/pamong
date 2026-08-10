@@ -2,6 +2,8 @@ package usecase
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"time"
 
 	"github.com/google/uuid"
@@ -100,13 +102,30 @@ func (a passwordAuthenticator) authenticate(ctx context.Context, t domain.CredTy
 // loginRawKey / loginCredKey merakit key kedua lapis. Prefix "login:" memisahkan namespace dari
 // pemakaian limiter lain yang berbagi store (mis. "otp:", "rl:req:").
 //
+// Nilai mentah masuk sebagai HASH, bukan apa adanya. Dua sebabnya, keduanya konkret:
+//   - **Panjangnya dikendalikan penyerang.** Rute /auth/* dilayani tanpa otentikasi dan body
+//     dibatasi 64 KiB, jadi key mentah bisa sepanjang itu — dikalikan jumlah nilai unik yang
+//     dikirim, ia menjadi jalur menumbuhkan memori limiter dengan murah.
+//   - **Nilai mentah adalah pengenal** (NIP/NIK/email/no_hp, kelas personal_id). Key limiter
+//     mengalir ke store yang kelak Redis — mengirim pengenal apa adadanya ke sana adalah jalur
+//     samping ADR-009 §6 yang sama dengan log & pesan error.
+//
+// Hash bukan rahasia (nilai bisa ditebak dari ruang yang kecil); tugasnya membatasi panjang &
+// menghindari pengenal polos, bukan menyembunyikan. Determinisme itulah yang dibutuhkan limiter.
+//
 // KETERBATASAN YANG DISENGAJA: port.RateLimiter hanya menghitung (tak punya Reset), jadi login
 // yang BERHASIL pun memakai kuota. Dengan ambang default (10/15 menit) itu tak mengganggu manusia,
 // dan menambah Reset ke port demi kenyamanan akan memberi jalur "nolkan penghitung" yang justru
 // menarik untuk disalahgunakan. Bila kelak ambang terasa sempit, naikkan Limit — jangan tambahkan
 // Reset tanpa ADR.
 func loginRawKey(t domain.CredType, value string) string {
-	return "login:raw:" + string(t) + ":" + value
+	return "login:raw:" + string(t) + ":" + hashKeyPart(value)
+}
+
+// hashKeyPart memetakan nilai sembarang-panjang ke 32 hex char yang stabil.
+func hashKeyPart(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:16])
 }
 
 func loginCredKey(credID uuid.UUID) string { return "login:cred:" + credID.String() }

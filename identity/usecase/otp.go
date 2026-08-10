@@ -1,7 +1,6 @@
 package usecase
 
 import (
-	"errors"
 	"time"
 
 	"github.com/huda-salam/pamong/core"
@@ -55,11 +54,7 @@ func errTooManyOTP() error {
 	return core.ErrTooManyRequests("terlalu banyak percobaan, silakan coba lagi nanti")
 }
 
-// errOTPSendFailed dipakai saat pengiriman kode lewat MessagingPort gagal — masalah server
-// transient (provider down/timeout), dipetakan ke HTTP 500 (error biasa, bukan FrameworkError).
-// Pesan generik: TIDAK membocorkan detail provider (lihat MessagingError.Err yang hanya untuk log
-// internal). Pengembalian error ini membuat kegagalan kirim terlihat ke pemanggil sehingga warga
-// bisa mencoba ulang; refinement (retry/circuit-breaker, enumeration-resistance penuh) = ADR-008.
-func errOTPSendFailed() error {
-	return errors.New("gagal mengirim kode OTP, silakan coba lagi nanti")
-}
+// DIHAPUS (PR-W1): errOTPSendFailed. Mengembalikan kegagalan kirim ke pemanggil membuat jalur
+// "terdaftar tapi gagal kirim" (500) berbeda dari "tak terdaftar" (202) — orakel keberadaan akun
+// yang justru dibayar mahal untuk ditutup di sisa fungsi. Kegagalan kirim kini ditelan & dicatat
+// ke log (RequestOTP.Execute); ADR-008 §deferred sudah menominasikan opsi ini.

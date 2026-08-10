@@ -183,7 +183,7 @@ func TestE2E_Login_LaluAksesRuteBisnis(t *testing.T) {
 	}
 	limiter := ratelimit.NewMemory(nil)
 
-	authHandler, err := wireAuth(identityPool, connMgr, cryptoSvc, codec, limiter,
+	authHandler, err := wireAuth(identityPool, connMgr, cryptoSvc, codec, limiter, logger,
 		config.MessagingConfig{Driver: "log"})
 	if err != nil {
 		t.Fatalf("wireAuth: %v", err)

@@ -227,7 +227,7 @@ func run() error {
 	// server tak punya pintu masuk sama sekali — RequireAuth memagari semua rute bisnis sementara
 	// tak ada cara memperoleh token. Codec yang sama dipakai sebagai issuer DAN verifier: satu
 	// secret, jadi token yang diterbitkan pasti lolos verifikasi stack ini.
-	authHandler, err := wireAuth(identityPool, connMgr, cryptoSvc, verifier, rateLimiter, cfg.Messaging)
+	authHandler, err := wireAuth(identityPool, connMgr, cryptoSvc, verifier, rateLimiter, logger, cfg.Messaging)
 	if err != nil {
 		return fmt.Errorf("alur auth (identity): %w", err)
 	}

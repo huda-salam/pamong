@@ -40,6 +40,7 @@ func wireAuth(
 	cryptoSvc port.CryptoPort,
 	issuer port.TokenIssuer,
 	limiter port.RateLimiter,
+	logger port.Logger,
 	msgCfg config.MessagingConfig,
 ) (*identityhttp.Handler, error) {
 	creds, err := identitydb.NewCredentialRepo(identityPool, cryptoSvc)
@@ -77,7 +78,7 @@ func wireAuth(
 			central, tenantRoles, issuer, limiter, loginPolicy),
 		usecase.NewSelectTenant(employments, assigns, tenants, central, tenantRoles, issuer),
 		usecase.NewLoginCitizen(creds, persons, passwords, issuer, limiter, loginPolicy),
-		usecase.NewRequestOTP(creds, persons, otps, otpCodec, sender, limiter, otpPolicy, nil),
+		usecase.NewRequestOTP(creds, persons, otps, otpCodec, sender, limiter, logger, otpPolicy, nil),
 		usecase.NewVerifyOTP(creds, persons, otps, otpCodec, limiter, issuer, otpPolicy, nil),
 	), nil
 }

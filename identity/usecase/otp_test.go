@@ -12,6 +12,7 @@ import (
 	"github.com/huda-salam/pamong/identity/domain"
 	"github.com/huda-salam/pamong/identity/usecase"
 	"github.com/huda-salam/pamong/port"
+	"github.com/huda-salam/pamong/testkit"
 )
 
 // --- Fakes khusus jalur OTP ---
@@ -145,7 +146,7 @@ func (fx *otpFixture) clock() func() time.Time { return func() time.Time { retur
 
 func (fx *otpFixture) requestOTP() *usecase.RequestOTP {
 	return usecase.NewRequestOTP(fx.creds, fx.persons, fx.otps, fx.codec, fx.messaging,
-		fx.limiter, usecase.DefaultOTPPolicy(), fx.clock())
+		fx.limiter, testkit.NewNoopLogger(), usecase.DefaultOTPPolicy(), fx.clock())
 }
 func (fx *otpFixture) verifyOTP() *usecase.VerifyOTP {
 	return usecase.NewVerifyOTP(fx.creds, fx.persons, fx.otps, fx.codec, fx.limiter,
@@ -159,6 +160,17 @@ func (fx *otpFixture) seedCitizen(t *testing.T) (*domain.Person, *domain.Credent
 	_ = fx.persons.Save(context.Background(), p)
 	c := &domain.Credential{ID: uuid.New(), PersonID: p.ID, CredType: domain.CredEmail,
 		CredValue: "warga@example.com"}
+	fx.creds.add(c)
+	return p, c
+}
+
+// seedCitizenNoHP menyeed warga ber-kredensial no_hp (kanal yang driver produksinya belum ada).
+func (fx *otpFixture) seedCitizenNoHP(t *testing.T) (*domain.Person, *domain.Credential) {
+	t.Helper()
+	p := &domain.Person{ID: uuid.New(), NIK: "3578010101900011", NamaLengkap: "Warga HP", IsActive: true}
+	_ = fx.persons.Save(context.Background(), p)
+	c := &domain.Credential{ID: uuid.New(), PersonID: p.ID, CredType: domain.CredNoHP,
+		CredValue: "081234567890"}
 	fx.creds.add(c)
 	return p, c
 }
@@ -300,20 +312,56 @@ func TestRequestOTP_LimiterError_FailClosed(t *testing.T) {
 	}
 }
 
-func TestRequestOTP_MessagingFails_ReturnsError(t *testing.T) {
+// Kegagalan kirim DITELAN — respons tak boleh bisa dibedakan dari kredensial tak dikenal.
+//
+// Test ini dulu menuntut yang SEBALIKNYA (`..._ReturnsError`), dan itulah orakelnya: jalur
+// "terdaftar tapi gagal kirim" menjawab 500 sementara "tak terdaftar" menjawab 202, jadi satu
+// request per nilai cukup untuk menyaring basis akun. Yang membuatnya nyata dan bukan teoretis:
+// driver produksi satu-satunya (`smtp`) menolak SMS secara PERMANEN, sehingga SETIAP `no_hp`
+// terdaftar menjawab 500. Ditutup di PR-W1 saat rute ini benar-benar terpasang di HTTP.
+func TestRequestOTP_MessagingFails_SuksesSenyap_TakBisaDibedakan(t *testing.T) {
 	fx := newOTPFixture()
 	_, cred := fx.seedCitizen(t)
 	fx.messaging.failErr = errors.New("provider down")
 
-	err := fx.requestOTP().Execute(context.Background(), usecase.RequestOTPInput{
+	errTerdaftar := fx.requestOTP().Execute(context.Background(), usecase.RequestOTPInput{
 		CredType: domain.CredEmail, CredValue: "warga@example.com",
 	})
-	if err == nil {
-		t.Fatal("kegagalan kirim harus mengembalikan error")
+	if errTerdaftar != nil {
+		t.Fatalf("kegagalan kirim harus ditelan (anti-enumerasi), dapat: %v", errTerdaftar)
 	}
-	// OTP tetap tersimpan (penerbitan sukses sebelum kirim).
+
+	// Pembanding: nilai yang memang tak terdaftar. Keduanya harus menghasilkan hasil identik.
+	errTakDikenal := fx.requestOTP().Execute(context.Background(), usecase.RequestOTPInput{
+		CredType: domain.CredEmail, CredValue: "bukan-siapa-siapa@example.com",
+	})
+	if errTakDikenal != nil {
+		t.Fatalf("kredensial tak dikenal harus sukses senyap, dapat: %v", errTakDikenal)
+	}
+
+	// OTP tetap tersimpan (penerbitan sukses sebelum kirim) — kegagalan transport tak membatalkan
+	// penerbitan, sehingga percobaan ulang warga memakai kode yang sama masih mungkin.
 	if _, e := fx.otps.FindLatestByCredential(context.Background(), cred.ID); e != nil {
 		t.Fatalf("OTP harus tetap tersimpan: %v", e)
+	}
+}
+
+// Kanal no_hp dengan driver yang menolak SMS: bentuk konkret dari orakel di atas, ditulis
+// terpisah karena inilah konfigurasi produksi yang sebenarnya (REVIEW_BACKLOG A8).
+func TestRequestOTP_SMSTakDidukungDriver_TakJadiOrakel(t *testing.T) {
+	fx := newOTPFixture()
+	fx.seedCitizenNoHP(t)
+	fx.messaging.failErr = errors.New("driver smtp tidak mendukung SMS")
+
+	errTerdaftar := fx.requestOTP().Execute(context.Background(), usecase.RequestOTPInput{
+		CredType: domain.CredNoHP, CredValue: "081234567890",
+	})
+	errTakDikenal := fx.requestOTP().Execute(context.Background(), usecase.RequestOTPInput{
+		CredType: domain.CredNoHP, CredValue: "089999999999",
+	})
+	if errTerdaftar != nil || errTakDikenal != nil {
+		t.Fatalf("nomor terdaftar (%v) & tak terdaftar (%v) harus sama-sama sukses senyap — "+
+			"selisihnya = penyaring basis nomor, satu request per target", errTerdaftar, errTakDikenal)
 	}
 }
 

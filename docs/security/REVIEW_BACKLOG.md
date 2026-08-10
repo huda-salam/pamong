@@ -96,6 +96,47 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
     login bagi semua orang. Per-IP menuntut keputusan proxy tepercaya (X-Forwarded-For yang
     dipercaya buta = penyerang mencetak key tak terbatas) — **OPEN**, ambil saat deployment
     menentukan topologi proxy.
+  - **Lockout korban oleh penyerang — `OPEN`, trade-off inheren, BUKAN cacat lapis-1.**
+    Siapa pun yang tahu sebuah NIP bisa menghabiskan kuota kredensial itu (10 percobaan/15 menit;
+    `/auth/public/otp/request` lebih sempit lagi: 3) sehingga pemilik sahnya ikut tertolak.
+    Perlu dicatat tepat: ini **bukan** akibat lapis-1 ber-key nilai mentah — lapis-2 (ber-ID
+    kredensial) dikonsumsi percobaan penyerang dengan cara yang sama, jadi menghapus lapis-1 tak
+    menghilangkan apa pun. Rate limit per-KREDENSIAL selalu bisa dipakai mengunci korban; itu
+    harga yang dibayar untuk proteksi yang tak bergantung IP. Sudah berlaku untuk jalur OTP sejak
+    PR-2.4.4 (ADR-008), PR-W1 hanya memperluasnya ke jalur password.
+    Yang benar-benar meredakannya: kuota per-IP sebagai lapis TAMBAHAN (bukan pengganti) sehingga
+    penyerang dari satu titik kehabisan jatah lebih dulu — bergantung pada keputusan proxy
+    tepercaya di butir sebelumnya. Alternatif tanpa itu (hanya menghitung percobaan GAGAL, reset
+    saat sukses) butuh `Reset` di `port.RateLimiter`, yang justru membuka jalur "nolkan penghitung"
+    — jangan tambahkan tanpa ADR.
+
+### A9. Ruang key limiter dikendalikan pemanggil anonim — `TERTUTUP` (PR-W1)
+- `infra/ratelimit/memory.go`, `identity/usecase/password_auth.go` (`hashKeyPart`).
+- Ditemukan saat `/code-review` PR-W1. Sejak `/auth/*` dilayani tanpa otentikasi, key limiter
+  lapis-1 diturunkan dari nilai yang dikirim klien — penyerang mencetak key baru sebanyak request.
+  Instance limiter DIBAGI dengan middleware `RateLimit` rute bisnis, jadi biayanya menular ke
+  seluruh lalu lintas.
+  - **Panjang key dibatasi**: nilai mentah masuk sebagai hash (`hashKeyPart`), bukan apa adanya —
+    sekaligus menghentikan pengenal (`personal_id`) mengalir polos ke store limiter yang kelak
+    Redis (jalur samping ADR-009 §6).
+  - **Biaya per-operasi jadi O(1)**: penyimpanan dirotasi dua generasi, bukan disapu. Sapuan O(n)
+    (dan eviksi satu-per-satu) berbiaya paling mahal tepat saat map penuh — keadaan yang paling
+    mudah dipaksakan penyerang. **Diuji**: `TestMemory_BanjirKeyUnik_TetapLinear` (300rb key unik;
+    versi ber-sapuan memakan puluhan detik), `TestMemory_JumlahEntriTerbatas`,
+    `TestMemory_PenghitungBertahanLewatRotasi`.
+  - **Sisa risiko yang diterima**: banjir key memaksa rotasi lebih cepat, jadi penyerang bisa
+    MELEMAHKAN limiter (bukan menghabiskan memori/CPU-nya). Menolak key baru saat penuh lebih
+    buruk (mematikan login bagi semua orang). Penutupnya = store bersama ber-TTL (Redis), titik
+    ekstensi #1 — tinggal ganti adapter.
+
+### A10. Teks error infrastruktur bocor ke body 500 — `TERTUTUP` (PR-W1)
+- `gateway/response.go`.
+- `WriteError` dulu menulis `err.Error()` apa adanya untuk error non-`FrameworkError`. Pesan pgx
+  memuat host, port, user, dan nama database; sejak `/auth/*` dilayani tanpa otentikasi, pemanggil
+  anonim bisa memicu kegagalan DB dan membaca topologi infrastruktur dari respons.
+- Kini: body generik `{"code":"INTERNAL"}`, detail hanya ke log proses. **Diuji**:
+  `TestWriteError_NonFrameworkError_TakBocorkanDetail`. Konsekuensi disengaja — pembedaan yang
+  berguna bagi klien harus dinyatakan sebagai `FrameworkError`, bukan bocor lewat teks error infra.
 ### A6. Jalur OTP citizen + rate-limit (PR-2.4.4) — `HARDENED`, perlu konfirmasi reviewer
 - `identity/usecase/request_otp.go`, `verify_otp.go`, `otp.go` (policy+helper seragam);
   `identity/adapter/auth/otp.go` (crypto/rand + bcrypt); `identity/adapter/db/otp_repository.go`;

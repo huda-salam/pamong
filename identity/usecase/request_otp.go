@@ -33,11 +33,16 @@ type RequestOTP struct {
 	codec     port.OTPCodec
 	messaging port.MessagingPort
 	limiter   port.RateLimiter
+	logger    port.Logger
 	policy    OTPPolicy
 	now       func() time.Time
 }
 
 // NewRequestOTP merakit alur penerbitan OTP. now opsional (nil → time.Now).
+//
+// logger WAJIB non-nil: sejak kegagalan kirim ditelan demi anti-enumerasi (lihat Execute), log
+// adalah SATU-SATUNYA tempat kegagalan itu terlihat. Konstruktor yang menerima nil akan menukar
+// orakel keamanan dengan kegagalan yang benar-benar tak terlihat siapa pun.
 func NewRequestOTP(
 	creds domain.CredentialRepository,
 	persons domain.PersonRepository,
@@ -45,15 +50,19 @@ func NewRequestOTP(
 	codec port.OTPCodec,
 	messaging port.MessagingPort,
 	limiter port.RateLimiter,
+	logger port.Logger,
 	policy OTPPolicy,
 	now func() time.Time,
 ) *RequestOTP {
 	if now == nil {
 		now = time.Now
 	}
+	if logger == nil {
+		panic("usecase.NewRequestOTP: logger nil — kegagalan kirim OTP akan hilang tanpa jejak")
+	}
 	return &RequestOTP{
-		creds: creds, persons: persons, otps: otps, codec: codec,
-		messaging: messaging, limiter: limiter, policy: policy, now: now,
+		creds: creds, persons: persons, otps: otps, codec: codec, messaging: messaging,
+		limiter: limiter, logger: logger, policy: policy, now: now,
 	}
 }
 
@@ -136,8 +145,26 @@ func (uc *RequestOTP) Execute(ctx context.Context, in RequestOTPInput) error {
 	// orakel keberadaan akun, satu probe per target. cred.CredValue adalah alamat kanonik
 	// sebagaimana didaftarkan, sehingga jalur ini juga tak lagi patah untuk warga yang
 	// menempelkan alamat berspasi.
+	// Kegagalan kirim DITELAN (dicatat ke log, respons tetap sukses senyap). Mengembalikannya
+	// sebagai 500 menghancurkan enumeration-resistance yang dijaga seluruh fungsi ini: jalur
+	// "tak dikenal" menjawab 202 sementara jalur "terdaftar tapi gagal kirim" menjawab 500, jadi
+	// selisihnya menjadi orakel keberadaan akun — satu probe per target.
+	//
+	// Itu bukan bahaya teoretis. Driver produksi satu-satunya (`smtp`) menolak SMS secara
+	// PERMANEN, sehingga SETIAP `cred_type=no_hp` yang terdaftar menjawab 500 dan yang tak
+	// terdaftar menjawab 202: seluruh basis nomor bisa disaring dengan satu request per nomor.
+	// Selama alur ini tak punya handler HTTP hal itu tak terjangkau; PR-W1 memasangnya, jadi
+	// penutupannya jatuh tempo di sini. Kanal tanpa driver yang berfungsi tetap masalah
+	// konfigurasi tersendiri — REVIEW_BACKLOG A8.
+	//
+	// ADR-008 §deferred sudah menominasikan "swallow + log" sebagai refinement; ini penerapannya.
+	// Harganya disadari: warga yang OTP-nya gagal terkirim melihat 202 dan tak tahu harus menunggu
+	// sia-sia. Operator melihatnya di log. Membedakannya di respons = mengembalikan orakel.
 	if err := uc.send(ctx, cred.CredType, cred.CredValue, code); err != nil {
-		return errOTPSendFailed()
+		uc.logger.Error(ctx, "pengiriman OTP gagal; respons tetap sukses senyap (anti-enumerasi)",
+			port.F("cred_type", string(cred.CredType)),
+			port.F("credential_id", cred.ID.String()), // ID, bukan nilai — pengenal tak ke log (ADR-009 §6)
+			port.F("err", err.Error()))
 	}
 	return nil
 }
@@ -157,11 +184,12 @@ func (uc *RequestOTP) send(ctx context.Context, t domain.CredType, value, code s
 	}
 }
 
-// otpRequestKey merakit key rate limiter LAPIS 1, ber-scope per (jenis kanal, nilai MENTAH).
-// Sengaja mentah: lapis ini berjalan sebelum lookup, jadi belum ada kredensial untuk dijadikan
-// acuan — tugasnya cuma menahan laju nilai yang belum tentu ada.
+// otpRequestKey merakit key rate limiter LAPIS 1, ber-scope per (jenis kanal, nilai mentah yang
+// DI-HASH). Lapis ini berjalan sebelum lookup, jadi belum ada kredensial untuk dijadikan acuan —
+// tugasnya cuma menahan laju nilai yang belum tentu ada. Nilainya di-hash dengan alasan yang sama
+// seperti loginRawKey: panjangnya dikendalikan pemanggil anonim, dan ia pengenal (ADR-009 §6).
 func otpRequestKey(t domain.CredType, value string) string {
-	return "otp:request:" + string(t) + ":" + value
+	return "otp:request:" + string(t) + ":" + hashKeyPart(value)
 }
 
 // otpCredRequestKey / otpCredVerifyKey merakit key rate limiter LAPIS 2 dari ID kredensial —
