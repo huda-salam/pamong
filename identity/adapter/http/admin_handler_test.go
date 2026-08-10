@@ -122,7 +122,7 @@ func (f *adminTenants) SetActive(context.Context, string, bool) error  { return 
 // permEval memenuhi port.PermissionEvaluator dari sebuah himpunan permission.
 type permEval map[string]bool
 
-func (p permEval) Allows(_ []string, perm string) bool { return p[perm] }
+func (p permEval) Allows(_ []port.RoleRef, perm string) bool { return p[perm] }
 
 // --- Fixture ---
 
@@ -153,7 +153,8 @@ func newAdminFixture(t *testing.T) *adminFixture {
 	fx.handler = identityhttp.NewAdminHandler(
 		usecase.NewCreatePerson(fx.persons, fx.pub),
 		usecase.NewAttachEmployment(fx.persons, fx.emps, fx.pub),
-		usecase.NewCreateCredential(fx.persons, fx.creds, auth.NewBcryptVerifier(), usecase.NewVerifyGate(0, 0)),
+		usecase.NewCreateCredential(fx.persons, fx.creds, auth.NewBcryptVerifier(),
+			usecase.NewVerifyGate(0, 0), fx.roles, fx.roleAss),
 		usecase.NewAssignEmploymentToTenant(fx.persons, fx.emps, fx.assigns, fx.tenants, fx.pub),
 		usecase.NewAssignCentralRole(fx.roles, fx.roleAss),
 	)
@@ -315,8 +316,12 @@ func TestAdminHandler_AssignCentralRole_201(t *testing.T) {
 	}
 	fx.roles.byID[role.ID] = role
 
+	// Role GLOBAL berlaku di semua tenant, jadi memberikannya selalu melampaui wewenang aktor
+	// yang ter-scope satu tenant: butuh pintu keluar eksplisit (ADR-019). Yang diuji di sini
+	// tetap perakitan handler→use case, bukan kebijakannya — kebijakannya dikunci di
+	// identity/usecase/central_role_usecase_test.go.
 	w := fx.post(t, `{"person_id":"`+personID.String()+`","role_id":"`+role.ID.String()+`"}`,
-		fx.handler.AssignCentralRole, domain.PermCentralRoleAssign)
+		fx.handler.AssignCentralRole, domain.PermCentralRoleAssign, domain.PermAuthorityEscalate)
 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("mau 201, dapat %d — body: %s", w.Code, w.Body.String())
@@ -444,10 +449,12 @@ func TestAdminHandler_ValidasiFieldWajib(t *testing.T) {
 			personID := fx.seedPerson(t)
 			return fx.handler.CreateCredential, `{"person_id":"` + personID.String() + `","cred_type":"nip"}`
 		}},
+		// tenant_id = tenant TOKEN (lihat adminFixture.post) supaya containment ADR-019 lolos
+		// dan yang diuji benar-benar registry kosong — bukan gerbang wewenang yang menolak dulu.
 		{"tenant tak terdaftar", domain.PermAssignmentTugaskan, func(fx *adminFixture) (http.HandlerFunc, string) {
 			employmentID := fx.seedEmployment(t)
 			return fx.handler.AssignEmploymentToTenant,
-				`{"employment_id":"` + employmentID.String() + `","tenant_id":""}`
+				`{"employment_id":"` + employmentID.String() + `","tenant_id":"pemkot-a"}`
 		}},
 	}
 	for _, k := range kasus {

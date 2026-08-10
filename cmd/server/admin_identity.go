@@ -120,7 +120,12 @@ func wireAdminIdentity(
 	return identityhttp.NewAdminHandler(
 		usecase.NewCreatePerson(persons, pub),
 		usecase.NewAttachEmployment(persons, employments, pub),
-		usecase.NewCreateCredential(persons, credentials, identityauth.NewBcryptVerifier(), verifyGate),
+		// roles & roleAssignments ikut masuk CreateCredential: containment aktor→target
+		// (ADR-019) membaca wewenang SENTRAL target sebelum menerbitkan kredensial untuknya.
+		// Keduanya versi BER-AUDIT — pembacaan wewenang memakai repo yang sama dengan
+		// penulisnya, bukan jalur baca terpisah yang bisa menyimpang.
+		usecase.NewCreateCredential(
+			persons, credentials, identityauth.NewBcryptVerifier(), verifyGate, roles, roleAssignments),
 		usecase.NewAssignEmploymentToTenant(persons, employments, assignments, tenants, pub),
 		usecase.NewAssignCentralRole(roles, roleAssignments),
 	), nil

@@ -133,12 +133,18 @@ func seedRole(t *testing.T, roles *fakeCentralRoles, scope domain.ScopeType) *do
 	return r
 }
 
+// TestAssignCentralRole_GlobalSuccess: role GLOBAL berlaku di semua tenant sekaligus, jadi ia
+// selalu melampaui wewenang aktor yang ter-scope satu tenant — menugaskannya menuntut pintu
+// keluar eksplisit (ADR-019). Tanpa PermAuthorityEscalate kasus ini DITOLAK; lihat
+// TestAssignCentralRole_EskalasiGlobalDitolak.
 func TestAssignCentralRole_GlobalSuccess(t *testing.T) {
 	roles := newFakeCentralRoles()
 	role := seedRole(t, roles, domain.ScopeGlobal)
 	assigns := &fakeCentralAssignments{}
 	uc := usecase.NewAssignCentralRole(roles, assigns)
-	ctx := testkit.Ctx(t, testkit.WithPersonID(uuid.New()), testkit.WithPermission(domain.PermCentralRoleAssign))
+	ctx := testkit.Ctx(t, testkit.WithPersonID(uuid.New()), testkit.WithTenant("pemkot-surabaya"),
+		testkit.WithPermission(domain.PermCentralRoleAssign),
+		testkit.WithPermission(domain.PermAuthorityEscalate))
 
 	_, err := uc.Execute(ctx, usecase.AssignCentralRoleInput{PersonID: uuid.New(), RoleID: role.ID})
 	if err != nil {
@@ -149,12 +155,15 @@ func TestAssignCentralRole_GlobalSuccess(t *testing.T) {
 	}
 }
 
+// TestAssignCentralRole_ScopedSuccess: role scoped ke tenant AKTOR sendiri, dan role itu tak
+// memberi permission apa pun — keduanya dalam wewenang aktor, jadi tak butuh escalate.
 func TestAssignCentralRole_ScopedSuccess(t *testing.T) {
 	roles := newFakeCentralRoles()
 	role := seedRole(t, roles, domain.ScopeScoped)
 	assigns := &fakeCentralAssignments{}
 	uc := usecase.NewAssignCentralRole(roles, assigns)
-	ctx := testkit.Ctx(t, testkit.WithPersonID(uuid.New()), testkit.WithPermission(domain.PermCentralRoleAssign))
+	ctx := testkit.Ctx(t, testkit.WithPersonID(uuid.New()), testkit.WithTenant("pemkot-surabaya"),
+		testkit.WithPermission(domain.PermCentralRoleAssign))
 
 	a, err := uc.Execute(ctx, usecase.AssignCentralRoleInput{
 		PersonID: uuid.New(), RoleID: role.ID, TenantScope: []string{"pemkot-surabaya"},
@@ -211,5 +220,132 @@ func TestAssignCentralRole_RoleTidakAda(t *testing.T) {
 	var fe *core.FrameworkError
 	if !errors.As(err, &fe) || fe.Code != "NOT_FOUND" {
 		t.Fatalf("role tak ada harus NOT_FOUND, dapat: %v", err)
+	}
+}
+
+// --- Containment aktor→target (ADR-019 / REVIEW_BACKLOG B7) ---
+
+// TestAssignCentralRole_EskalasiGlobalDitolak adalah B7 butir (c): tanpa gerbang containment,
+// "boleh menugaskan role" efektif setara dengan "boleh menjadi apa pun" — pemegang
+// identity:central_role:assign dapat menugaskan super_admin, termasuk kepada dirinya sendiri.
+func TestAssignCentralRole_EskalasiGlobalDitolak(t *testing.T) {
+	roles := newFakeCentralRoles()
+	role := seedRole(t, roles, domain.ScopeGlobal)
+	assigns := &fakeCentralAssignments{}
+	uc := usecase.NewAssignCentralRole(roles, assigns)
+	// Aktor punya izin menugaskan, TIDAK punya pintu keluar.
+	ctx := testkit.Ctx(t, testkit.WithPersonID(uuid.New()), testkit.WithTenant("pemkot-surabaya"),
+		testkit.WithPermission(domain.PermCentralRoleAssign))
+
+	_, err := uc.Execute(ctx, usecase.AssignCentralRoleInput{PersonID: uuid.New(), RoleID: role.ID})
+	if !testkit.IsPermissionDenied(err) {
+		t.Fatalf("menugaskan role GLOBAL tanpa escalate harus ditolak, dapat: %v", err)
+	}
+	if len(assigns.saved) != 0 {
+		t.Fatal("penolakan wewenang tidak boleh menyisakan assignment tersimpan")
+	}
+}
+
+// TestAssignCentralRole_ScopeLuarTenantAktorDitolak adalah B7 butir (b) pada jalur role:
+// helpdesk regional Jatim tak boleh men-scope-kan role ke tenant di luar wewenangnya.
+func TestAssignCentralRole_ScopeLuarTenantAktorDitolak(t *testing.T) {
+	roles := newFakeCentralRoles()
+	role := seedRole(t, roles, domain.ScopeScoped)
+	assigns := &fakeCentralAssignments{}
+	uc := usecase.NewAssignCentralRole(roles, assigns)
+	ctx := testkit.Ctx(t, testkit.WithPersonID(uuid.New()), testkit.WithTenant("pemkot-surabaya"),
+		testkit.WithPermission(domain.PermCentralRoleAssign))
+
+	_, err := uc.Execute(ctx, usecase.AssignCentralRoleInput{
+		PersonID: uuid.New(), RoleID: role.ID, TenantScope: []string{"pemkot-malang"},
+	})
+	if !testkit.IsPermissionDenied(err) {
+		t.Fatalf("scope ke tenant lain tanpa escalate harus ditolak, dapat: %v", err)
+	}
+	if len(assigns.saved) != 0 {
+		t.Fatal("penolakan wewenang tidak boleh menyisakan assignment tersimpan")
+	}
+}
+
+// TestAssignCentralRole_PermissionTakDipegangDitolak adalah aturan Kubernetes apa adanya:
+// seseorang hanya boleh memberikan permission yang ia sendiri pegang. Role di sini memberi
+// identity:tenant:nonaktif, aktor tidak memegangnya.
+func TestAssignCentralRole_PermissionTakDipegangDitolak(t *testing.T) {
+	roles := newFakeCentralRoles()
+	role := &domain.CentralRole{
+		ID: uuid.New(), Name: "regional_helpdesk", Label: "Helpdesk",
+		ScopeType:   domain.ScopeScoped,
+		Permissions: []string{domain.PermTenantNonaktif},
+	}
+	_ = roles.Save(context.Background(), role)
+	assigns := &fakeCentralAssignments{}
+	uc := usecase.NewAssignCentralRole(roles, assigns)
+	ctx := testkit.Ctx(t, testkit.WithPersonID(uuid.New()), testkit.WithTenant("pemkot-surabaya"),
+		testkit.WithPermission(domain.PermCentralRoleAssign))
+
+	_, err := uc.Execute(ctx, usecase.AssignCentralRoleInput{
+		PersonID: uuid.New(), RoleID: role.ID, TenantScope: []string{"pemkot-surabaya"},
+	})
+	if !testkit.IsPermissionDenied(err) {
+		t.Fatalf("memberikan permission yang tak dipegang harus ditolak, dapat: %v", err)
+	}
+
+	// Aktor yang MEMANG memegang permission itu boleh memberikannya.
+	ctxOK := testkit.Ctx(t, testkit.WithPersonID(uuid.New()), testkit.WithTenant("pemkot-surabaya"),
+		testkit.WithPermission(domain.PermCentralRoleAssign),
+		testkit.WithPermission(domain.PermTenantNonaktif))
+	if _, err := uc.Execute(ctxOK, usecase.AssignCentralRoleInput{
+		PersonID: uuid.New(), RoleID: role.ID, TenantScope: []string{"pemkot-surabaya"},
+	}); err != nil {
+		t.Fatalf("aktor yang memegang permission harus boleh memberikannya, dapat: %v", err)
+	}
+}
+
+// TestAssignCentralRole_EskalasiDenganPintuKeluarDiizinkan mengunci sisi lain gerbang: pintu
+// keluar itu benar-benar membuka, bukan hanya ada di dokumen.
+func TestAssignCentralRole_EskalasiDenganPintuKeluarDiizinkan(t *testing.T) {
+	roles := newFakeCentralRoles()
+	role := &domain.CentralRole{
+		ID: uuid.New(), Name: "super_admin", Label: "Super Admin",
+		ScopeType:   domain.ScopeGlobal,
+		Permissions: []string{domain.PermTenantNonaktif},
+	}
+	_ = roles.Save(context.Background(), role)
+	assigns := &fakeCentralAssignments{}
+	uc := usecase.NewAssignCentralRole(roles, assigns)
+	ctx := testkit.Ctx(t, testkit.WithPersonID(uuid.New()), testkit.WithTenant("pemkot-surabaya"),
+		testkit.WithPermission(domain.PermCentralRoleAssign),
+		testkit.WithPermission(domain.PermAuthorityEscalate))
+
+	if _, err := uc.Execute(ctx, usecase.AssignCentralRoleInput{
+		PersonID: uuid.New(), RoleID: role.ID,
+	}); err != nil {
+		t.Fatalf("pemegang escalate harus boleh menugaskan role global, dapat: %v", err)
+	}
+	if len(assigns.saved) != 1 {
+		t.Fatalf("assignment harus tersimpan, dapat %d", len(assigns.saved))
+	}
+}
+
+// TestAssignCentralRole_AktorTanpaTenantDitolak: pasangan requireTenantBound pada jalur role.
+// Konteks tanpa tenant tak punya evaluator, dan RequirePermission default permisif — pintu
+// keluar escalate karena itu tak boleh menjadi satu-satunya penjaga.
+func TestAssignCentralRole_AktorTanpaTenantDitolak(t *testing.T) {
+	roles := newFakeCentralRoles()
+	role := seedRole(t, roles, domain.ScopeScoped)
+	assigns := &fakeCentralAssignments{}
+	uc := usecase.NewAssignCentralRole(roles, assigns)
+	ctx := testkit.Ctx(t, testkit.WithPersonID(uuid.New()), // tanpa WithTenant
+		testkit.WithPermission(domain.PermCentralRoleAssign),
+		testkit.WithPermission(domain.PermAuthorityEscalate))
+
+	_, err := uc.Execute(ctx, usecase.AssignCentralRoleInput{
+		PersonID: uuid.New(), RoleID: role.ID, TenantScope: []string{"pemkot-surabaya"},
+	})
+	if !testkit.IsPermissionDenied(err) {
+		t.Fatalf("aktor tanpa tenant harus ditolak walau memegang escalate, dapat: %v", err)
+	}
+	if len(assigns.saved) != 0 {
+		t.Fatal("penolakan wewenang tidak boleh menyisakan assignment tersimpan")
 	}
 }

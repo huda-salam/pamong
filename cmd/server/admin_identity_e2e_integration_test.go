@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +41,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/huda-salam/pamong/core/config"
+	"github.com/huda-salam/pamong/core/permission"
 	"github.com/huda-salam/pamong/gateway"
 	identityauth "github.com/huda-salam/pamong/identity/adapter/auth"
 	identitydb "github.com/huda-salam/pamong/identity/adapter/db"
@@ -53,6 +55,8 @@ import (
 	"github.com/huda-salam/pamong/infra/ratelimit"
 	infrauser "github.com/huda-salam/pamong/infra/user"
 	"github.com/huda-salam/pamong/port"
+	tenantroledb "github.com/huda-salam/pamong/tenantrole/adapter/db"
+	tenantroledomain "github.com/huda-salam/pamong/tenantrole/domain"
 )
 
 // Pengenal fixture pegawai yang DIBUAT lewat HTTP. Nilainya dipakai dua arah — dikirim ke API
@@ -182,9 +186,14 @@ func TestE2E_AdminIdentity_PenugasanMelahirkanCloneTerenkripsi(t *testing.T) {
 	}
 
 	handler := buildServerHandler(serverDeps{
-		router:         router,
-		verifier:       codec,
-		evalFactory:    newEvaluatorFactory(centralCatalog, connMgr, nil, 0),
+		router:   router,
+		verifier: codec,
+		// TTL sengaja sekecil mungkin, bukan 0. TTL 0 berarti "cache selama umur proses": katalog
+		// tenant akan dibangun saat request admin PERTAMA dan tak pernah melihat role tenant yang
+		// diseed sesudahnya. Assertion B8 di bawah lalu hijau karena role-nya TAK ADA di katalog —
+		// bukan karena resolusi ber-lapis-asal menolaknya. Dengan TTL ini tiap request membangun
+		// ulang katalog tenant, sehingga role penyamar BENAR-BENAR ada di lapis tenant saat diuji.
+		evalFactory:    newEvaluatorFactory(centralCatalog, connMgr, nil, time.Nanosecond),
 		tenantResolver: tenantResolver,
 		rateLimiter:    limiter,
 		rateLimit:      config.RateLimitConfig{Enabled: false},
@@ -288,6 +297,181 @@ func TestE2E_AdminIdentity_PenugasanMelahirkanCloneTerenkripsi(t *testing.T) {
 		t.Fatalf("pegawai baru tak bisa login dengan kredensial yang baru dibuat: %d — body: %s",
 			rec.Code, rec.Body.String())
 	}
+
+	// === DoD PR-W3a (b) & (c): B8 + B7 lewat stack HTTP NYATA ===
+	//
+	// Pegawai w2 di atas kini dipakai sebagai AKTOR. Ia diberi dua hal sekaligus, karena
+	// keduanya jalur berbeda menuju tujuan yang sama (mengambil alih wewenang platform):
+	//
+	//   B8 — role TENANT bernama persis seperti role SENTRAL `platform_admin`, tanpa permission
+	//        apa pun. Sebelum ADR-019, nama itu me-resolve ke definisi sentral ber-LayerGlobal
+	//        dan membuka SELURUH permission identity:* tanpa pernah menyebut namespace itu.
+	//   B7 — role SENTRAL scoped yang memberi identity:credential:buat di tenantnya sendiri.
+	//        Wewenang yang SAH, tapi tak boleh berlaku atas target di luar wewenangnya.
+	//
+	seedRolePenyamarDanScoped(t, ctx, identityPool, tenantPool, personID)
+	if err := centralCatalog.Refresh(ctx); err != nil {
+		t.Fatalf("refresh central catalog: %v", err)
+	}
+
+	pegawaiToken := loginPegawaiW2(t, handler)
+	claims, err := codec.Verify(ctx, pegawaiToken)
+	if err != nil {
+		t.Fatalf("verify token pegawai: %v", err)
+	}
+	// Prasyarat test, bukan yang diuji: klaim HARUS benar-benar membawa nama penyamar itu di
+	// tenant_roles. Kalau tidak, dua assert di bawah hijau tanpa menguji apa pun.
+	if !slices.Contains(claims.TenantRoles, adminRole) {
+		t.Fatalf("tenant_roles klaim = %v, harus memuat %q — seed role penyamar tak sampai ke token",
+			claims.TenantRoles, adminRole)
+	}
+	if slices.Contains(claims.CentralRoles, adminRole) {
+		t.Fatalf("central_roles klaim = %v, tak boleh memuat %q — pegawai tak pernah diberi "+
+			"role sentral itu", claims.CentralRoles, adminRole)
+	}
+
+	// Prasyarat kedua: role penyamar HARUS terlihat di katalog lapis tenant saat request dijalankan.
+	// Kalau tidak, 403 di bawah datang dari "role tak dikenal", bukan dari pengurungan lapis asal —
+	// test hijau karena alasan yang salah. Katalog dibangun ulang persis seperti yang dilakukan
+	// evaluatorFactory tiap request (TTL di atas).
+	assertRolePenyamarTerlihat(t, ctx, tenantPool)
+
+	// --- DoD (b): role tenant penyamar tak mewarisi permission role sentral ---
+	// `identity:person:buat` hanya dimiliki role SENTRAL platform_admin. Role tenant senama
+	// tidak memberi apa pun, dan role scoped pegawai hanya memberi identity:credential:buat.
+	if code := postAdminStatus(t, handler, pegawaiToken, "/admin/identity/persons", map[string]any{
+		"nik": "3578010101900077", "nama_lengkap": "Korban B8",
+	}); code != http.StatusForbidden {
+		t.Fatalf("B8: role TENANT bernama %q tak boleh mewarisi permission role sentral — "+
+			"POST /admin/identity/persons mau 403, dapat %d", adminRole, code)
+	}
+
+	// --- DoD (c): kredensial untuk target di luar wewenang aktor ditolak (varian TERKUAT B7) ---
+	// Kontrol positif dulu: permission scoped pegawai memang berlaku untuk target biasa. Tanpa
+	// pasangan ini, 403 di bawah tak bisa dibedakan dari "permission tak pernah aktif".
+	korban := postAdmin[struct {
+		ID uuid.UUID `json:"id"`
+	}](t, handler, token, "/admin/identity/persons", map[string]any{
+		"nik": "3578010101900078", "nama_lengkap": "Pegawai Biasa",
+	}).ID
+	if code := postAdminStatus(t, handler, pegawaiToken, "/admin/identity/credentials", map[string]any{
+		"person_id": korban, "cred_type": "nip", "cred_value": "199001012015011078",
+		"password": "kata-sandi-yang-panjang",
+	}); code != http.StatusCreated {
+		t.Fatalf("kontrol positif: kredensial untuk target BIASA mau 201, dapat %d — "+
+			"gerbang containment tak boleh mematikan administrasi identitas biasa", code)
+	}
+	// Target = ADMIN PLATFORM (pemegang role sentral global). Menerbitkan kredensial untuknya
+	// setara dengan bisa login sebagai dia: login me-resolve murni lewat (cred_type, cred_value).
+	if code := postAdminStatus(t, handler, pegawaiToken, "/admin/identity/credentials", map[string]any{
+		"person_id": adminID, "cred_type": "nip", "cred_value": "199001012015011079",
+		"password": "kata-sandi-yang-panjang",
+	}); code != http.StatusForbidden {
+		t.Fatalf("B7: kredensial untuk admin platform mau 403, dapat %d — aktor ber-scope tenant "+
+			"tak boleh menerbitkan kredensial bagi target di luar wewenangnya", code)
+	}
+}
+
+// assertRolePenyamarTerlihat memastikan role tenant bernama adminRole benar-benar ADA di katalog
+// lapis tenant, dan bahwa katalog itu melaporkannya sebagai LayerTenant tanpa permission —
+// prasyarat agar assertion B8 menguji pengurungan lapis, bukan ketiadaan role.
+func assertRolePenyamarTerlihat(t *testing.T, ctx context.Context, tenantPool *db.Pool) {
+	t.Helper()
+	cat, err := tenantroledb.NewTenantRoleCatalog(ctx, tenantroledb.NewTenantRoleRepo(tenantPool))
+	if err != nil {
+		t.Fatalf("bangun katalog tenant: %v", err)
+	}
+	role, ok := cat.Lookup(adminRole)
+	if !ok {
+		t.Fatalf("role tenant %q tak terlihat di katalog lapis tenant — assertion B8 di bawah "+
+			"akan hijau karena role tak dikenal, bukan karena lapis asalnya dikurung", adminRole)
+	}
+	if role.Layer != permission.LayerTenant || len(role.Permissions) != 0 {
+		t.Fatalf("role penyamar di lapis tenant salah bentuk: layer=%v permissions=%v",
+			role.Layer, role.Permissions)
+	}
+}
+
+// seedRolePenyamarDanScoped menyiapkan dua wewenang untuk pegawai w2 (lihat DoD di pemanggil):
+// role TENANT bernama persis seperti role sentral platform_admin (B8), dan role SENTRAL scoped
+// yang memberi identity:credential:buat di w2Tenant saja (B7).
+func seedRolePenyamarDanScoped(
+	t *testing.T, ctx context.Context, identityPool, tenantPool *db.Pool, personID uuid.UUID,
+) {
+	t.Helper()
+
+	// B8 — role tenant PENYAMAR. Daftar permission-nya sengaja KOSONG: yang diuji adalah
+	// pewarisan lewat NAMA, bukan lewat grant. Namespace identity: memang tertutup bagi role
+	// tenant (B6), dan justru itu intinya — jalur ini tak pernah menyebutnya.
+	role := &tenantroledomain.TenantRole{
+		ID: uuid.New(), Name: adminRole, Label: "Penyamar",
+	}
+	if err := tenantroledb.NewTenantRoleRepo(tenantPool).Save(ctx, role); err != nil {
+		t.Fatalf("simpan role tenant penyamar: %v", err)
+	}
+	if err := tenantroledb.NewTenantRoleAssignmentRepo(tenantPool).Save(ctx,
+		&tenantroledomain.TenantRoleAssignment{
+			ID: uuid.New(), UserID: personID, RoleID: role.ID, AssignedBy: personID,
+			ValidFrom: time.Now().Add(-time.Hour),
+		}); err != nil {
+		t.Fatalf("assign role tenant penyamar: %v", err)
+	}
+
+	// B7 — role sentral SCOPED, wewenang yang sah di tenantnya sendiri.
+	scoped := &identitydomain.CentralRole{
+		ID: uuid.New(), Name: "operator_identitas", Label: "Operator Identitas Daerah",
+		ScopeType:   identitydomain.ScopeScoped,
+		Permissions: []string{identitydomain.PermCredentialBuat},
+	}
+	if err := identitydb.NewCentralRoleRepo(identityPool).Save(ctx, scoped); err != nil {
+		t.Fatalf("simpan role sentral scoped: %v", err)
+	}
+	if err := identitydb.NewCentralRoleAssignmentRepo(identityPool).Save(ctx,
+		&identitydomain.CentralRoleAssignment{
+			ID: uuid.New(), PersonID: personID, RoleID: scoped.ID,
+			TenantScope: []string{w2Tenant}, AssignedBy: identitydomain.SystemActorID,
+			ValidFrom: time.Now().Add(-time.Hour),
+		}); err != nil {
+		t.Fatalf("assign role sentral scoped: %v", err)
+	}
+}
+
+// loginPegawaiW2 menempuh POST /auth/login sebagai pegawai w2 dan mengembalikan token final.
+func loginPegawaiW2(t *testing.T, h http.Handler) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(
+		`{"cred_type":"nip","cred_value":"`+w2NIP+`","password":"`+w2Password+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login pegawai w2: mau 200, dapat %d — body: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Token == "" {
+		t.Fatalf("token login pegawai w2 tak terbaca: %v — body: %s", err, rec.Body.String())
+	}
+	return out.Token
+}
+
+// postAdminStatus mengirim POST ber-token dan mengembalikan HANYA status code — pasangan
+// postAdmin untuk kasus yang memang diharapkan GAGAL (postAdmin mem-fatal-kan non-2xx).
+func postAdminStatus(
+	t *testing.T, h http.Handler, token, path string, body map[string]any,
+) int {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("encode body: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	h.ServeHTTP(rec, req)
+	return rec.Code
 }
 
 // Rute admin menolak permintaan anonim — diuji terhadap server rakitan NYATA, bukan hanya
@@ -369,6 +553,10 @@ func seedAdminBootstrap(
 		t.Fatalf("penugasan admin ber-sentinel gagal — migrasi 010 (seed SYSTEM) tak diterapkan? %v", err)
 	}
 
+	// PermAuthorityEscalate WAJIB ada di role bootstrap (ADR-019 Keputusan 5): memberikannya
+	// lewat AssignCentralRole menuntut aktor sudah memegangnya, jadi pemegang PERTAMA hanya bisa
+	// lahir dari seed seperti ini. Instalasi yang melewatkannya punya admin yang tak bisa
+	// menugaskan role global maupun menugaskan lintas tenant, tanpa jalan keluar.
 	role := &identitydomain.CentralRole{
 		ID: uuid.New(), Name: adminRole, Label: "Admin Platform",
 		ScopeType: identitydomain.ScopeGlobal,
@@ -378,6 +566,7 @@ func seedAdminBootstrap(
 			identitydomain.PermCredentialBuat,
 			identitydomain.PermAssignmentTugaskan,
 			identitydomain.PermCentralRoleAssign,
+			identitydomain.PermAuthorityEscalate,
 		},
 	}
 	if err := identitydb.NewCentralRoleRepo(identityPool).Save(ctx, role); err != nil {

@@ -6,13 +6,39 @@ import (
 	"github.com/google/uuid"
 )
 
-// PermissionEvaluator mengevaluasi keputusan RBAC: diberi nama-nama role yang
-// dipegang actor, apakah sebuah permission diberikan. Diimplementasi oleh
+// RoleOrigin adalah LAPIS ASAL sebuah nama role: dari mana nama itu datang di klaim token.
+// Bukan sinonim dari permission.Layer — Layer adalah properti DEFINISI role (global/scoped/
+// tenant, dibaca dari katalog), sedangkan RoleOrigin adalah properti RUJUKAN: klaim mana yang
+// membawanya. Keduanya dipisah karena justru pemetaan origin→definisi itulah yang harus
+// dikurung: nama dari klaim tenant hanya boleh me-resolve ke katalog tenant.
+//
+// JWT Pamong sudah memisahkan `central_roles` dari `tenant_roles` sejak PR-2.4.1; RoleOrigin
+// adalah pemisahan itu yang DIPERTAHANKAN sampai titik evaluasi, alih-alih diratakan jadi satu
+// daftar nama telanjang (ADR-019, REVIEW_BACKLOG B8).
+type RoleOrigin int
+
+const (
+	// RoleOriginTenant — nama datang dari klaim tenant_roles (gov.tenant_roles).
+	RoleOriginTenant RoleOrigin = iota
+	// RoleOriginCentral — nama datang dari klaim central_roles (id.central_roles).
+	RoleOriginCentral
+)
+
+// RoleRef adalah rujukan ke satu role yang MEMBAWA lapis asalnya. Ia menggantikan nama
+// telanjang sebagai masukan evaluasi: tanpa Origin, role tenant bernama sama dengan role
+// sentral akan me-resolve ke definisi sentral dan mewarisi LayerGlobal (B8).
+type RoleRef struct {
+	Origin RoleOrigin
+	Name   string
+}
+
+// PermissionEvaluator mengevaluasi keputusan RBAC: diberi role yang dipegang actor
+// (nama + lapis asal), apakah sebuah permission diberikan. Diimplementasi oleh
 // core/permission.Engine. gateway.Context memakainya untuk RequirePermission
 // tanpa bergantung pada implementasi konkret (core/* hanya lewat port).
 type PermissionEvaluator interface {
 	// Allows melaporkan apakah salah satu role memberi permission perm.
-	Allows(roles []string, perm string) bool
+	Allows(roles []RoleRef, perm string) bool
 }
 
 // ScopedEvaluator mengevaluasi keputusan permission DATA-LEVEL (ABAC, PR-2.3.5) untuk SATU

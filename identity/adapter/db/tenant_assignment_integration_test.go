@@ -102,8 +102,11 @@ func TestTenantAssignment_Audited(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed actor person: %v", err)
 	}
+	// Tenant token = tenant tujuan penugasan di bawah, supaya containment ADR-019 lolos: yang
+	// diuji di sini adalah AUDIT-nya, bukan gerbang wewenangnya (itu di identity/usecase).
 	actx := testkit.Ctx(t,
 		testkit.WithPersonID(actor),
+		testkit.WithTenant("pemkot-surabaya"),
 		testkit.WithPermission(domain.PermPersonBuat),
 		testkit.WithPermission(domain.PermEmploymentLampir),
 		testkit.WithPermission(domain.PermAssignmentTugaskan),

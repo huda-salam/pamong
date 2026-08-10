@@ -1064,35 +1064,71 @@ tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
   - Perubahan struktur DB: `identity/migrations/010` (seed sentinel, ber-down) — tercatat di
     `docs/DB_CHANGELOG.md` & `docs/DB_SCHEMA.md`. Permission baru: `identity:credential:buat`.
 
-- **PR-W3** Wiring Authority live → `SetScopedEvaluator` ← W1, 2.3.5
-  - Bangun `permission.Authority` (RoleNames + RoleGrants dari resolver tenant, emitter
+- **PR-W3a** Provenance role + containment wewenang (B7+B8, ADR-019) ✅
+  - **Menutup REVIEW_BACKLOG B7 & B8 lewat SATU ADR (019)** — keduanya satu keluarga cacat:
+    *wewenang tidak dibawa sampai ke titik keputusan*. B8 kehilangan LAPIS ASAL role, B7
+    kehilangan SCOPE aktor.
+  - B8: `port.RoleRef{Origin,Name}` menggantikan nama role telanjang sebagai masukan
+    `PermissionEvaluator.Allows`; `CompositeCatalog` me-resolve PER LAPIS ASAL dan berhenti
+    mengimplementasi `RoleCatalog` (kompilasi = penegakannya); `gateway.Context` berhenti
+    meratakan `TenantRoles`+`CentralRoles`.
+  - B7: `identity/usecase/containment.go` — aturan Kubernetes (*privilege escalation
+    prevention*) apa adanya, ditegakkan di PINTU TULIS, dengan pintu keluar eksplisit
+    `identity:authority:escalate`. Wewenang teritorial aktor = `ctx.TenantID()`;
+    `port.AuthContext` SENGAJA tidak diberi `TenantScope()` (ADR-019 Keputusan 3).
+  - **`SetScopedEvaluator` TIDAK dipasang di sini** — itu PR-W3b. Jangan mengklaim seam scoped
+    sudah hidup.
+  - DoD: (b) role TENANT bernama persis sama dengan role SENTRAL tidak mewarisi permission
+    maupun `LayerGlobal` ✅ (e2e: `POST /admin/identity/persons` → 403); (c) aktor ber-scope
+    tenant A ditolak saat memutasi identity target di luar wewenangnya, termasuk
+    `POST /admin/identity/credentials` ✅ (e2e, dengan kontrol positif 201 untuk target biasa).
+    Keduanya diverifikasi lewat MUTASI dua arah.
+
+- **PR-W3c** Pagar ukuran token JWT ← W3a
+  - **URUTAN: dikerjakan SEGERA setelah W3a, MENDAHULUI W3b.** Huruf di sini identitas, bukan
+    urutan — W3b (wiring Authority) menyusul sesudahnya.
+  - Masalah: `central_roles[]` + `tenant_roles[]` adalah satu-satunya klaim yang bertumbuh, dan
+    tak ada pagar di mana pun — bukan di `tenantRoleNameRe` (mengizinkan nama 100 karakter),
+    bukan di resolver, bukan di `JWTCodec.Issue`. Diukur dengan codec produksi: dasar ~420 B,
+    tiap role menambah ≈ `panjang_nama × 1,37` B. 50 role@25 char = 2,3 KB (aman);
+    100 role@100 char = 14,2 KB (**lewat batas nginx 8 KB**).
+  - **Bentuk kegagalannya yang membuat ini mendesak:** login BERHASIL (200, token terbit), lalu
+    SETIAP request berikutnya 400 dari proxy — tanpa satu pun jejak di log aplikasi, karena
+    permintaan tak pernah sampai ke Go (`MaxHeaderBytes` default 1 MB, jauh di atas batas proxy).
+    User terkunci total dan tak ada sinyal yang menunjuk penyebabnya. Yang paling mungkin kena
+    justru akun paling penting: admin tenant yang mengakumulasi role lintas tahun.
+  - Isi PR: (a) tolak di `JWTCodec.Issue` bila token melewati ambang aman (≈6 KB, di bawah 8 KB
+    nginx) dengan error yang MENYEBUT jumlah role — bukan 500 generik; (b) metrik ukuran token
+    (histogram) lewat `MetricsPort` supaya pertumbuhannya terlihat sebelum jadi insiden;
+    (c) set `http.Server.MaxHeaderBytes` eksplisit di `cmd/server` agar batasnya satu tempat
+    dan terdokumentasi, bukan bergantung default yang tak pernah dipilih siapa pun.
+  - **Yang JANGAN dilakukan:** memasukkan permission ke token "supaya tak perlu katalog". Itu
+    penyebab paling umum JWT membengkak, dan desain sekarang sengaja hanya membawa NAMA role —
+    satu role dengan 40 permission tetap satu entri.
+  - Batas ambang adalah kebijakan ops, jadi ia config (`GOV_AUTH_TOKEN_MAX_BYTES`), bukan
+    konstanta — deployment di belakang ALB (16 KB) boleh lebih longgar dari nginx (8 KB).
+  - DoD: token yang melewati ambang ditolak saat login dengan error eksplisit + ter-log, dan ada
+    test yang menerbitkan token melewati ambang lalu memastikan ia TIDAK pernah sampai ke klien.
+
+- **PR-W3b** Wiring Authority live → `SetScopedEvaluator` ← W1, 2.3.5, W3a
+  - Bangun `permission.Authority` (`Roles []RoleRef` + RoleGrants dari resolver tenant, emitter
     central-role→Grant `TenantWide`, DelegatedGrants dari resolver delegasi) →
     `ScopedEngine.Bind` → `gateway.Context.SetScopedEvaluator` di middleware Auth.
   - **Mengubah default dari permisif ke menegakkan** — begitu evaluator terpasang,
     `RequirePermissionInUnit` mulai menolak. Cari dulu pemanggilnya (`grep`) agar
     perubahan perilaku ini disengaja, bukan kejutan.
   - Emitter central-role→Grant belum dibuat (sengaja tak disentuh di PR-2.3.5).
-  - **GERBANG KERAS — REVIEW_BACKLOG B7 + B8 WAJIB tutup di PR ini, lewat SATU ADR.**
-    Keduanya satu keluarga cacat: *wewenang tidak dibawa sampai ke titik keputusan* — B8
-    kehilangan LAPIS ASAL role (nama tenant me-resolve ke definisi sentral ber-`LayerGlobal`),
-    B7 kehilangan SCOPE aktor (`tenant_scope` ada di klaim tapi tak terekspos lewat
-    `port.AuthContext`, sehingga mutasi identity tak pernah menanyakan "target dalam wewenang
-    aktor?"). W3 justru membangun seam tempat keduanya diputuskan: `permission.Authority` +
-    `ScopedEngine.Bind`. Memutuskannya di luar W3 berarti menyentuh `core/permission` dua kali
-    untuk satu masalah, dengan bentuk `Authority` yang belum terlihat.
-  - **Batas waktu gerbang itu, bila W3 tergeser:** B7+B8 harus tutup sebelum **onboarding tenant
-    NYATA pertama** ATAU sebelum **`tenantrole` mendapat permukaan HTTP**, mana yang lebih dulu.
-    Dasar penundaannya hari ini hanyalah tak adanya deployment (migrasi 009: identity DB kosong
-    di SELURUH environment per 1 Agu 2026) dan tak adanya penulis role tenant lewat HTTP —
-    dua fakta yang berhenti berlaku persis pada dua peristiwa itu. Utang tanpa gerbang adalah
-    cara utang jadi permanen; itu pola yang melahirkan Sub-phase 5.0.
+  - **Wiring evaluator dan PEMANGGIL PRODUKSINYA wajib satu PR** (DoD 11). Hari ini
+    `RequirePermissionInUnit` **nol pemanggil produksi**; memasang evaluator tanpa pemanggil =
+    seam dorman, persis dosa yang Sub-phase 5.0 ada untuk membayarnya. Pemanggil alaminya
+    `tenantrole.AssignTenantRole` & `delegation.CreateDelegation` (satu-satunya use case
+    ber-`UnitKerjaID`); `SuratMasuk` TIDAK punya `UnitKerjaID` dan menambahkannya semata agar
+    DoD bisa dibuktikan = memodelkan domain demi test. Ditolak.
+  - Permukaan HTTP `tenantrole` boleh mendarat di sini — gerbangnya (B8) sudah tutup di W3a.
   - Menutup: marker `DEFERRED(Phase-2.4)` di `gateway/middleware/auth.go:73`; backlog
-    "[Phase-2.4] Wiring Authority live + seam scoped"; REVIEW_BACKLOG B7 & B8.
-  - DoD: (a) dua request token identik beda `unit_kerja` → satu lolos satu 403, lewat stack
-    HTTP nyata (bukan pemanggilan engine langsung); (b) role TENANT bernama persis sama dengan
-    role SENTRAL tidak mewarisi permission maupun `LayerGlobal` milik role sentral itu (B8);
-    (c) aktor ber-scope tenant A ditolak saat memutasi identity target di luar wewenangnya —
-    termasuk `POST /admin/identity/credentials`, varian terkuat B7.
+    "[Phase-2.4] Wiring Authority live + seam scoped".
+  - DoD: dua request token identik beda `unit_kerja` → satu lolos satu 403, lewat stack
+    HTTP nyata (bukan pemanggilan engine langsung).
 
 - **PR-W4** Runtime workflow + notifikasi + scheduler ← W1, 3.2.x, 3.5.x, 3.6.x, N1–N3b
   - Blok dorman terbesar. Rakit: `DBStore` (definition) + `DBTemplateStore` + `Engine`
@@ -1447,7 +1483,7 @@ rule linter `markerref`).
     (`identity/usecase/create_central_role.go`, `assign_central_role.go`,
     `tenantrole/usecase/create_tenant_role.go`, `assign_tenant_role.go`,
     `delegation/usecase/create_delegation.go`, `delegation/domain/policy.go`),
-    wiring Authority (`gateway/middleware/auth.go:73` → **PR-W3**), live wiring login
+    wiring Authority (`gateway/middleware/auth.go:73` → **PR-W3b**), live wiring login
     (`identity/usecase/login.go:37` → **PR-W1**).
   - `DEFERRED(Phase-5.1.1)` ×3 — metrics endpoint, customization Manager & RegisterEventSchemas
     (→ **PR-W5/W6**).
@@ -1658,6 +1694,28 @@ rule linter `markerref`).
   ber-UUID tetap, mis. konstanta `domain.SystemActorID`) — bukan kolom nullable — agar audit
   tetap punya aktor eksplisit & mudah difilter. Seed lewat migration identity baru +
   pakai konstanta saat flow non-manusia dibangun. (Migration 003 append-only, tidak diedit.)
+
+- **[PR-W3a → postur repo-wide] Default permisif `RequirePermission` saat evaluator nil.**
+  `gateway.Context.RequirePermission` mengembalikan nil bila `c.eval == nil` (peninggalan seam
+  2.3.2 agar alur lama tak pecah). Artinya konteks tanpa evaluator LOLOS semua gerbang permission,
+  bukan ditolak. Hari ini tak terjangkau lewat HTTP (`RequireAuth` + `evaluatorFactory.Build` yang
+  tak pernah nil), tapi ia membuat setiap kontrol baru mewarisi arah gagal yang salah — ADR-019
+  harus memasang `requireTenantBound` justru untuk tidak bergantung padanya. Isi: jadikan
+  fail-closed (atau wajibkan injeksi evaluator di konstruksi Context), sapu handler test yang
+  mengandalkan default lama, dan pastikan rute publik `/auth/*` memang tak memanggil
+  `RequirePermission`. **Butuh ADR** (perubahan postur, bukan tambalan). **Gerbang: sebelum
+  permukaan mutasi non-HTTP pertama (CLI/job/importer) mendarat** — di situlah ia berhenti
+  teoretis.
+
+- **[PR-W3a → butuh perintah] Seed admin platform pertama lewat `pamongctl`.** Sejak ADR-019
+  Keputusan 5, pemegang PERTAMA `identity:authority:escalate` tak bisa lahir dari dalam aplikasi
+  (memberikannya menuntut sudah memegangnya) — sama seperti admin pertama tak bisa dibuat lewat
+  API. Jalurnya hari ini: repo/SQL langsung, dicontohkan `seedAdminBootstrap` di
+  `cmd/server/admin_identity_e2e_integration_test.go`. Yang belum ada: perintah `pamongctl`
+  yang melakukannya secara resmi (person + employment + credential + role sentral bootstrap
+  ber-`escalate` + assignment ber-sentinel SYSTEM). Tanpa itu, instalasi nyata pertama menempuh
+  jalur tanpa validasi bentuk pengenal dan tanpa audit — persis yang `CreateCredential` ada
+  untuk mencegahnya. **Gerbang: sebelum onboarding tenant NYATA pertama.**
 
 - **[Phase-2.4] Event role sentral.** `usecase.CreateCentralRole` & `AssignCentralRole`
   (PR-2.3.2) belum menerbitkan event — ada marker `// DEFERRED(Phase-2.4)` di keduanya. Saat

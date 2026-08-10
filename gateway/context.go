@@ -27,10 +27,16 @@ type Context struct {
 	eval             port.PermissionEvaluator
 	scopedEval       port.ScopedEvaluator
 
-	// cachedRoles adalah gabungan nama role tenant+central, dihitung sekali saat
-	// konstruksi (role maps tak pernah berubah sesudahnya). Menghindari realokasi
-	// slice tiap pemanggilan RequirePermission.
-	cachedRoles []string
+	// cachedRoles adalah gabungan role tenant+central sebagai port.RoleRef — nama BESERTA
+	// lapis asalnya — dihitung sekali saat konstruksi (role maps tak pernah berubah
+	// sesudahnya). Menghindari realokasi slice tiap pemanggilan RequirePermission.
+	//
+	// Ia membawa Origin, bukan nama telanjang, dan itu bukan detail performa: meratakan
+	// TenantRoles+CentralRoles jadi satu daftar nama adalah tempat lapis asal role HILANG,
+	// dan sesudahnya katalog hanya bisa menebak — role tenant bernama sama dengan role
+	// sentral akan me-resolve ke definisi sentral ber-LayerGlobal (REVIEW_BACKLOG B8,
+	// ditutup ADR-019). JWT sudah memisahkan kedua klaim; di sinilah pemisahan itu dijaga.
+	cachedRoles []port.RoleRef
 }
 
 var _ port.AuthContext = (*Context)(nil)
@@ -64,12 +70,12 @@ func NewContextFromClaims(parent context.Context, c *port.Claims) *Context {
 	for _, r := range c.CentralRoles {
 		central[r] = true
 	}
-	roleList := make([]string, 0, len(roles)+len(central))
+	roleList := make([]port.RoleRef, 0, len(roles)+len(central))
 	for r := range roles {
-		roleList = append(roleList, r)
+		roleList = append(roleList, port.RoleRef{Origin: port.RoleOriginTenant, Name: r})
 	}
 	for r := range central {
-		roleList = append(roleList, r)
+		roleList = append(roleList, port.RoleRef{Origin: port.RoleOriginCentral, Name: r})
 	}
 	return &Context{
 		Context:          parent,
@@ -168,19 +174,19 @@ func (c *Context) RequirePermissionInUnit(perm string, unitID uuid.UUID) error {
 	return core.ErrPermissionDenied(perm)
 }
 
-// roleList menggabungkan nama role tenant dan central yang dibawa context.
-// Hasil di-cache saat konstruksi via NewContextFromClaims; jalur konstruksi lain
-// (mis. FromRequest fallback) menghitung sekali secara lazy.
-func (c *Context) roleList() []string {
+// roleList menggabungkan role tenant dan central yang dibawa context, masing-masing DENGAN
+// lapis asalnya (port.RoleRef). Hasil di-cache saat konstruksi via NewContextFromClaims;
+// jalur konstruksi lain (mis. FromRequest fallback) menghitung sekali secara lazy.
+func (c *Context) roleList() []port.RoleRef {
 	if c.cachedRoles != nil {
 		return c.cachedRoles
 	}
-	out := make([]string, 0, len(c.roles)+len(c.centralRoles))
+	out := make([]port.RoleRef, 0, len(c.roles)+len(c.centralRoles))
 	for r := range c.roles {
-		out = append(out, r)
+		out = append(out, port.RoleRef{Origin: port.RoleOriginTenant, Name: r})
 	}
 	for r := range c.centralRoles {
-		out = append(out, r)
+		out = append(out, port.RoleRef{Origin: port.RoleOriginCentral, Name: r})
 	}
 	c.cachedRoles = out
 	return out

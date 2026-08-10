@@ -11,6 +11,20 @@ import (
 	"github.com/huda-salam/pamong/port"
 )
 
+// tref/cref membangun daftar port.RoleRef dengan LAPIS ASAL eksplisit — tref = nama dari klaim
+// tenant_roles, cref = dari klaim central_roles. Sejak ADR-019 origin ikut menentukan katalog
+// mana yang boleh menjawab, jadi test menuliskannya alih-alih memakai default.
+func tref(names ...string) []port.RoleRef { return refsOf(port.RoleOriginTenant, names) }
+func cref(names ...string) []port.RoleRef { return refsOf(port.RoleOriginCentral, names) }
+
+func refsOf(o port.RoleOrigin, names []string) []port.RoleRef {
+	out := make([]port.RoleRef, 0, len(names))
+	for _, n := range names {
+		out = append(out, port.RoleRef{Origin: o, Name: n})
+	}
+	return out
+}
+
 // newTestFactory merakit factory tanpa permission strict & tanpa TTL (cache selama umur
 // proses) — default untuk test perilaku dasar. Test strict & TTL memakai konstruktor penuh.
 func newTestFactory(central permission.RoleCatalog, build tenantCatalogBuilder) *evaluatorFactory {
@@ -46,10 +60,10 @@ func TestEvaluatorFactory_Citizen_CentralOnly(t *testing.T) {
 		t.Error("citizen tak boleh memicu build catalog tenant")
 	}
 	// super_admin (global) mengizinkan; role tenant "operator" tak dikenal engine central-only.
-	if !eval.Allows([]string{"super_admin"}, "x:y:baca") {
+	if !eval.Allows(cref("super_admin"), "x:y:baca") {
 		t.Error("central global harus mengizinkan x:y:baca")
 	}
-	if eval.Allows([]string{"operator"}, "x:y:buat") {
+	if eval.Allows(tref("operator"), "x:y:buat") {
 		t.Error("engine central-only tak boleh mengenal role tenant")
 	}
 }
@@ -64,10 +78,10 @@ func TestEvaluatorFactory_Employee_Composite(t *testing.T) {
 		t.Fatalf("Build employee: %v", err)
 	}
 	// Composite: role tenant DAN role central sama-sama dikenal.
-	if !eval.Allows([]string{"operator"}, "x:y:buat") {
+	if !eval.Allows(tref("operator"), "x:y:buat") {
 		t.Error("composite harus mengenal role tenant operator")
 	}
-	if !eval.Allows([]string{"super_admin"}, "x:y:baca") {
+	if !eval.Allows(cref("super_admin"), "x:y:baca") {
 		t.Error("composite harus tetap mengenal role central global")
 	}
 }
@@ -140,16 +154,16 @@ func TestEvaluatorFactory_StrictPropagated(t *testing.T) {
 	}
 
 	// Hanya "verifikator" (memberi perm) → intersection terpenuhi → IZIN.
-	if !eval.Allows([]string{"verifikator"}, "keu:spm:verifikasi") {
+	if !eval.Allows(tref("verifikator"), "keu:spm:verifikasi") {
 		t.Error("strict: satu-satunya role non-global yang memberi perm harus mengizinkan")
 	}
 	// Memegang "operator" (tak memberi perm strict) di samping "verifikator" → intersection
 	// gagal → TOLAK (segregation of duties).
-	if eval.Allows([]string{"verifikator", "operator"}, "keu:spm:verifikasi") {
+	if eval.Allows(tref("verifikator", "operator"), "keu:spm:verifikasi") {
 		t.Error("strict: memegang role yang tak memberi perm strict harus memblokir (intersection)")
 	}
 	// Perm biasa tetap union: "operator" saja cukup untuk "keu:spm:buat".
-	if !eval.Allows([]string{"operator", "verifikator"}, "keu:spm:buat") {
+	if !eval.Allows(tref("operator", "verifikator"), "keu:spm:buat") {
 		t.Error("perm biasa harus tetap union walau ada strict lain terdaftar")
 	}
 }
@@ -165,7 +179,7 @@ func TestEvaluatorFactory_StrictKosong_UnionMurni(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	// Tanpa strict, "keu:spm:verifikasi" jadi perm biasa → union → satu role memberi sudah cukup.
-	if !eval.Allows([]string{"verifikator", "operator"}, "keu:spm:verifikasi") {
+	if !eval.Allows(tref("verifikator", "operator"), "keu:spm:verifikasi") {
 		t.Error("tanpa strict, perm harus union (tidak diblokir role lain)")
 	}
 }

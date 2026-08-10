@@ -25,6 +25,7 @@ Modul sentral. Konstanta di `identity/domain/permissions.go`.
 | `identity:assignment:cross_tenant` | AssignEmploymentToTenant | Tambahan wajib bila penugasan cross-tenant (PJ/PLT) |
 | `identity:central_role:buat` | CreateCentralRole | Buat role sentral (global/scoped) + grant — admin platform (PR-2.3.2) |
 | `identity:central_role:assign` | AssignCentralRole | Tugaskan role sentral ke person — admin platform (PR-2.3.2) |
+| `identity:authority:escalate` | (pintu keluar containment) | Melampaui wewenang sendiri saat memutasi identitas — ADR-019, PR-W3a |
 
 Permukaan HTTP-nya (PR-W2) adalah grup `/admin/identity/*`, seluruhnya POST dan seluruhnya di
 balik `RequireAuth` (berbeda dari `/auth/*` yang sengaja pra-otentikasi):
@@ -51,6 +52,15 @@ dirinya `identity:credential:buat` dan mengambil alih akun mana pun yang id pers
 Permission cross-tenant ditegakkan di **use case**, bukan di handler — sifat cross-tenant baru
 diketahui setelah body di-parse, sementara aturan #3 mewajibkan gerbang pertama berdiri sebelum
 parse. Handler memeriksa permission dasarnya saja.
+
+**Punya permission ≠ boleh atas target ini (ADR-019).** Sejak PR-W3a ketiga mutasi identitas juga
+menegakkan CONTAINMENT: tenant tujuan harus tenant token aktor, role sentral hanya boleh diberikan
+bila aktor memegang seluruh permission-nya (role global selalu di luar wewenang), dan kredensial
+hanya boleh diterbitkan untuk target yang wewenang sentralnya tak melampaui aktor. Satu-satunya
+jalan melampauinya adalah `identity:authority:escalate` — permission TERSENDIRI, bukan pengecualian
+tersembunyi, supaya "siapa yang boleh melampaui wewenangnya" bisa dijawab satu kueri audit. Aturan
+ini diambil dari verb `escalate` Kubernetes RBAC. Penolakannya 403 menyebut permission pintu keluar,
+bukan permission operasinya.
 
 Catatan: mutasi identity selalu ter-audit (ADR-003). Membuat & menugaskan role sentral
 adalah pemberian wewenang lintas tenant — sensitif, butuh review ekstra.

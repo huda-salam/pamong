@@ -81,6 +81,34 @@ func (a *CentralRoleAssignment) Validate() error {
 	return nil
 }
 
+// ActiveAt melaporkan apakah assignment berada dalam masa berlakunya — TANPA melihat tenant.
+//
+// Dipisah dari AppliesTo karena ada pertanyaan yang memang tenant-agnostik: "wewenang apa saja
+// yang dipegang orang ini, di mana pun" — yang ditanyakan containment saat menilai TARGET sebuah
+// mutasi identitas (ADR-019). Memakai AppliesTo di sana akan menyaring assignment yang scope-nya
+// tenant LAIN, padahal justru itu wewenang yang tak boleh direbut: kredensial tidak terikat
+// tenant, jadi siapa pun yang bisa login sebagai target dapat memilih tenant target sesudahnya.
+func (a *CentralRoleAssignment) ActiveAt(now time.Time) bool {
+	if now.Before(a.ValidFrom) {
+		return false
+	}
+	return a.ValidUntil == nil || now.Before(*a.ValidUntil)
+}
+
+// Expired melaporkan apakah masa berlaku assignment sudah LEWAT pada saat now. Assignment yang
+// belum mulai (valid_from di masa depan) TIDAK expired — dan asimetri itu disengaja.
+//
+// Ia dipakai containment saat menilai wewenang TARGET (ADR-019 aturan 3), tempat ActiveAt justru
+// SALAH: artefak yang diotorisasi — kredensial — berumur permanen, sedangkan ActiveAt hanya
+// memotret satu titik waktu. valid_from datang dari klien (POST /admin/identity/
+// central-role-assignments), jadi assignment `platform_admin` yang dijadwalkan mulai pekan depan
+// akan tampak "tidak aktif" hari ini: aktor ber-scope tenant menerbitkan kredensial untuk orang
+// itu sekarang, lalu login sebagai dia pekan depan dengan wewenang global. Hanya ValidUntil yang
+// sudah lewat yang aman diabaikan, karena wewenangnya tak akan pernah kembali.
+func (a *CentralRoleAssignment) Expired(now time.Time) bool {
+	return a.ValidUntil != nil && !now.Before(*a.ValidUntil)
+}
+
 // AppliesTo melaporkan apakah assignment ini aktif untuk tenantID pada saat now. Inilah
 // satu-satunya tempat arti "scope" diputuskan (keputusan PR-2.3.2): memperdalamnya nanti
 // (mis. token region 'prov:jatim' untuk wildcard provinsi) cukup mengubah fungsi ini —
@@ -98,10 +126,7 @@ func (a *CentralRoleAssignment) Validate() error {
 // keying ke scope_type, scoped-tanpa-tenant kini berlaku di MANA PUN TIDAK (gagal aman).
 // Read-path tidak mengandalkan invariant write-time (checkScopeCoherence) tetap utuh.
 func (a *CentralRoleAssignment) AppliesTo(scope ScopeType, tenantID string, now time.Time) bool {
-	if now.Before(a.ValidFrom) {
-		return false
-	}
-	if a.ValidUntil != nil && !now.Before(*a.ValidUntil) {
+	if !a.ActiveAt(now) {
 		return false
 	}
 	if scope == ScopeGlobal {

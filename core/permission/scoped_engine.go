@@ -11,7 +11,7 @@ import (
 // ScopedEngine menambahkan evaluasi data-level (ABAC + hierarki OPD + delegasi) di atas Engine
 // RBAC, tanpa mengubah kontrak Engine (titik ekstensi #1, Open/Closed). Keputusan akhir:
 //
-//		AllowsInUnit =  ( Engine.Allows(RoleNames, perm)  AND  jangkauan RoleGrants menutupi unit )
+//		AllowsInUnit =  ( Engine.Allows(Roles, perm)  AND  jangkauan RoleGrants menutupi unit )
 //		             OR ( jangkauan DelegatedGrants menutupi unit )
 //
 //	  - Jalur role: RBAC (strict-intersection + global-precedence 2.3.3, UTUH) harus lulus dulu —
@@ -36,7 +36,7 @@ func NewScopedEngine(engine *Engine, tree Hierarchy) *ScopedEngine {
 // AllowsInUnit melaporkan apakah actor (auth) boleh melakukan perm atas resource pada
 // res.UnitKerjaID. Error hanya bila query hierarki gagal.
 func (s *ScopedEngine) AllowsInUnit(ctx context.Context, auth Authority, perm Permission, res ResourceScope) (bool, error) {
-	if s.engine.Allows(auth.RoleNames, perm) {
+	if s.engine.Allows(auth.Roles, perm) {
 		ok, err := s.covers(ctx, auth.RoleGrants, perm, res)
 		if err != nil {
 			return false, err

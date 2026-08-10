@@ -124,6 +124,46 @@ Kolom plaintext-nya **tidak ada** — bukan sekadar berhenti diisi.
   me-resolve dengan sukses bisa tetap ditolak transport di hilir — perbedaan respons itulah
   yang menjadi orakel. Pakai nilai hasil dekripsi (`cred.CredValue`).
 
+## Containment aktor→target (PR-W3a · ADR-019)
+
+Punya permission ≠ boleh atas target ini. `identity/usecase/containment.go` menegakkan tiga
+aturan pada mutasi identitas, mengikuti *privilege escalation prevention* Kubernetes RBAC:
+
+1. **Tenant** — operasi yang menyebut tenant hanya boleh menyebut **tenant token aktor**
+   (`AssignEmploymentToTenant`).
+2. **Role** — role sentral hanya boleh diberikan bila aktor memegang SELURUH permission yang
+   role itu berikan, scope-nya = tenant aktor, dan role **global** selalu di luar wewenang
+   (`AssignCentralRole`).
+3. **Target** — kredensial hanya untuk person yang wewenang SENTRALnya tak melampaui aktor
+   (`CreateCredential`).
+
+Pintu keluarnya satu, eksplisit, ter-audit: **`identity:authority:escalate`**.
+
+**Pemegang PERTAMA-nya di-seed, bukan di-grant.** Memberikan role yang memuat `escalate`
+menuntut aktor sudah memegangnya, jadi genesisnya selalu di luar aplikasi — jalur yang sama
+dengan admin platform pertama (sentinel SYSTEM, lihat §Sentinel di bawah). Role bootstrap yang
+diseed lewat repo/SQL **wajib** memuat `identity:authority:escalate`; tanpa itu instalasi baru
+punya admin yang tak bisa menugaskan role global maupun menugaskan lintas tenant, tanpa jalan
+keluar. Acuan bentuknya: `seedAdminBootstrap` di `cmd/server/admin_identity_e2e_integration_test.go`.
+
+- **Wewenang teritorial aktor = `ctx.TenantID()`, bukan klaim `tenant_scope`.** Token selalu
+  ter-scope satu tenant dan role sentral di dalamnya sudah disaring saat login, jadi
+  `tenant_scope` sengaja diterbitkan kosong (`scopedTokenMinter.mint`). Jangan "melengkapi"
+  klaim itu atau menambah `TenantScope()` ke `port.AuthContext` tanpa mengubah ADR-019 lebih
+  dulu — hari ini ia kontrak yang dorman sejak lahir.
+- **Konteks tanpa tenant fail-closed**, bukan wildcard — dan pemeriksaannya (`requireTenantBound`)
+  MENDAHULUI pintu keluar escalate. `RequirePermission` permisif saat evaluator nil, jadi tanpa
+  sinyal positif dari klaim tersigning, konteks tanpa evaluator akan terbaca "boleh eskalasi".
+  Jangan memindahkannya ke belakang `mayEscalate`.
+- **Wewenang TARGET disaring dengan `Expired`, bukan `ActiveAt`.** Kredensial berumur permanen;
+  `valid_from` datang dari klien. Assignment yang belum mulai TETAP dihitung — kalau tidak, role
+  global yang dijadwalkan pekan depan bisa dipanen lewat kredensial yang diterbitkan hari ini.
+  Hanya `ValidUntil` yang sudah lewat yang aman diabaikan.
+- **Kepemilikan permission aktor diperiksa lewat `ctx.RequirePermission`**, bukan jalur evaluasi
+  sendiri. Jalur kedua akan menyimpang dari otorisasi sesungguhnya diam-diam.
+- **Residu yang disengaja:** yang diperiksa wewenang SENTRAL target; role TENANT target hidup di
+  DB tenant dan butuh port lintas-DB baru. Sisa risikonya lateral di dalam satu tenant.
+
 ## Sentinel SYSTEM actor (PR-W2)
 
 `domain.SystemActorID` = `00000000-0000-0000-0000-000000000001`, satu baris NYATA di `id.persons`
@@ -202,8 +242,9 @@ bisa menugaskannya). Melonggarkan FK menghapus ketelusuran SELURUH baris demi sa
   UNIQUE-nya `(cred_type, cred_value)` — bukan `person_id` — jadi kredensial TAMBAHAN untuk orang
   yang sudah punya kredensial tetap berhasil. Karena login me-resolve murni lewat
   `(cred_type, cred_value) → person_id`, menerbitkan kredensial SETARA dengan menjadi target.
-  Jangan menambah pemanggil baru (CLI, importer, workflow action) tanpa membaca REVIEW_BACKLOG
-  **B7** lebih dulu.
+  Sejak PR-W3a jalur ini dijaga containment (lihat §Containment), tapi gerbangnya PER USE CASE:
+  pemanggil baru (CLI, importer, workflow action) TIDAK otomatis terlindungi — panggil
+  `containment.go` juga, dan baca REVIEW_BACKLOG **B7** lebih dulu.
 - **Merakit `CreateCredential` tanpa `VerifyGate` bersama.** Alasannya identik dengan jalur login:
   bcrypt terikat CPU dan gerbang per permukaan melipatgandakan batas yang ingin ditegakkan. Rute
   admin memang ber-token, tapi rate limit gateway per-principal ada di orde ratusan rps.

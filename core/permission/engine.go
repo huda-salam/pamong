@@ -20,17 +20,19 @@ import "github.com/huda-salam/pamong/port"
 //     yang tak memberi perm strict akan memblokirnya (segregation of duties) — karena
 //     itu strict dipakai hemat.
 //
-// Layer tiap role dibaca dari catalog (RoleCatalog.Lookup), jadi kontrak Engine &
-// port.PermissionEvaluator tidak berubah saat lapis tenant ditambahkan (titik ekstensi #1).
+// Layer tiap role dibaca dari catalog lewat RefCatalog.LookupRef — yakni dengan MEMBAWA lapis
+// asal tiap nama (port.RoleRef), bukan nama telanjang. Sejak ADR-019 itu bagian dari kontrak,
+// bukan detail: nama yang sama di klaim tenant dan di klaim central adalah dua role berbeda,
+// dan katalog yang salah lapis tak boleh ikut dihitung (REVIEW_BACKLOG B8).
 type Engine struct {
-	catalog RoleCatalog
+	catalog RefCatalog
 	strict  map[Permission]struct{}
 }
 
 var _ port.PermissionEvaluator = (*Engine)(nil)
 
 // NewEngine membuat Engine dengan catalog role dan daftar permission strict (opsional).
-func NewEngine(catalog RoleCatalog, strict ...Permission) *Engine {
+func NewEngine(catalog RefCatalog, strict ...Permission) *Engine {
 	s := make(map[Permission]struct{}, len(strict))
 	for _, p := range strict {
 		s[p] = struct{}{}
@@ -40,15 +42,17 @@ func NewEngine(catalog RoleCatalog, strict ...Permission) *Engine {
 
 // Allows melaporkan apakah role yang dipegang actor memberi perm, mengikuti resolusi
 // global-precedence + (union | strict-intersection) di atas. Role yang tidak terdaftar
-// di catalog diabaikan (bukan error) — actor bisa membawa nama role yang belum dikenal
-// proses ini; ia tidak ikut dihitung dalam intersection.
-func (e *Engine) Allows(roles []string, perm string) bool {
+// di catalog PADA LAPIS ASALNYA diabaikan (bukan error) — actor bisa membawa nama role yang
+// belum dikenal proses ini; ia tidak ikut dihitung dalam intersection. "Tidak terdaftar pada
+// lapis asalnya" mencakup nama tenant yang hanya dikenal katalog central: ia diabaikan, BUKAN
+// dinaikkan ke definisi central (B8).
+func (e *Engine) Allows(roles []RoleRef, perm string) bool {
 	strict := e.IsStrict(perm)
 
 	// Tally lapis non-global (scoped + tenant) untuk keputusan union/intersection.
 	nonGlobalSeen, nonGlobalGrant := 0, 0
-	for _, name := range roles {
-		role, ok := e.catalog.Lookup(name)
+	for _, ref := range roles {
+		role, ok := e.catalog.LookupRef(ref)
 		if !ok {
 			continue
 		}

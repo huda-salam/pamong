@@ -89,7 +89,8 @@ func TestAssignEmploymentToTenant_Success(t *testing.T) {
 	reg := newFakeRegistry()
 	seedTenant(t, reg, "pemkot-surabaya", true)
 	uc := usecase.NewAssignEmploymentToTenant(persons, emps, assignments, reg, pub)
-	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermAssignmentTugaskan))
+	ctx := testkit.Ctx(t, testkit.WithTenant("pemkot-surabaya"),
+		testkit.WithPermission(domain.PermAssignmentTugaskan))
 
 	a, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{
 		EmploymentID: emp.ID, TenantID: "pemkot-surabaya",
@@ -160,7 +161,8 @@ func TestAssignEmploymentToTenant_CrossTenant_ButuhPermissionEkstra(t *testing.T
 	pub := testkit.NewMockPublisher()
 	uc := usecase.NewAssignEmploymentToTenant(persons, emps, &fakeAssignments{}, newFakeRegistry(), pub)
 	// Punya permission tugaskan dasar TAPI bukan cross_tenant.
-	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermAssignmentTugaskan))
+	ctx := testkit.Ctx(t, testkit.WithTenant("pemkot-surabaya"),
+		testkit.WithPermission(domain.PermAssignmentTugaskan))
 
 	_, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{
 		EmploymentID: emp.ID, TenantID: "pemprov-jatim", CrossTenant: true,
@@ -176,7 +178,8 @@ func TestAssignEmploymentToTenant_CrossTenant_ButuhPermissionEkstra(t *testing.T
 
 func TestAssignEmploymentToTenant_EmploymentTidakAda(t *testing.T) {
 	uc := usecase.NewAssignEmploymentToTenant(newFakePersons(), newStoreEmployments(), &fakeAssignments{}, newFakeRegistry(), testkit.NewMockPublisher())
-	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermAssignmentTugaskan))
+	ctx := testkit.Ctx(t, testkit.WithTenant("pemkot-surabaya"),
+		testkit.WithPermission(domain.PermAssignmentTugaskan))
 	_, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{EmploymentID: uuid.New(), TenantID: "pemkot-surabaya"})
 	var fe *core.FrameworkError
 	if !errors.As(err, &fe) || fe.Code != "NOT_FOUND" {
@@ -200,7 +203,8 @@ func TestAssignEmploymentToTenant_EmploymentTidakAktif(t *testing.T) {
 	reg := newFakeRegistry()
 	seedTenant(t, reg, "pemkot-surabaya", true)
 	uc := usecase.NewAssignEmploymentToTenant(persons, emps, &fakeAssignments{}, reg, testkit.NewMockPublisher())
-	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermAssignmentTugaskan))
+	ctx := testkit.Ctx(t, testkit.WithTenant("pemkot-surabaya"),
+		testkit.WithPermission(domain.PermAssignmentTugaskan))
 
 	_, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{
 		EmploymentID: emp.ID, TenantID: "pemkot-surabaya",
@@ -214,7 +218,10 @@ func TestAssignEmploymentToTenant_TenantTidakDitemukan(t *testing.T) {
 	persons, emps, _, emp := seedPersonEmployment(t)
 	reg := newFakeRegistry() // kosong — tidak ada tenant terdaftar
 	uc := usecase.NewAssignEmploymentToTenant(persons, emps, &fakeAssignments{}, reg, testkit.NewMockPublisher())
-	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermAssignmentTugaskan))
+	// Tenant token = tenant tujuan: containment (ADR-019) lolos, sehingga yang diuji benar-benar
+	// registry kosong — bukan gerbang wewenang yang menolak lebih dulu.
+	ctx := testkit.Ctx(t, testkit.WithTenant("tidak-ada"),
+		testkit.WithPermission(domain.PermAssignmentTugaskan))
 
 	_, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{
 		EmploymentID: emp.ID, TenantID: "tidak-ada",
@@ -229,7 +236,8 @@ func TestAssignEmploymentToTenant_TenantTidakAktif(t *testing.T) {
 	reg := newFakeRegistry()
 	seedTenant(t, reg, "pemkot-surabaya", false) // terdaftar tapi nonaktif
 	uc := usecase.NewAssignEmploymentToTenant(persons, emps, &fakeAssignments{}, reg, testkit.NewMockPublisher())
-	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermAssignmentTugaskan))
+	ctx := testkit.Ctx(t, testkit.WithTenant("pemkot-surabaya"),
+		testkit.WithPermission(domain.PermAssignmentTugaskan))
 
 	_, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{
 		EmploymentID: emp.ID, TenantID: "pemkot-surabaya",
@@ -245,7 +253,8 @@ func TestAssignEmploymentToTenant_DuplikatAssignment(t *testing.T) {
 	seedTenant(t, reg, "pemkot-surabaya", true)
 	assignments := &fakeAssignments{}
 	uc := usecase.NewAssignEmploymentToTenant(persons, emps, assignments, reg, testkit.NewMockPublisher())
-	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermAssignmentTugaskan))
+	ctx := testkit.Ctx(t, testkit.WithTenant("pemkot-surabaya"),
+		testkit.WithPermission(domain.PermAssignmentTugaskan))
 
 	// Penugasan pertama sukses.
 	if _, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{
@@ -270,7 +279,10 @@ func TestAssignEmploymentToTenant_CrossTenant_Success(t *testing.T) {
 	assignments := &fakeAssignments{}
 	pub := testkit.NewMockPublisher()
 	uc := usecase.NewAssignEmploymentToTenant(persons, emps, assignments, reg, pub)
-	ctx := testkit.Ctx(t,
+	// Tenant token = tenant TUJUAN. Cross-tenant di sini berarti employment berasal dari
+	// instansi lain (is_home_tenant=false), bukan bahwa aktor menyebut tenant di luar
+	// wewenangnya — dua hal yang gerbangnya terpisah (ADR-019).
+	ctx := testkit.Ctx(t, testkit.WithTenant("pemprov-jatim"),
 		testkit.WithPermission(domain.PermAssignmentTugaskan),
 		testkit.WithPermission(domain.PermAssignmentCrossTenant),
 	)
@@ -289,5 +301,102 @@ func TestAssignEmploymentToTenant_CrossTenant_Success(t *testing.T) {
 	payload, ok := pub.Published()[0].Payload.(domain.EmploymentDitugaskanPayload)
 	if !ok || !payload.IsCrossTenant {
 		t.Fatalf("payload harus IsCrossTenant=true, dapat: %+v", pub.Published()[0].Payload)
+	}
+}
+
+// --- Containment aktor→target (ADR-019 / REVIEW_BACKLOG B7 butir b) ---
+
+// TestAssignEmploymentToTenant_TenantLuarWewenangDitolak: helpdesk regional yang login ke
+// pemkot-surabaya tak boleh menugaskan siapa pun ke pemkot-malang. Sebelum ADR-019 in.TenantID
+// tak pernah dibandingkan dengan wewenang aktor — scope hanya disaring saat LOGIN.
+func TestAssignEmploymentToTenant_TenantLuarWewenangDitolak(t *testing.T) {
+	persons, emps, _, emp := seedPersonEmployment(t)
+	reg := newFakeRegistry()
+	seedTenant(t, reg, "pemkot-malang", true) // tenant tujuan SAH & aktif — yang kurang wewenang
+	assignments := &fakeAssignments{}
+	pub := testkit.NewMockPublisher()
+	uc := usecase.NewAssignEmploymentToTenant(persons, emps, assignments, reg, pub)
+	ctx := testkit.Ctx(t, testkit.WithTenant("pemkot-surabaya"),
+		testkit.WithPermission(domain.PermAssignmentTugaskan))
+
+	_, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{
+		EmploymentID: emp.ID, TenantID: "pemkot-malang",
+	})
+	if !testkit.IsPermissionDenied(err) {
+		t.Fatalf("penugasan ke tenant di luar wewenang harus ditolak, dapat: %v", err)
+	}
+	if len(assignments.saved) != 0 || len(pub.Published()) != 0 {
+		t.Fatal("penolakan wewenang tak boleh menyisakan assignment maupun event")
+	}
+}
+
+// TestAssignEmploymentToTenant_TanpaTenantTokenDitolak menutup jalur fail-open yang paling
+// mudah terlewat: konteks tanpa tenant (citizen, job, konteks uji yang lupa menyetelnya) tidak
+// boleh berlaku sebagai wildcard. Justru konteks itulah yang paling tak punya dasar teritorial.
+func TestAssignEmploymentToTenant_TanpaTenantTokenDitolak(t *testing.T) {
+	persons, emps, _, emp := seedPersonEmployment(t)
+	reg := newFakeRegistry()
+	seedTenant(t, reg, "pemkot-surabaya", true)
+	uc := usecase.NewAssignEmploymentToTenant(persons, emps, &fakeAssignments{}, reg,
+		testkit.NewMockPublisher())
+	ctx := testkit.Ctx(t, testkit.WithPermission(domain.PermAssignmentTugaskan)) // tanpa tenant
+
+	_, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{
+		EmploymentID: emp.ID, TenantID: "pemkot-surabaya",
+	})
+	if !testkit.IsPermissionDenied(err) {
+		t.Fatalf("konteks tanpa tenant harus fail-closed, dapat: %v", err)
+	}
+}
+
+// TestAssignEmploymentToTenant_EskalasiDenganPintuKeluarDiizinkan: admin platform tetap bisa
+// menugaskan lintas tenant — itu memang pekerjaannya — tapi kini lewat permission tersendiri
+// yang terlihat saat audit.
+func TestAssignEmploymentToTenant_EskalasiDenganPintuKeluarDiizinkan(t *testing.T) {
+	persons, emps, _, emp := seedPersonEmployment(t)
+	reg := newFakeRegistry()
+	seedTenant(t, reg, "pemkot-malang", true)
+	assignments := &fakeAssignments{}
+	uc := usecase.NewAssignEmploymentToTenant(persons, emps, assignments, reg,
+		testkit.NewMockPublisher())
+	ctx := testkit.Ctx(t, testkit.WithTenant("pemkot-surabaya"),
+		testkit.WithPermission(domain.PermAssignmentTugaskan),
+		testkit.WithPermission(domain.PermAuthorityEscalate))
+
+	if _, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{
+		EmploymentID: emp.ID, TenantID: "pemkot-malang",
+	}); err != nil {
+		t.Fatalf("pemegang escalate harus boleh menugaskan lintas tenant, dapat: %v", err)
+	}
+	if len(assignments.saved) != 1 {
+		t.Fatalf("assignment harus tersimpan, dapat %d", len(assignments.saved))
+	}
+}
+
+// TestAssignEmploymentToTenant_AktorTanpaTenantMemegangEscalateDitolak menjaga keseragaman
+// invariant ADR-019 §6: aturan tenant pun menuntut aktor terikat tenant SEBELUM pintu keluar
+// diperiksa. Tanpa itu aturan inilah yang jadi celah — pada konteks tanpa evaluator,
+// RequirePermission permisif membuat mayEscalate mengembalikan true dan gerbang tenant lolos,
+// sementara dua aturan lain tetap fail-closed pada konteks yang sama.
+func TestAssignEmploymentToTenant_AktorTanpaTenantMemegangEscalateDitolak(t *testing.T) {
+	persons, emps, _, emp := seedPersonEmployment(t)
+	reg := newFakeRegistry()
+	seedTenant(t, reg, "pemkot-surabaya", true)
+	assignments := &fakeAssignments{}
+	pub := testkit.NewMockPublisher()
+	uc := usecase.NewAssignEmploymentToTenant(persons, emps, assignments, reg, pub)
+	// Pintu keluar DIPEGANG, tapi konteks tak terikat tenant.
+	ctx := testkit.Ctx(t,
+		testkit.WithPermission(domain.PermAssignmentTugaskan),
+		testkit.WithPermission(domain.PermAuthorityEscalate))
+
+	_, err := uc.Execute(ctx, usecase.AssignEmploymentToTenantInput{
+		EmploymentID: emp.ID, TenantID: "pemkot-surabaya",
+	})
+	if !testkit.IsPermissionDenied(err) {
+		t.Fatalf("aktor tanpa tenant harus ditolak walau memegang escalate, dapat: %v", err)
+	}
+	if len(assignments.saved) != 0 || len(pub.Published()) != 0 {
+		t.Fatal("penolakan wewenang tak boleh menyisakan assignment maupun event")
 	}
 }

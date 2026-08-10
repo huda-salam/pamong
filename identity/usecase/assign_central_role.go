@@ -48,6 +48,12 @@ func (uc *AssignCentralRole) Execute(ctx port.AuthContext, in AssignCentralRoleI
 	if err := checkScopeCoherence(role.ScopeType, in.TenantScope); err != nil {
 		return nil, err
 	}
+	// CONTAINMENT (ADR-019, B7 butir c): aktor hanya boleh memberikan wewenang yang ia sendiri
+	// pegang, pada scope yang sama. Tanpa ini "boleh menugaskan role" efektif setara dengan
+	// "boleh menjadi apa pun" — termasuk menugaskan super_admin kepada diri sendiri.
+	if err := requireRoleWithinAuthority(ctx, role, in.TenantScope); err != nil {
+		return nil, err
+	}
 
 	validFrom := in.ValidFrom
 	if validFrom.IsZero() {

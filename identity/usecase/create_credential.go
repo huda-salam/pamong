@@ -33,13 +33,16 @@ type CreateCredential struct {
 	creds     domain.CredentialRepository
 	passwords port.PasswordVerifier
 	gate      *VerifyGate
+	guard     targetAuthorityGuard
 }
 
-// NewCreateCredential merakit use case. passwords & gate WAJIB non-nil, dan keduanya ditegakkan
-// di sini karena keduanya kontrol yang menunggu pemanggil ingat memasangnya bukan kontrol:
-// tanpa passwords satu-satunya jalur tersisa adalah menyimpan kredensial tanpa secret (tampak
-// berdiri, tak pernah bisa dipakai login); tanpa gate, hashing di sini lolos dari batas
-// concurrency bcrypt yang dijaga seluruh proses.
+// NewCreateCredential merakit use case. passwords, gate, roles & assignments WAJIB non-nil, dan
+// keempatnya ditegakkan di sini karena kontrol yang menunggu pemanggil ingat memasangnya bukan
+// kontrol: tanpa passwords satu-satunya jalur tersisa adalah menyimpan kredensial tanpa secret
+// (tampak berdiri, tak pernah bisa dipakai login); tanpa gate, hashing di sini lolos dari batas
+// concurrency bcrypt yang dijaga seluruh proses; tanpa katalog role sentral + assignment-nya,
+// containment aktor→target (ADR-019) tak punya cara mengetahui wewenang target dan akan lolos
+// diam-diam — bentuk kegagalan terburuk untuk sebuah kontrol keamanan.
 //
 // gate SENGAJA gerbang yang SAMA dengan yang dipakai LoginEmployee/LoginCitizen — satu instance
 // dirakit di composition root lalu diteruskan ke ketiganya.
@@ -48,14 +51,24 @@ func NewCreateCredential(
 	creds domain.CredentialRepository,
 	passwords port.PasswordVerifier,
 	gate *VerifyGate,
+	roles domain.CentralRoleRepository,
+	assignments domain.CentralRoleAssignmentRepository,
 ) *CreateCredential {
 	switch {
 	case passwords == nil:
 		panic("identity/usecase: CreateCredential butuh port.PasswordVerifier")
 	case gate == nil:
 		panic("identity/usecase: CreateCredential butuh *VerifyGate (batas concurrency bcrypt)")
+	case roles == nil || assignments == nil:
+		panic("identity/usecase: CreateCredential butuh repo role sentral + assignment (containment ADR-019)")
 	}
-	return &CreateCredential{persons: persons, creds: creds, passwords: passwords, gate: gate}
+	return &CreateCredential{
+		persons:   persons,
+		creds:     creds,
+		passwords: passwords,
+		gate:      gate,
+		guard:     newTargetAuthorityGuard(roles, assignments),
+	}
 }
 
 // CreateCredentialInput DTO masuk. Password KOSONG sah dan berarti kredensial tanpa secret:
@@ -69,7 +82,8 @@ type CreateCredentialInput struct {
 	IsPrimary bool
 }
 
-// Execute: permission -> pastikan person ada -> validasi password -> hash -> persist.
+// Execute: permission -> pastikan person ada -> containment aktor→target -> validasi password
+// -> hash -> persist.
 //
 // Tidak ada event yang diterbitkan, dan itu disengaja: kredensial tak pernah ikut ke clone
 // tenant (gov.user_profiles sengaja tanpa kolom kredensial), jadi event-nya tak punya
@@ -83,6 +97,20 @@ func (uc *CreateCredential) Execute(ctx port.AuthContext, in CreateCredentialInp
 	// Person harus ada — kredensial menggantung pada person nyata (FK + kejelasan error),
 	// sama seperti AttachEmployment.
 	if _, err := uc.persons.FindByID(ctx, in.PersonID); err != nil {
+		return nil, err
+	}
+
+	// CONTAINMENT (ADR-019, B7 butir a — varian TERKUAT). Menerbitkan kredensial SETARA dengan
+	// menjadi target: UNIQUE-nya (cred_type, cred_value) bukan person_id, jadi kredensial
+	// TAMBAHAN untuk orang yang sudah punya tetap berhasil, dan login me-resolve murni lewat
+	// (cred_type, cred_value) → person_id. Tanpa gerbang ini, pemegang identity:credential:buat
+	// dapat login sebagai admin platform mana pun yang id person-nya ia ketahui — dan id itu
+	// terbaca di gov.user_profiles tenantnya sendiri.
+	//
+	// Diperiksa SESUDAH person di-resolve (target harus ada dulu) tapi SEBELUM bcrypt: hashing
+	// adalah operasi termahal di jalur ini, dan permintaan yang ditolak wewenang tak boleh
+	// membelinya.
+	if err := uc.guard.requirePersonWithinAuthority(ctx, in.PersonID); err != nil {
 		return nil, err
 	}
 

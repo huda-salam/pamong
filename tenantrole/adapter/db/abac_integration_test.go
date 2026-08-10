@@ -72,7 +72,9 @@ func TestABAC_UnitScope_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("catalog: %v", err)
 	}
-	eng := permission.NewScopedEngine(permission.NewEngine(tenantCat), hierarchy)
+	// Composite dengan lapis central nil: test ini murni lapis tenant (ADR-019).
+	eng := permission.NewScopedEngine(
+		permission.NewEngine(permission.NewCompositeCatalog(nil, tenantCat)), hierarchy)
 
 	authorityOf := func(user uuid.UUID) permission.Authority {
 		names, err := roleResolver.EffectiveRoles(ctx, user)
@@ -83,7 +85,11 @@ func TestABAC_UnitScope_EndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolve grants: %v", err)
 		}
-		return permission.Authority{RoleNames: names, RoleGrants: gr}
+		refs := make([]permission.RoleRef, 0, len(names))
+		for _, n := range names {
+			refs = append(refs, permission.TenantRef(n))
+		}
+		return permission.Authority{Roles: refs, RoleGrants: gr}
 	}
 	check := func(user, unit uuid.UUID, want bool, msg string) {
 		ok, err := eng.AllowsInUnit(ctx, authorityOf(user), permBaca, permission.ResourceScope{UnitKerjaID: unit})

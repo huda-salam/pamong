@@ -21,7 +21,8 @@ import (
 //   - central = snapshot proses (identity DB) — dibangun sekali saat boot, dishare semua tenant.
 //   - tenant  = snapshot per-tenant (tenant DB) — dibangun lazy per tenant_id, lalu di-cache.
 //
-// Digabung CompositeCatalog (central DIDAHULUKAN agar tenant tak men-shadow role global) lalu
+// Digabung CompositeCatalog (resolusi PER LAPIS ASAL sejak ADR-019: nama dari klaim tenant_roles
+// dicari hanya di katalog tenant, dari central_roles hanya di katalog central) lalu
 // dibungkus permission.Engine. Peran yang dipegang actor sudah di-resolve saat login dan dibawa
 // token (Claims.CentralRoles/TenantRoles); catalog hanya memetakan NAMA role → (layer, grants).
 // Karena definisi role jarang berubah (deploy / aksi admin), snapshot konsisten dengan pola
@@ -94,7 +95,10 @@ func newEvaluatorFactoryWith(central permission.RoleCatalog, build tenantCatalog
 // composite central+tenant.
 func (f *evaluatorFactory) Build(ctx context.Context, claims *port.Claims) (port.PermissionEvaluator, error) {
 	if claims.TenantID == "" {
-		return permission.NewEngine(f.central, f.strict...), nil
+		// Citizen: hanya lapis central. Composite dengan tenant nil — BUKAN katalog central
+		// telanjang — supaya ref ber-origin tenant (yang tak semestinya ada di token citizen)
+		// tetap tak ditemukan alih-alih ikut dicari di katalog central (ADR-019).
+		return permission.NewEngine(permission.NewCompositeCatalog(f.central, nil), f.strict...), nil
 	}
 	tenantCat, err := f.tenantCatalog(ctx, claims.TenantID)
 	if err != nil {

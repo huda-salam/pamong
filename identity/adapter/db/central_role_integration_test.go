@@ -55,10 +55,15 @@ func TestCentralRole_GlobalVsScoped_EndToEnd(t *testing.T) {
 	actor := seedPerson(t, pool, cr, ctx, "3500000000000001", "Admin Platform")
 	subject := seedPerson(t, pool, cr, ctx, "3578010101900001", "Budi")
 
+	// Aktor adalah admin platform: ia menugaskan role GLOBAL dan role scoped ke tenant lain,
+	// keduanya melampaui wewenang satu-tenant — jadi ia memegang pintu keluar containment
+	// (ADR-019). Kebijakannya sendiri dikunci di identity/usecase, bukan di sini.
 	actx := testkit.Ctx(t,
 		testkit.WithPersonID(actor),
+		testkit.WithTenant(tenantA),
 		testkit.WithPermission(domain.PermCentralRoleBuat),
 		testkit.WithPermission(domain.PermCentralRoleAssign),
+		testkit.WithPermission(domain.PermAuthorityEscalate),
 	)
 
 	// Role global (mis. auditor platform) -> izin baca tenant; berlaku semua tenant.
@@ -92,7 +97,9 @@ func TestCentralRole_GlobalVsScoped_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build catalog: %v", err)
 	}
-	engine := permission.NewEngine(catalog)
+	// Composite dengan lapis tenant nil: nama role dari klaim central_roles hanya boleh dicari
+	// di katalog central (ADR-019). Engine tak lagi menerima katalog satu-lapis telanjang.
+	engine := permission.NewEngine(permission.NewCompositeCatalog(catalog, nil))
 
 	// allows merangkai alur runtime: resolve role efektif utk tenant lalu evaluasi.
 	allows := func(tenantID, perm string) bool {
@@ -100,7 +107,11 @@ func TestCentralRole_GlobalVsScoped_EndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("resolve roles (%s): %v", tenantID, err)
 		}
-		return engine.Allows(roles, perm)
+		refs := make([]permission.RoleRef, 0, len(roles))
+		for _, r := range roles {
+			refs = append(refs, permission.CentralRef(r))
+		}
+		return engine.Allows(refs, perm)
 	}
 
 	// Global: izin baca berlaku di kedua tenant.
@@ -137,10 +148,15 @@ func TestCentralRole_Audited(t *testing.T) {
 
 	actor := seedPerson(t, pool, cr, ctx, "3500000000000001", "Admin Platform")
 	subject := seedPerson(t, pool, cr, ctx, "3578010101900001", "Budi")
+	// Aktor adalah admin platform: ia menugaskan role GLOBAL dan role scoped ke tenant lain,
+	// keduanya melampaui wewenang satu-tenant — jadi ia memegang pintu keluar containment
+	// (ADR-019). Kebijakannya sendiri dikunci di identity/usecase, bukan di sini.
 	actx := testkit.Ctx(t,
 		testkit.WithPersonID(actor),
+		testkit.WithTenant(tenantA),
 		testkit.WithPermission(domain.PermCentralRoleBuat),
 		testkit.WithPermission(domain.PermCentralRoleAssign),
+		testkit.WithPermission(domain.PermAuthorityEscalate),
 	)
 
 	role, err := usecase.NewCreateCentralRole(roleRepo).Execute(actx, usecase.CreateCentralRoleInput{

@@ -115,18 +115,23 @@ func TestTenantRole_Resolution_EndToEnd(t *testing.T) {
 	}
 
 	// DoD: role tenant berlaku — izin baca (union dari kedua role) & buat (dari operator).
-	if !engine.Allows(tenantRoles, permBaca) {
+	tenantRefs := make([]permission.RoleRef, 0, len(tenantRoles))
+	for _, r := range tenantRoles {
+		tenantRefs = append(tenantRefs, permission.TenantRef(r))
+	}
+	if !engine.Allows(tenantRefs, permBaca) {
 		t.Error("role tenant harus memberi izin baca di tenant-nya")
 	}
-	if !engine.Allows(tenantRoles, permBuat) {
+	if !engine.Allows(tenantRefs, permBuat) {
 		t.Error("non-strict harus union: izin buat dari operator_surat")
 	}
 	// DoD: strict ditegakkan — operator_surat tak memberi permStrict → intersection gagal.
-	if engine.Allows(tenantRoles, permStrict) {
+	if engine.Allows(tenantRefs, permStrict) {
 		t.Error("strict: role tenant yang tak sepakat harus memblokir (intersection)")
 	}
 	// DoD: global menang — role global (central) mengizinkan permStrict yang sama.
-	withGlobal := append(append([]string{}, tenantRoles...), "super_admin")
+	// "super_admin" datang dari klaim central_roles — lapis asalnya ikut dibawa (ADR-019).
+	withGlobal := append(append([]permission.RoleRef{}, tenantRefs...), permission.CentralRef("super_admin"))
 	if !engine.Allows(withGlobal, permStrict) {
 		t.Error("role global (central) harus menang atas strict-deny role tenant")
 	}

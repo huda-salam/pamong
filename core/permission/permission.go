@@ -7,6 +7,8 @@
 // tetap scope-agnostik (titik ekstensi #1). Export/import manifest = 2.3.4 (lihat PRD & ROADMAP).
 package permission
 
+import "github.com/huda-salam/pamong/port"
+
 // Permission adalah string izin berformat {modul}:{entity}:{aksi},
 // mis. "surat_masuk:surat:buat". Selalu dirujuk lewat konstanta (CODE_CONVENTION #8).
 // Alias string agar interoperabel dengan gateway.Context yang membawa string mentah.
@@ -32,3 +34,25 @@ type Role struct {
 	Layer       Layer
 	Permissions []Permission
 }
+
+// RoleRef & RoleOrigin di-alias dari port agar tak ada konversi di batas layer: masukan
+// evaluasi datang dari gateway.Context (yang hanya kenal port) dan berakhir di Engine di sini.
+// Bedanya dengan Layer: RoleOrigin = klaim asal nama (tenant vs central), Layer = properti
+// definisi yang ditemukan katalog. Pemetaan origin→katalog dikurung di CompositeCatalog.
+type (
+	RoleRef    = port.RoleRef
+	RoleOrigin = port.RoleOrigin
+)
+
+const (
+	// OriginTenant — nama role datang dari klaim tenant_roles.
+	OriginTenant = port.RoleOriginTenant
+	// OriginCentral — nama role datang dari klaim central_roles.
+	OriginCentral = port.RoleOriginCentral
+)
+
+// TenantRef & CentralRef adalah konstruktor ringkas RoleRef; dipakai luas di test dan di
+// jalur bangun klaim agar origin tak pernah lupa diisi (zero value RoleOrigin = tenant,
+// yaitu lapis paling TIDAK berwenang — default yang gagal aman).
+func TenantRef(name string) RoleRef  { return RoleRef{Origin: OriginTenant, Name: name} }
+func CentralRef(name string) RoleRef { return RoleRef{Origin: OriginCentral, Name: name} }

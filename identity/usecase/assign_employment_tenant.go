@@ -15,6 +15,11 @@ import (
 // Cross-tenant (is_home_tenant=false, mis. PJ Bupati/PLT): butuh permission tambahan
 // identity:assignment:cross_tenant + validasi bisnis penuh (tenant aktif, employment
 // aktif, anti-duplikat) yang dilengkapi PR-2.4.5.
+//
+// "Cross-tenant" di sini adalah sifat PENUGASAN (employment di luar instansi asalnya), BUKAN
+// izin menyebut tenant sembarangan: tenant tujuan tetap harus berada dalam wewenang aktor
+// (requireTenantWithinAuthority, ADR-019). Kedua gerbang itu menjawab pertanyaan berbeda —
+// yang satu tentang TARGET penugasan, yang lain tentang AKTOR.
 type AssignEmploymentToTenant struct {
 	persons     domain.PersonRepository
 	employments domain.EmploymentRepository
@@ -55,6 +60,15 @@ func (uc *AssignEmploymentToTenant) Execute(ctx port.AuthContext, in AssignEmplo
 		if err := ctx.RequirePermission(domain.PermAssignmentCrossTenant); err != nil {
 			return nil, err
 		}
+	}
+
+	// CONTAINMENT (ADR-019, B7 butir b): tenant tujuan harus tenant token aktor. Tanpa ini,
+	// pemegang identity:assignment:tugaskan dari central role SCOPED (mis. helpdesk regional
+	// Jatim) bisa menugaskan siapa pun ke tenant DI LUAR scope-nya — in.TenantID tak pernah
+	// dibandingkan dengan wewenang aktor. Diperiksa SEBELUM I/O apa pun: penolakan wewenang
+	// tak perlu membeli query.
+	if err := requireTenantWithinAuthority(ctx, in.TenantID); err != nil {
+		return nil, err
 	}
 
 	emp, err := uc.employments.FindByID(ctx, in.EmploymentID)

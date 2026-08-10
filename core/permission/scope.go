@@ -34,15 +34,16 @@ type Grant struct {
 // dibangun langsung oleh test (test berperan sebagai middleware).
 //
 // Tiga komponen sengaja dipisah karena perannya beda di evaluasi data-level:
-//   - RoleNames      → masukan Tahap 1 (RBAC) lewat Engine.Allows; mempertahankan resolusi
-//     strict-intersection & global-precedence 2.3.3 (butuh SEMUA nama role, termasuk yang TAK
-//     memberi perm, untuk hitung intersection).
+//   - Roles          → masukan Tahap 1 (RBAC) lewat Engine.Allows; mempertahankan resolusi
+//     strict-intersection & global-precedence 2.3.3 (butuh SEMUA role, termasuk yang TAK
+//     memberi perm, untuk hitung intersection). Berisi RoleRef (nama + LAPIS ASAL), bukan nama
+//     telanjang — lihat ADR-019/B8.
 //   - RoleGrants     → jangkauan unit dari assignment role (Tahap 2). Union antar grant.
 //   - DelegatedGrants→ pelimpahan eksplisit dari delegasi aktif. Mandiri: tak tunduk pada
 //     strict-intersection role (delegator sudah berwenang saat melimpahkan), sehingga delegatee
 //     bisa memegang perm yang tak ada di role-nya sendiri.
 type Authority struct {
-	RoleNames       []string
+	Roles           []RoleRef
 	RoleGrants      []Grant
 	DelegatedGrants []Grant
 }

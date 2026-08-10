@@ -41,7 +41,8 @@ Sudah ada (PR-2.3.3 — resolusi konflik PENUH + lapis tenant):
   perm biasa=union, perm strict=intersection (semua role non-global harus memberi). Layer
   dibaca dari catalog → kontrak Engine & port tetap utuh.
 - composite.go — CompositeCatalog: gabung lapis central (snapshot proses) + tenant (snapshot
-  per-tenant); Lookup mencoba berurutan, central didahulukan (cegah tenant shadow role global).
+  per-tenant). **Sejak PR-W3a/ADR-019 resolusi dikurung PER LAPIS ASAL** (LookupRef atas
+  port.RoleRef), bukan lagi "coba berurutan atas nama telanjang" — lihat di bawah.
 - catalog DB tenant + resolver hidup di `tenantrole/adapter/db` (paket top-level baru, BUKAN
   identity — data di tenant DB schema gov, dikelola admin tenant): TenantRoleCatalog (snapshot,
   Lookup tanpa I/O) + TenantRoleResolver (EffectiveRoles per-user; isolasi per-tenant struktural
@@ -55,9 +56,22 @@ Sudah ada (PR-2.3.2 — central roles persist di identity DB):
   Engine TETAP tenant-agnostic: scope di-resolve di luar Engine. Resolusi konflik penuh
   (global-precedence + strict-intersection) tetap menyusul 2.3.3 (saat lapis tenant juga di-DB-kan).
 
+Sudah ada (PR-W3a — provenance role, ADR-019, menutup REVIEW_BACKLOG B8):
+- port/permission.go — `RoleOrigin` + `RoleRef{Origin,Name}`. Masukan `PermissionEvaluator.Allows`
+  kini ref, BUKAN nama telanjang: nama dari klaim `tenant_roles` dicari HANYA di katalog tenant,
+  dari `central_roles` HANYA di katalog central. Nama yang sama di dua lapis = DUA role berbeda.
+- catalog.go — `RefCatalog` (LookupRef) di samping `RoleCatalog` (Lookup satu-lapis, tetap
+  kontrak tiap adapter katalog). `MemoryCatalog.LookupRef` mencocokkan origin terhadap Layer.
+- composite.go — `NewCompositeCatalog(central, tenant)`; Layer hasil DIJEPIT ke lapis asal.
+  Ia SENGAJA tak lagi mengimplementasi `RoleCatalog` dan tak lagi variadic — kompilasi yang
+  mencegah jalur lookup nama telanjang dipanggil ulang tanpa terlihat.
+- Kenapa: role TENANT bernama persis seperti role SENTRAL dulu me-resolve ke definisi sentral,
+  mewarisi permission-nya SEKALIGUS LayerGlobal — sehingga B6 (reservasi namespace `identity:`)
+  bisa dilewati tanpa menyebut `identity:` sama sekali.
+
 Sudah ada (PR-2.3.5 — ABAC data-level + hierarki OPD + delegasi/PLT):
 - scope.go — ResourceScope (unit kerja; tahun/periode = DEFERRED Phase-3.x), Grant (perm +
-  jangkauan: TenantWide / unit / subtree), Authority (RoleNames untuk Tahap 1 RBAC +
+  jangkauan: TenantWide / unit / subtree), Authority (Roles []RoleRef untuk Tahap 1 RBAC +
   RoleGrants + DelegatedGrants untuk Tahap 2 scope), port Hierarchy (IsWithin subtree OPD).
 - scoped_engine.go — ScopedEngine.AllowsInUnit = (Engine.Allows RBAC, UTUH, AND jangkauan
   RoleGrants menutupi unit) OR (jangkauan DelegatedGrants menutupi unit). Delegasi = jalur
@@ -74,7 +88,7 @@ Sudah ada (PR-2.3.5 — ABAC data-level + hierarki OPD + delegasi/PLT):
 Menyusul (belum ada — rencana per ROADMAP):
 - registrasi permission dari manifest + export/import antar modul — SUDAH di 2.3.4 (lihat
   core/domain/registry.go + linter permission-must-be-registered)
-- wiring Authority live + emitter central-role→Grant (TenantWide) di middleware auth (2.4)
+- wiring Authority live + emitter central-role→Grant (TenantWide) di middleware auth (PR-W3b)
 - ABAC atribut tahun anggaran/periode (Phase-3.x)
 
 Catatan resolusi: prioritas "global menang" & strict-intersection (F7 PRD) AKTIF sejak
@@ -90,6 +104,11 @@ strict-intersection.
 - Delegasi punya valid_from/valid_until; kedaluwarsa = otomatis tidak berlaku.
 
 ## Pitfall umum
+- **Menambah RoleCatalog baru tanpa jalur LookupRef yang menghormati origin.** Katalog yang
+  mengabaikannya membuka ulang B8 di satu lapis saja, tanpa satu pun gejala — lihat
+  `MemoryCatalog.LookupRef` sebagai acuan.
+- **Meratakan role jadi `[]string` di jalur baru** (mis. "supaya gampang di-log/di-cache").
+  Di situlah lapis asal hilang, dan sesudahnya katalog hanya bisa menebak (ADR-019).
 - Mengasumsikan satu user = satu role. User bisa banyak role + central role bersamaan.
 - Lupa cek scope: punya permission "baca SPM" tidak berarti bisa baca SPM semua unit.
 - Delegasi tanpa batas waktu. Selalu ada masa berlaku.

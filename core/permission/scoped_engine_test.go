@@ -55,7 +55,7 @@ func TestAllowsInUnit_TenantWide(t *testing.T) {
 	eng := newScopedEngine(fakeHierarchy{})
 	bpkad, dinas := uuid.New(), uuid.New()
 	auth := permission.Authority{
-		RoleNames:  []string{"operator"},
+		Roles:      tr("operator"),
 		RoleGrants: []permission.Grant{{Permission: permSuratBaca, TenantWide: true}},
 	}
 	mustAllow(t, eng, auth, permSuratBaca, bpkad, true)
@@ -67,7 +67,7 @@ func TestAllowsInUnit_UnitMatch(t *testing.T) {
 	eng := newScopedEngine(fakeHierarchy{})
 	bpkad, dinkes := uuid.New(), uuid.New()
 	auth := permission.Authority{
-		RoleNames:  []string{"operator"},
+		Roles:      tr("operator"),
 		RoleGrants: []permission.Grant{{Permission: permSuratBaca, UnitKerjaID: bpkad}},
 	}
 	mustAllow(t, eng, auth, permSuratBaca, bpkad, true)
@@ -81,14 +81,14 @@ func TestAllowsInUnit_Subtree(t *testing.T) {
 	eng := newScopedEngine(tree)
 
 	withSubtree := permission.Authority{
-		RoleNames:  []string{"operator"},
+		Roles:      tr("operator"),
 		RoleGrants: []permission.Grant{{Permission: permSuratBaca, UnitKerjaID: dinas, Subtree: true}},
 	}
 	mustAllow(t, eng, withSubtree, permSuratBaca, bidang, true) // keturunan
 	mustAllow(t, eng, withSubtree, permSuratBaca, dinas, true)  // diri sendiri
 
 	noSubtree := permission.Authority{
-		RoleNames:  []string{"operator"},
+		Roles:      tr("operator"),
 		RoleGrants: []permission.Grant{{Permission: permSuratBaca, UnitKerjaID: dinas, Subtree: false}},
 	}
 	mustAllow(t, eng, noSubtree, permSuratBaca, bidang, false) // tak mewaris ke bawah
@@ -99,7 +99,7 @@ func TestAllowsInUnit_RBACGate(t *testing.T) {
 	eng := newScopedEngine(fakeHierarchy{})
 	bpkad := uuid.New()
 	auth := permission.Authority{
-		RoleNames:  nil, // tak ada role → Engine.Allows false
+		Roles:      nil, // tak ada role → Engine.Allows false
 		RoleGrants: []permission.Grant{{Permission: permSuratBaca, TenantWide: true}},
 	}
 	mustAllow(t, eng, auth, permSuratBaca, bpkad, false)
@@ -110,7 +110,7 @@ func TestAllowsInUnit_StrictDeny(t *testing.T) {
 	eng := newScopedEngine(fakeHierarchy{}, permSpmStrict)
 	bpkad := uuid.New()
 	auth := permission.Authority{
-		RoleNames: []string{"operator", "verifikator"}, // operator TAK memberi spm-strict
+		Roles: tr("operator", "verifikator"), // operator TAK memberi spm-strict
 		RoleGrants: []permission.Grant{
 			{Permission: permSpmStrict, TenantWide: true}, // dari verifikator
 		},
@@ -123,7 +123,7 @@ func TestAllowsInUnit_GlobalBypass(t *testing.T) {
 	eng := newScopedEngine(fakeHierarchy{}, permSpmStrict)
 	bpkad := uuid.New()
 	auth := permission.Authority{
-		RoleNames:  []string{"operator", "super_admin"},
+		Roles:      join(tr("operator"), cr("super_admin")),
 		RoleGrants: []permission.Grant{{Permission: permSpmStrict, TenantWide: true}},
 	}
 	mustAllow(t, eng, auth, permSpmStrict, bpkad, true)
@@ -135,7 +135,7 @@ func TestAllowsInUnit_DelegatedGrant(t *testing.T) {
 	eng := newScopedEngine(fakeHierarchy{})
 	bpkad, dinkes := uuid.New(), uuid.New()
 	auth := permission.Authority{
-		RoleNames:       nil, // tak punya role apa pun
+		Roles:           nil, // tak punya role apa pun
 		DelegatedGrants: []permission.Grant{{Permission: permSuratBaca, UnitKerjaID: bpkad}},
 	}
 	mustAllow(t, eng, auth, permSuratBaca, bpkad, true)
