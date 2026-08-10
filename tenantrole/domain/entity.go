@@ -7,10 +7,34 @@ package domain
 
 import (
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// reservedPermissionPrefix adalah namespace permission yang HANYA boleh diberikan lapis SENTRAL
+// (id.central_roles), tak pernah oleh role tenant.
+//
+// Alasannya bukan kerapian namespace melainkan penutupan jalur ESKALASI. core/permission.Engine
+// menggabungkan grant lintas lapis secara UNION (satu role non-global yang memberi permission
+// sudah cukup), dan nama role tenant yang dipegang seseorang ikut ke klaim token yang sama dengan
+// role sentralnya. Tanpa pagar ini, admin tenant yang memegang `iam:tenant_role:buat` dapat
+// membuat role tenant berisi `identity:credential:buat`, menugaskannya ke dirinya sendiri, lalu
+// menerbitkan kredensial ber-password pilihannya untuk person MANA PUN yang id-nya ia ketahui —
+// termasuk admin platform yang ter-clone ke tenantnya — dan login sebagai orang itu. Satu tenant
+// karena itu dapat mengambil alih seluruh platform.
+//
+// Kelemahan ini DORMAN sampai PR-W2: sebelum ada permukaan HTTP-nya, tak ada permission
+// `identity:*` yang bisa dieksekusi siapa pun. Memasang `/admin/identity/*` tanpa pagar ini
+// berarti mempromosikan kelemahan dorman menjadi permukaan serang nyata — pola yang sama dengan
+// proteksi brute-force yang ikut dibayar PR-W1 saat `/auth/login` dipasang.
+//
+// Ditegakkan di DOMAIN (pintu masuk definisi role), bukan di titik evaluasi: Engine sengaja
+// scope-agnostik dan tak tahu lapis mana yang "berhak" atas sebuah string, sementara di sini
+// aturannya bisa dinyatakan sekali dan berlaku untuk setiap penulis role tenant — sekarang dan
+// nanti. Permission tenant yang sah (`iam:`, `customization:`, modul bisnis) tak tersentuh.
+const reservedPermissionPrefix = "identity:"
 
 // tenantRoleNameRe: snake_case bebas sesuai kebutuhan OPD (CLAUDE.md), mis.
 // "bendahara_pengeluaran", "ppk_opd", "verifikator_keuangan".
@@ -29,13 +53,19 @@ type TenantRole struct {
 	CreatedAt   time.Time
 }
 
-// Validate memeriksa invariant role tenant tanpa I/O.
+// Validate memeriksa invariant role tenant tanpa I/O — termasuk pagar namespace `identity:`
+// (lihat reservedPermissionPrefix), yang menutup jalur eskalasi tenant → platform.
 func (r *TenantRole) Validate() error {
 	if !tenantRoleNameRe.MatchString(r.Name) {
 		return ErrTenantRoleNameInvalid
 	}
 	if r.Label == "" {
 		return ErrTenantRoleLabelKosong
+	}
+	for _, p := range r.Permissions {
+		if strings.HasPrefix(p, reservedPermissionPrefix) {
+			return ErrPermissionTerlarangTenant
+		}
 	}
 	return nil
 }

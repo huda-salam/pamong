@@ -10,4 +10,9 @@ var (
 	ErrUserIDKosong          = core.ErrValidation("user_id", "tidak boleh kosong")
 	ErrRoleIDKosong          = core.ErrValidation("role_id", "tidak boleh kosong")
 	ErrAssignedByKosong      = core.ErrValidation("assigned_by", "tidak boleh kosong")
+
+	// Pagar namespace: permission `identity:*` milik lapis SENTRAL. Pesannya menyebut aturan,
+	// bukan sekadar "ditolak", karena admin tenant yang menemuinya perlu tahu ke mana meminta.
+	ErrPermissionTerlarangTenant = core.ErrValidation("permissions",
+		"permission ber-namespace 'identity:' hanya bisa diberikan lewat role sentral (admin platform)")
 )

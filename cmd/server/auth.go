@@ -31,6 +31,10 @@ import (
 //   - **`cryptoSvc` yang sama dengan sisa proses.** Pengenal identity tersimpan `_enc`+`_bidx`
 //     ber-realm SENTRAL (ADR-017); repo yang dirakit tanpa CryptoPort menolak berdiri, dan yang
 //     dirakit dengan realm keliru tidak gagal — ia hanya tak pernah menemukan siapa pun.
+//   - **`verifyGate` DITERIMA, bukan dibuat di sini.** Ia membatasi concurrency bcrypt untuk
+//     SELURUH proses, jadi ia dirakit sekali di run() dan dibagi dengan permukaan bcrypt lain
+//     (kini juga `CreateCredential` di wireAdminIdentity). Gerbang per fungsi wiring akan
+//     melipatgandakan batas yang justru ingin ditegakkan.
 //   - **`limiter` yang sama dengan middleware rate limit.** Key-nya ber-namespace berbeda
 //     ("login:", "otp:", "rl:req:"), jadi berbagi store aman dan justru diinginkan: satu tempat
 //     untuk ditukar ke Redis saat multi-instance (titik ekstensi #1).
@@ -42,6 +46,7 @@ func wireAuth(
 	limiter port.RateLimiter,
 	logger port.Logger,
 	msgCfg config.MessagingConfig,
+	verifyGate *usecase.VerifyGate,
 ) (*identityhttp.Handler, error) {
 	creds, err := identitydb.NewCredentialRepo(identityPool, cryptoSvc)
 	if err != nil {
@@ -69,9 +74,6 @@ func wireAuth(
 	}
 
 	loginPolicy := usecase.DefaultLoginPolicy()
-	// SATU gerbang untuk kedua permukaan login: ia membatasi concurrency bcrypt proses ini, dan
-	// gerbang terpisah per use case akan melipatgandakan batas yang justru ingin ditegakkan.
-	verifyGate := usecase.NewVerifyGate(0, 0) // 0,0 = GOMAXPROCS slot, tunggu 2s
 	otpPolicy := usecase.DefaultOTPPolicy()
 	otps := identitydb.NewOTPRepo(identityPool)
 	otpCodec := identityauth.NewOTPCodec()

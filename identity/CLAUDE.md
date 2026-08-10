@@ -30,11 +30,17 @@ setiap perubahan butuh review ekstra (lihat aturan PR).
 
 ## File kunci
 - domain/ — person, employment, credential, central role, assignment + ports
-- usecase/ — create person, attach employment, assign role, cross-tenant assign, login
+- usecase/ — create person, attach employment, **create credential** (`create_credential.go`,
+  jalur TULIS password satu-satunya), assign role, cross-tenant assign, login
   (`password_auth.go` = verifikasi kredensial + proteksi brute-force, dipakai employee & citizen)
-- adapter/ — http (endpoint auth: /auth/login, /auth/select-tenant, /auth/public/{login,otp/*}),
-  db (identity DB). Pemasangan rutenya di `cmd/server.mountAuthRoutes` — grup ini di LUAR
-  RequireAuth (login itu pra-otentikasi), kecuali select-tenant.
+- adapter/ — http: DUA grup dengan pemasangan BERLAWANAN.
+  * `handler.go` (auth: /auth/login, /auth/select-tenant, /auth/public/{login,otp/*}) dipasang
+    lewat `cmd/server.mountAuthRoutes` di TOP MUX, di LUAR RequireAuth (login itu
+    pra-otentikasi), kecuali select-tenant.
+  * `admin_handler.go` (PR-W2: /admin/identity/{persons,employments,credentials,assignments,
+    central-role-assignments}) dipasang lewat `cmd/server.mountAdminIdentityRoutes` ke ROUTER
+    BISNIS, jadi ia mewarisi stack lengkap termasuk RequireAuth. Seluruhnya mutasi identitas.
+- adapter/db — repo identity DB (+ dekorator audit; grup admin memakai yang ber-audit).
 - sync/ — clone engine (subscribe event, tulis ke tenant DB)
 
 ## Konvensi khusus
@@ -118,6 +124,22 @@ Kolom plaintext-nya **tidak ada** — bukan sekadar berhenti diisi.
   me-resolve dengan sukses bisa tetap ditolak transport di hilir — perbedaan respons itulah
   yang menjadi orakel. Pakai nilai hasil dekripsi (`cred.CredValue`).
 
+## Sentinel SYSTEM actor (PR-W2)
+
+`domain.SystemActorID` = `00000000-0000-0000-0000-000000000001`, satu baris NYATA di `id.persons`
+yang diseed migrasi `010_seed_system_actor`. Ia ada karena `assigned_by` pada
+`id.tenant_assignments` & `id.central_role_assignments` NOT NULL ber-FK ke `id.persons` — aturan
+yang benar, tapi yang membuat penugasan PERTAMA mustahil (admin pertama tak punya siapa pun yang
+bisa menugaskannya). Melonggarkan FK menghapus ketelusuran SELURUH baris demi satu baris pertama.
+
+- **`nik_enc`/`nik_bidx`-nya bytea ZERO-LENGTH, bukan NULL** (kolomnya NOT NULL; migrasi tak punya
+  KeyProvider). Ketiga sifatnya diandalkan: `FieldSealer.Open` memetakan kolom kosong → string
+  kosong sehingga `FindByID` tak error; `FindByNIK("")` **tidak** menemukannya karena bidx dari
+  `""` adalah HMAC, bukan bytes kosong; `Person.Validate` menolak NIK kosong sehingga sentinel tak
+  bisa dibuat ulang/ditimpa lewat `PersonRepo.Save` — penulisnya hanya migrasi.
+- **Ia AKTOR, bukan kredensial.** Tak punya credential, tak bisa login, tak pernah jadi subjek
+  permission. Jangan memberinya role atau memakainya sebagai `PersonID()` konteks.
+
 ## Pitfall umum
 - Memodelkan user_type sebagai properti person (SALAH). Yang ada: employment (opsional)
   + persona (konteks login).
@@ -163,6 +185,40 @@ Kolom plaintext-nya **tidak ada** — bukan sekadar berhenti diisi.
   terdaftar; sekarang tidak. `"victim@x.id\n"` me-resolve ke kredensial nyata lalu ditolak SMTP
   sebagai header injection (500), sedangkan alamat asing menjawab 200 — satu probe per target,
   dan probe-nya sekalian menimpa OTP korban yang sedang berjalan.
+- **Menaruh rute `/admin/identity/*` di top mux meniru `/auth/*`.** Pemasangan kedua grup itu
+  BERLAWANAN dan alasannya berlawanan: login pra-otentikasi, administrasi identitas justru
+  permukaan mutasi paling sensitif. Gerbang `RequirePermission` di handler TIDAK menutup
+  kekeliruan ini — pada request anonim `gateway.Context` tak punya evaluator, dan tanpa evaluator
+  `RequirePermission` bersifat PERMISIF. Jadi rute yang lolos RequireAuth juga lolos permission,
+  dan `POST /admin/identity/assignments` menjadi cara siapa pun menugaskan dirinya ke tenant mana
+  pun. Dikunci `cmd/server/admin_identity_routes_test.go`.
+- **Menambah permission `identity:*` ke role TENANT** (atau melonggarkan pagarnya di
+  `tenantrole/domain.reservedPermissionPrefix`). `permission.Engine` menggabungkan grant lintas
+  lapis secara UNION, jadi satu role tenant yang memberi `identity:credential:buat` cukup untuk
+  membuat admin tenant menerbitkan kredensial bagi person mana pun yang id-nya ia ketahui —
+  termasuk admin platform yang ter-clone ke tenantnya — lalu login sebagai orang itu. Permission
+  identity HANYA lewat role sentral (REVIEW_BACKLOG B6).
+- **Mengira `CreateCredential` aman karena ber-permission.** Ia menerima `person_id` MANA PUN, dan
+  UNIQUE-nya `(cred_type, cred_value)` — bukan `person_id` — jadi kredensial TAMBAHAN untuk orang
+  yang sudah punya kredensial tetap berhasil. Karena login me-resolve murni lewat
+  `(cred_type, cred_value) → person_id`, menerbitkan kredensial SETARA dengan menjadi target.
+  Jangan menambah pemanggil baru (CLI, importer, workflow action) tanpa membaca REVIEW_BACKLOG
+  **B7** lebih dulu.
+- **Merakit `CreateCredential` tanpa `VerifyGate` bersama.** Alasannya identik dengan jalur login:
+  bcrypt terikat CPU dan gerbang per permukaan melipatgandakan batas yang ingin ditegakkan. Rute
+  admin memang ber-token, tapi rate limit gateway per-principal ada di orde ratusan rps.
+- **Menghitung hash password sendiri di jalur tulis** alih-alih memintanya ke
+  `port.PasswordVerifier.Hash`. Cost bcrypt akan menyimpang dari sisi verifikasi begitu salah
+  satunya dinaikkan, dan kredensial baru diam-diam menjadi lebih murah dipecahkan daripada yang
+  lama. Alasan yang sama dengan larangan menulis hash tiruan sebagai konstanta (butir
+  `newPasswordAuthenticator` di atas).
+- **Memasukkan `secret_hash` ke diff audit.** Hash bcrypt bisa di-crack offline, jadi kompromi
+  satu tabel audit menjadi kompromi seluruh password — sementara nilainya tak menjawab pertanyaan
+  yang audit ada untuk menjawabnya ("siapa membuat kredensial ini, kapan, untuk siapa").
+  Menyegelnya pun bukan jawaban: ia tak pernah perlu dibaca lagi. Lihat `credentialFields`.
+- **Memantulkan pengenal kembali di badan respons endpoint admin.** Respons mengalir ke log
+  akses, proxy, dan cache idempotency — jalur samping yang sama yang ditutup ADR-009 §6. Pemanggil
+  sudah tahu nilai yang ia kirim; yang belum ia tahu hanyalah id.
 - Menuliskan literal `"central"`/`"_central"` alih-alih `crypto.RealmCentral`. Partisi chain
   audit dan realm kunci HARUS nilai yang sama: `audit.Reader` membangun `RowRef.TenantID` dari
   `entry.TenantID` untuk membuka diff.

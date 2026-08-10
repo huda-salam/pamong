@@ -151,6 +151,60 @@ func employmentFields(e *domain.Employment) map[string]any {
 	}
 }
 
+// --- Credential ---
+
+type auditedCredentialRepo struct {
+	inner  domain.CredentialRepository
+	engine *audit.Engine
+	crypto port.CryptoPort
+}
+
+// NewAuditedCredentialRepo membungkus CredentialRepository dengan pencatatan audit. Membuat
+// kredensial = memberi seseorang CARA MASUK; itu mutasi identitas sensitif (ADR-003).
+// CryptoPort WAJIB: diff memuat cred_value (NIP/NIK/email/no HP), yang kelasnya personal_id.
+func NewAuditedCredentialRepo(inner domain.CredentialRepository, engine *audit.Engine, c port.CryptoPort) (domain.CredentialRepository, error) {
+	if err := requireCrypto(c, "NewAuditedCredentialRepo"); err != nil {
+		return nil, err
+	}
+	return &auditedCredentialRepo{inner: inner, engine: engine, crypto: c}, nil
+}
+
+func (r *auditedCredentialRepo) Save(ctx context.Context, c *domain.Credential) error {
+	if err := r.inner.Save(ctx, c); err != nil {
+		return err
+	}
+	after := credentialFields(c)
+	// Purpose diturunkan dari cred_type, sama seperti kolomnya (ADR-017 §4) — bukan satu
+	// purpose "cred_value" untuk semua tipe. Daftar spec karena itu dibangun per-baris,
+	// tak bisa menjadi var paket seperti person/employment.
+	sealIdentityDiff(ctx, r.crypto,
+		[]infradb.FieldCryptoSpec{{Column: "cred_value", Purpose: purposeOfCredType(c.CredType)}},
+		c.ID, nil, after)
+	return recordAudit(ctx, r.engine, "identity.Credential", c.ID, audit.ActionCreate, nil, after)
+}
+
+func (r *auditedCredentialRepo) FindByTypeValue(ctx context.Context, t domain.CredType, v string) (*domain.Credential, error) {
+	return r.inner.FindByTypeValue(ctx, t, v)
+}
+
+func (r *auditedCredentialRepo) ListByPerson(ctx context.Context, personID uuid.UUID) ([]*domain.Credential, error) {
+	return r.inner.ListByPerson(ctx, personID)
+}
+
+// credentialFields adalah snapshot diff kredensial. `secret_hash` SENGAJA tidak ikut, dan itu
+// bukan kelalaian: hash bcrypt adalah bahan yang bisa di-crack offline, jadi menyalinnya ke
+// id.audit_logs berarti kompromi satu tabel audit = kompromi seluruh password. Ia juga tak
+// menjawab pertanyaan yang audit ada untuk menjawabnya ("siapa membuat kredensial ini, kapan,
+// untuk siapa"). Menyegelnya pun bukan jawaban: nilainya tak pernah perlu dibaca lagi.
+func credentialFields(c *domain.Credential) map[string]any {
+	return map[string]any{
+		"person_id":  c.PersonID,
+		"cred_type":  string(c.CredType),
+		"cred_value": c.CredValue,
+		"is_primary": c.IsPrimary,
+	}
+}
+
 // --- Tenant registry ---
 
 type auditedTenantRepo struct {

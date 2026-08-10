@@ -17,6 +17,7 @@ Modul sentral. Konstanta di `identity/domain/permissions.go`.
 |---|---|---|
 | `identity:person:buat` | CreatePerson | Buat master person (anchor NIK) |
 | `identity:employment:lampir` | AttachEmployment | Lampirkan employment (NIP untuk ASN) |
+| `identity:credential:buat` | CreateCredential | Buat kredensial login (jalur tulis password satu-satunya) — PR-W2 |
 | `identity:tenant:daftar` | RegisterTenant | Daftarkan tenant ke registry |
 | `identity:tenant:baca` | ListTenants | Lihat tenant |
 | `identity:tenant:nonaktif` | DeactivateTenant | Nonaktifkan tenant |
@@ -24,6 +25,32 @@ Modul sentral. Konstanta di `identity/domain/permissions.go`.
 | `identity:assignment:cross_tenant` | AssignEmploymentToTenant | Tambahan wajib bila penugasan cross-tenant (PJ/PLT) |
 | `identity:central_role:buat` | CreateCentralRole | Buat role sentral (global/scoped) + grant — admin platform (PR-2.3.2) |
 | `identity:central_role:assign` | AssignCentralRole | Tugaskan role sentral ke person — admin platform (PR-2.3.2) |
+
+Permukaan HTTP-nya (PR-W2) adalah grup `/admin/identity/*`, seluruhnya POST dan seluruhnya di
+balik `RequireAuth` (berbeda dari `/auth/*` yang sengaja pra-otentikasi):
+
+| Rute | Permission |
+|---|---|
+| `POST /admin/identity/persons` | `identity:person:buat` |
+| `POST /admin/identity/employments` | `identity:employment:lampir` |
+| `POST /admin/identity/credentials` | `identity:credential:buat` |
+| `POST /admin/identity/assignments` | `identity:assignment:tugaskan` (+ `identity:assignment:cross_tenant` bila `cross_tenant: true`) |
+| `POST /admin/identity/central-role-assignments` | `identity:central_role:assign` |
+
+`identity:credential:buat` sengaja DIPISAH dari `identity:person:buat`: mencatat bahwa seseorang
+ada berbeda jenis wewenangnya dari memberi orang itu cara masuk. Operator entri data boleh yang
+pertama tanpa otomatis boleh yang kedua.
+
+**Namespace `identity:` DIRESERVASI untuk lapis sentral.** `tenantrole/domain.TenantRole.Validate`
+menolak role tenant yang memuat permission ber-prefiks `identity:`, dan penolakan itu ditegakkan
+di pintu tulis repo — bukan hanya di use case. Alasannya menutup jalur eskalasi: `permission.Engine`
+menggabungkan grant lintas lapis secara UNION, jadi tanpa pagar itu admin tenant dapat memberi
+dirinya `identity:credential:buat` dan mengambil alih akun mana pun yang id person-nya ia ketahui
+(REVIEW_BACKLOG B6).
+
+Permission cross-tenant ditegakkan di **use case**, bukan di handler — sifat cross-tenant baru
+diketahui setelah body di-parse, sementara aturan #3 mewajibkan gerbang pertama berdiri sebelum
+parse. Handler memeriksa permission dasarnya saja.
 
 Catatan: mutasi identity selalu ter-audit (ADR-003). Membuat & menugaskan role sentral
 adalah pemberian wewenang lintas tenant — sensitif, butuh review ekstra.

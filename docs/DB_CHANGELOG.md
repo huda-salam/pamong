@@ -32,6 +32,35 @@ Jalur A/B/C merujuk tiga cara pembuatan skema yang dijelaskan di `DB_SCHEMA.md` 
 
 ---
 
+### 2026-08-10 · PR-W2 (handler admin identity) · `HEAD`
+**DB:** identity · **Jalur:** B (`identity/migrations/010`) · **Down:** ada
+
+- `+ id.persons` **satu baris seed** — person SENTINEL `00000000-0000-0000-0000-000000000001`
+  (`nama_lengkap = 'SYSTEM (sentinel)'`, `is_active = false`). Bentuk tabel TIDAK berubah; yang
+  bertambah data. Dicatat di sini karena ia menjadi **prasyarat struktural**: dua FK
+  (`id.tenant_assignments.assigned_by`, `id.central_role_assignments.assigned_by`) NOT NULL ke
+  `id.persons(id)` membuat penugasan PERTAMA mustahil — admin pertama tak punya siapa pun yang
+  bisa menugaskannya. Alternatifnya (FK dilonggarkan / kolom dibuat NULL-able) menghapus
+  ketelusuran SELURUH baris demi satu baris pertama. Padanan Go: `identity/domain.SystemActorID`.
+- `nik_enc`/`nik_bidx` baris sentinel diisi **bytea zero-length**, bukan NULL (kolomnya NOT NULL
+  dan migrasi tak punya akses KeyProvider). Sifat itu diandalkan, bukan ditoleransi:
+  `crypto.FieldSealer.Open` memetakan kolom kosong → string kosong (jadi `FindByID` tak error),
+  sementara `FindByNIK("")` TIDAK menemukannya karena blind index dari `""` adalah HMAC — bukan
+  bytes kosong. `uq_persons_nik_bidx` tetap utuh: person nyata selalu ber-NIK 16 digit.
+- `INSERT ... ON CONFLICT (id) DO NOTHING` — identity DB belum punya runner ber-tracking (jalur B
+  dijalankan ops), jadi migrasi ini harus aman dijalankan ulang.
+
+**Kompatibilitas:** additive murni (satu baris data, nol DDL). Down menghapus baris sentinel dan
+akan DITOLAK FK bila sudah ada penugasan yang merujuknya — perilaku yang benar: menghapusnya
+diam-diam memutus ketelusuran baris tersebut.
+
+**Catatan jalur C:** PR ini juga menjadi pemanggil produksi PERTAMA
+`identity/adapter/db.AuditStore.EnsureSchema` (`id.audit_logs`, jalur C, DDL tak berubah). Sampai
+sekarang tabel itu hanya pernah lahir di test — mutasi identity lewat `/admin/identity/*` adalah
+penulis produksi pertamanya.
+
+---
+
 ### 2026-08-03 · PR-3.8.5b (payload event + cache idempotency) · `13e5860`
 **DB:** tenant · **Jalur:** — (tanpa DDL; bentuk tabel tidak berubah) · **Down:** tidak berlaku
 

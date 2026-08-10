@@ -19,6 +19,7 @@ import (
 	identitydb "github.com/huda-salam/pamong/identity/adapter/db"
 	identitytoken "github.com/huda-salam/pamong/identity/adapter/token"
 	identitydomain "github.com/huda-salam/pamong/identity/domain"
+	identityusecase "github.com/huda-salam/pamong/identity/usecase"
 	"github.com/huda-salam/pamong/infra/crypto"
 	"github.com/huda-salam/pamong/infra/db"
 	"github.com/huda-salam/pamong/infra/eventbus"
@@ -227,10 +228,31 @@ func run() error {
 	// server tak punya pintu masuk sama sekali — RequireAuth memagari semua rute bisnis sementara
 	// tak ada cara memperoleh token. Codec yang sama dipakai sebagai issuer DAN verifier: satu
 	// secret, jadi token yang diterbitkan pasti lolos verifikasi stack ini.
-	authHandler, err := wireAuth(identityPool, connMgr, cryptoSvc, verifier, rateLimiter, logger, cfg.Messaging)
+	// SATU gerbang concurrency bcrypt untuk seluruh proses, dibagi jalur login (wireAuth) dan
+	// pembuatan kredensial (wireAdminIdentity). Gerbang per fungsi wiring akan melipatgandakan
+	// batas yang justru ingin ditegakkan — lihat usecase.NewVerifyGate.
+	verifyGate := identityusecase.NewVerifyGate(0, 0) // 0,0 = GOMAXPROCS slot, tunggu 2s
+
+	authHandler, err := wireAuth(identityPool, connMgr, cryptoSvc, verifier, rateLimiter, logger,
+		cfg.Messaging, verifyGate)
 	if err != nil {
 		return fmt.Errorf("alur auth (identity): %w", err)
 	}
+
+	// Administrasi identity (PR-W2): sisi TULIS identitas — person, employment, kredensial,
+	// penugasan tenant, role sentral. Dipasang di router BISNIS (bukan top mux) agar berada di
+	// balik stack lengkap termasuk RequireAuth; lihat admin_identity.go.
+	//
+	// `AssignEmploymentToTenant` di dalamnya adalah satu-satunya produsen
+	// identity.employment.ditugaskan di server hidup. Tanpa grup ini clone engine yang ter-wire
+	// di atas tak pernah menerima apa pun, dan gov.user_profiles tiap tenant tetap kosong
+	// selamanya — GAP (b) PR-5.1.4. Bus yang diteruskan WAJIB bus yang sama dengan yang
+	// di-subscribe wireIdentitySync.
+	adminIdentity, err := wireAdminIdentity(ctx, identityPool, cryptoSvc, bus, verifyGate)
+	if err != nil {
+		return fmt.Errorf("admin identity: %w", err)
+	}
+	mountAdminIdentityRoutes(router, adminIdentity)
 
 	// --- HTTP server + middleware stack + graceful shutdown ---
 	handler := buildServerHandler(serverDeps{

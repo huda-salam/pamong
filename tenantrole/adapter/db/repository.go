@@ -25,7 +25,16 @@ func NewTenantRoleRepo(pool *db.Pool) *TenantRoleRepo { return &TenantRoleRepo{p
 
 // Save menulis role + seluruh permission-nya atomik. Nama duplikat → core.ErrConflict.
 // Schema dipastikan ada lebih dulu (ensure-on-write) di luar transaksi role.
+//
+// Invariant domain ditegakkan DI PINTU TULIS, bukan diserahkan ke use case — alasan yang sama
+// dengan repo identity: aturan yang menunggu tiap penulis use case baru mengingat memanggil
+// Validate akan terlewat, dan yang terlewat di sini bukan kosmetik. Pagar namespace `identity:`
+// (domain.reservedPermissionPrefix) menutup jalur eskalasi tenant → platform; satu jalur tulis
+// yang melewatinya sudah cukup untuk membukanya kembali.
 func (r *TenantRoleRepo) Save(ctx context.Context, role *domain.TenantRole) error {
+	if err := role.Validate(); err != nil {
+		return err
+	}
 	if err := ensureTenantRoleSchema(ctx, r.pool); err != nil {
 		return err
 	}

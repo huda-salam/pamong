@@ -22,8 +22,18 @@ var (
 	// Bentuk pengenal — lihat bentukPengenalRusak di entity.go. Pesannya menyebut ATURAN,
 	// bukan nilai yang ditolak: pesan validasi ikut ke body HTTP & log (ADR-009 §6).
 	ErrCredValueFormat = core.ErrValidation("cred_value", pesanBentukPengenal)
-	ErrEmailFormat     = core.ErrValidation("email", pesanBentukPengenal)
-	ErrNoHPFormat      = core.ErrValidation("no_hp", pesanBentukPengenal)
+
+	ErrEmailFormat = core.ErrValidation("email", pesanBentukPengenal)
+	ErrNoHPFormat  = core.ErrValidation("no_hp", pesanBentukPengenal)
+
+	// Batas panjang password pada jalur PEMBUATAN kredensial (PR-W2). Keduanya validasi
+	// (400), bukan error internal: batas atas 72 byte adalah batas bcrypt, dan
+	// BcryptVerifier.Hash memang menolaknya — tapi penolakan di sana jatuh sebagai 500 dan
+	// menyembunyikan bahwa yang salah adalah masukan. Batas bawah ada karena INI satu-satunya
+	// jalur tulis password: floor yang tak dipasang di sini tak punya tempat lain untuk ada.
+	ErrPasswordTerlaluPendek  = core.ErrValidation("password", "minimal 12 karakter")
+	ErrPasswordTerlaluPanjang = core.ErrValidation("password",
+		"maksimal 72 byte (batas bcrypt; lebih dari itu terpotong diam-diam)")
 
 	ErrTenantIDInvalid   = core.ErrValidation("tenant_id", "harus lowercase, mulai huruf, 3-100 char (a-z0-9-)")
 	ErrTenantNamaKosong  = core.ErrValidation("nama", "tidak boleh kosong")

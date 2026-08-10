@@ -6,6 +6,12 @@ const (
 	PermPersonBuat       = "identity:person:buat"
 	PermEmploymentLampir = "identity:employment:lampir"
 
+	// PermCredentialBuat = membuat kredensial login untuk seorang person (PR-W2).
+	// Dipisah dari identity:person:buat karena wewenangnya berbeda jenis: membuat person
+	// hanya mencatat seseorang ada, sedangkan membuat kredensial memberi orang itu CARA MASUK.
+	// Operator entri data boleh yang pertama tanpa otomatis boleh yang kedua.
+	PermCredentialBuat = "identity:credential:buat"
+
 	PermTenantDaftar   = "identity:tenant:daftar"
 	PermTenantBaca     = "identity:tenant:baca"
 	PermTenantNonaktif = "identity:tenant:nonaktif"

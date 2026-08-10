@@ -40,6 +40,7 @@ import (
 	identitydb "github.com/huda-salam/pamong/identity/adapter/db"
 	identitytoken "github.com/huda-salam/pamong/identity/adapter/token"
 	identitydomain "github.com/huda-salam/pamong/identity/domain"
+	identityusecase "github.com/huda-salam/pamong/identity/usecase"
 	"github.com/huda-salam/pamong/infra/crypto"
 	"github.com/huda-salam/pamong/infra/db"
 	"github.com/huda-salam/pamong/infra/eventbus"
@@ -184,7 +185,7 @@ func TestE2E_Login_LaluAksesRuteBisnis(t *testing.T) {
 	limiter := ratelimit.NewMemory(nil)
 
 	authHandler, err := wireAuth(identityPool, connMgr, cryptoSvc, codec, limiter, logger,
-		config.MessagingConfig{Driver: "log"})
+		config.MessagingConfig{Driver: "log"}, identityusecase.NewVerifyGate(0, 0))
 	if err != nil {
 		t.Fatalf("wireAuth: %v", err)
 	}

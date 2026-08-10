@@ -984,7 +984,84 @@ tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
     pertama chicken-and-egg. Seed lewat migrasi identity baru + `domain.SystemActorID`.
   - SENSITIF (identity) — review ekstra per CLAUDE.md.
   - DoD: `POST /admin/identity/assignments` → baris `gov.user_profiles` muncul di DB
-    tenant tujuan dengan pengenal terenkripsi (bukti lewat bus NYATA, bukan driver memory).
+    tenant tujuan dengan pengenal terenkripsi (bukti lewat bus NYATA, bukan driver memory). ✅
+  - **SELESAI.** Yang berdiri: `identity/adapter/http/admin_handler.go` (5 endpoint POST, DTO
+    kawat snake_case terpisah dari struct use case); `identity/usecase/create_credential.go`
+    (jalur tulis password SATU-SATUNYA, hash lewat `port.PasswordVerifier` — bukan bcrypt lokal,
+    supaya cost tak menyimpang dari sisi verifikasi); `cmd/server/admin_identity.go`
+    (`wireAdminIdentity` + `mountAdminIdentityRoutes`); migrasi `identity/migrations/010`
+    (seed sentinel) + `identity/domain.SystemActorID`.
+  - **Grup ini dipasang di ROUTER BISNIS, bukan top mux** — kebalikan dari `/auth/*` (W1), dan
+    itulah keputusan pemasangan yang menentukan. Router bisnis sudah dibungkus stack lengkap
+    (Auth → RequireAuth → TenantResolver → RateLimit → Idempotency), dan tiap lapisnya memang yang
+    dibutuhkan: rutenya menuntut token, aktornya ber-principal nyata sehingga rate limit
+    per-orang punya arti, dan seluruhnya mutasi sehingga `Idempotency-Key` layak dihormati.
+    Memasangnya di top mux menuntut menyalin ulang stack itu — dan salinan yang tertinggal satu
+    lapis tak bergejala sampai ada yang menyerangnya.
+  - **Repo dibungkus dekorator AUDIT**, kebalikan dari `wireAuth`/`wireIdentitySync` yang sengaja
+    memakai repo telanjang (keduanya hanya membaca, dan login belum punya aktor). Grup ini
+    seluruhnya mutasi oleh aktor terotentikasi → ADR-003 berlaku penuh. PR ini juga pemanggil
+    produksi PERTAMA `AuditStore.EnsureSchema` (`id.audit_logs`); dipanggil saat BOOT, bukan lazy,
+    supaya kegagalannya jadi gagal-boot alih-alih mutasi yang commit tanpa jejak.
+  - **`NewAuditedCredentialRepo` baru**, dan `secret_hash` SENGAJA tak ikut diff: hash bcrypt bisa
+    di-crack offline, jadi menyalinnya ke `id.audit_logs` menjadikan kompromi satu tabel audit =
+    kompromi seluruh password — sementara ia tak menjawab pertanyaan yang audit ada untuk
+    menjawabnya. `cred_value` ikut, tapi TERSEGEL (purpose diturunkan dari `cred_type`, ADR-017 §4).
+  - **Batas panjang password (12 rune – 72 byte) mendarat di sini**, dan itu bukan scope creep:
+    ini satu-satunya jalur tulis password, jadi floor yang tak dipasang di sini tak punya tempat
+    lain untuk ada. Batas atas = batas bcrypt; di atasnya bcrypt memotong diam-diam sehingga dua
+    password dengan 72 byte awal sama dianggap cocok. Keduanya `ErrValidation` (422), bukan 500 —
+    `BcryptVerifier.Hash` memang menolak >72 byte, tapi di sana kegagalannya terbaca sebagai
+    kesalahan server.
+  - **Sentinel SYSTEM = baris NYATA di `id.persons`, bukan FK yang dilonggarkan.** `nik_enc`/
+    `nik_bidx`-nya bytea zero-length: `Open` memetakannya ke string kosong (jadi `FindByID` tak
+    error), `FindByNIK("")` tak menemukannya (bidx dari `""` adalah HMAC), dan `Person.Validate`
+    menolak NIK kosong sehingga ia tak bisa dibuat ulang/ditimpa lewat repo — penulisnya hanya
+    migrasi. Lihat DB_SCHEMA §3.1.
+  - **Tiga mutasi kode produksi diverifikasi membuat test gagal:** (1) publish
+    `identity.employment.ditugaskan` dihapus → e2e gagal ("clone tak muncul dalam 10 detik") +
+    2 unit test gagal; (2) `RequirePermission` dihapus dari handler `assignments` → test
+    "gerbang sebelum parse" gagal dengan 400 alih-alih 403 (pemeriksaan use case TIDAK
+    menutupinya — ia baru tercapai setelah decoder menjawab); (3) migrasi 010 dihapus → e2e gagal
+    dengan pelanggaran FK `tenant_assignments_assigned_by_fkey`.
+  - **Satu kelemahan DORMAN ikut dibayar di sini, dan itu bukan scope creep** (preseden PR-W1):
+    `core/permission.Engine` menggabungkan grant lintas lapis secara UNION, sementara
+    `TenantRole.Validate` tak membatasi ISI `Permissions`. Sebelum PR ini tak ada permission
+    `identity:*` yang punya eksekutor; memasang `/admin/identity/*` mengubahnya menjadi jalur
+    pengambilalihan: admin tenant pemegang `iam:tenant_role:buat` bisa membuat role berisi
+    `identity:credential:buat`, menugaskannya ke dirinya, menerbitkan kredensial ber-password
+    pilihannya untuk person mana pun yang id-nya ia ketahui (id terbaca di `gov.user_profiles`
+    tenantnya sendiri), lalu login sebagai orang itu. Ditutup dengan mereservasi namespace
+    `identity:` bagi lapis sentral — ditolak di domain, ditegakkan di PINTU TULIS repo tenantrole.
+    REVIEW_BACKLOG **B6 → TERTUTUP**.
+  - **DUA properti otorisasi TIDAK ditutup di sini, dan keduanya butuh keputusan di atas level PR
+    ini** (karena itu didokumentasikan, bukan ditambal):
+    * **B7 — containment aktor→TARGET.** Ketiga use case mutasi memeriksa "aktor punya
+      permission?", tak pernah "target dalam wewenang aktor?". Yang terkuat justru endpoint BARU
+      PR ini: `CreateCredential` menerima `person_id` mana pun, UNIQUE-nya `(cred_type,
+      cred_value)` bukan `person_id`, dan login me-resolve murni lewat kredensial → menerbitkan
+      kredensial SETARA dengan menjadi target. Penegakannya menuntut `tenant_scope` aktor, yang
+      ada di klaim JWT tapi TIDAK terekspos lewat `port.AuthContext` — perubahan kontrak port
+      lintas layer, plus kebijakan yang belum diputuskan ("no privilege escalation"?).
+    * **B8 — tabrakan NAMA role tenant vs sentral.** Otorisasi di-resolve dari NAMA, dan
+      `CompositeCatalog.Lookup` mendahulukan central, jadi role TENANT bernama `super_admin`
+      me-resolve ke definisi SENTRAL ber-`LayerGlobal`. Itu melewati B6 tanpa menyebut
+      `identity:` sama sekali. Penutupnya menyentuh `core/permission` (bawa lapis asal sampai ke
+      titik evaluasi) → **butuh ADR**. Dorman hari ini (tenantrole belum punya permukaan HTTP);
+      WAJIB ditutup sebelum permukaan itu ada.
+  - **Durabilitas jalur clone belum sempurna dan itu diketahui:** `AssignEmploymentToTenant`
+    menerbitkan event SESUDAH `assignments.Save` commit. Publish yang gagal → 500 dengan baris
+    sudah tersimpan, dan retry berikutnya ditolak `ErrAssignmentDuplikat` sehingga clone tak
+    pernah lahir. Penutupnya outbox transaksional, yang SENGAJA belum di-wire (PR-5.1.4:
+    `OutboxStore` belum punya penulis produksi). Tak ditambal di sini karena tambalan mana pun —
+    retry buta, atau melonggarkan anti-duplikat — menukar satu mode kegagalan dengan yang lain.
+  - **`VerifyGate` kini dibagi tiga permukaan bcrypt** (LoginEmployee, LoginCitizen,
+    CreateCredential), dirakit sekali di `run()` lalu diteruskan ke `wireAuth` & `wireAdminIdentity`.
+    Gerbang per fungsi wiring akan melipatgandakan batas concurrency yang justru ingin ditegakkan
+    — aturan yang sudah tertulis di `NewVerifyGate` sejak PR-W1, kini berlaku untuk penulis
+    kredensial juga.
+  - Perubahan struktur DB: `identity/migrations/010` (seed sentinel, ber-down) — tercatat di
+    `docs/DB_CHANGELOG.md` & `docs/DB_SCHEMA.md`. Permission baru: `identity:credential:buat`.
 
 - **PR-W3** Wiring Authority live → `SetScopedEvaluator` ← W1, 2.3.5
   - Bangun `permission.Authority` (RoleNames + RoleGrants dari resolver tenant, emitter

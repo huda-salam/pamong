@@ -8,8 +8,8 @@ alasan di balik bentuknya. Riwayat *bagaimana* struktur ini sampai ke sini ada d
 Aturan pemeliharaan (DOCUMENTATION_CONVENTION §7): **setiap PR yang mengubah struktur DB wajib
 memperbarui file ini dan menambah entri di `DB_CHANGELOG.md`, di PR yang sama.**
 
-> Status terakhir disinkronkan: PR-3.8.3/3.8.4 (`e22506c`). Perubahan struktur terakhir:
-> PR-3.8.2 (`fa6e51c`).
+> Status terakhir disinkronkan: PR-W2. Perubahan struktur terakhir: PR-W2 (seed sentinel SYSTEM,
+> `identity/migrations/010`).
 
 ---
 
@@ -119,6 +119,20 @@ se-identity-DB, dan kunci blind index per-tenant akan membuatnya berhenti menang
 Enkripsi/dekripsinya ditangani `identity/adapter/db/field_crypto.go` — repo identity ditulis
 tangan, bukan di-generate dari `EntityDef`, karena skema ini punya invariant yang tak bisa
 diungkapkan `EntityDef` (CHECK silang `nip`↔`status`, UNIQUE majemuk pada credential).
+
+**Baris SENTINEL `00000000-0000-0000-0000-000000000001`** *(B, `010_seed_system_actor`)* —
+`nama_lengkap = 'SYSTEM (sentinel)'`, `is_active = false`, padanan Go `identity/domain.SystemActorID`.
+Ia ada semata-mata sebagai target FK: `id.tenant_assignments.assigned_by` dan
+`id.central_role_assignments.assigned_by` NOT NULL ke tabel ini, sehingga penugasan PERTAMA
+(admin platform yang belum punya siapa pun untuk menugaskannya) mustahil tanpa baris ini.
+
+`nik_enc`/`nik_bidx`-nya **bytea zero-length**, bukan NULL — kolomnya NOT NULL dan migrasi tak
+punya akses KeyProvider. Tiga sifat yang diandalkan, bukan sekadar ditoleransi:
+`crypto.FieldSealer.Open` memetakan kolom kosong → string kosong (jadi `FindByID` mengembalikan
+person ber-NIK `""` tanpa error dekripsi); `FindByNIK("")` **tidak** menemukannya karena blind
+index dari `""` adalah HMAC, bukan bytes kosong; dan `Person.Validate` menolak NIK kosong sehingga
+sentinel tak bisa dibuat ulang atau ditimpa lewat `PersonRepo.Save` — satu-satunya penulisnya
+adalah migrasi. `uq_persons_nik_bidx` tetap utuh: person nyata selalu ber-NIK 16 digit.
 
 ### 3.2 `id.employments` — relasi kepegawaian *(B, `001_create_identity` + `009`)*
 

@@ -359,6 +359,94 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
   reviewer wajib mengonfirmasi ini memang diinginkan & tak bisa disalahgunakan untuk eskalasi
   di luar subset yang didelegasikan. Cek covers: TenantWide/unit==res/(Subtree&&IsWithin).
 
+### B6. Eskalasi tenant → platform lewat grant `identity:*` di role tenant — `TERTUTUP SEBAGIAN` (PR-W2)
+- `tenantrole/domain/entity.go` (`reservedPermissionPrefix`, `TenantRole.Validate`),
+  `tenantrole/adapter/db/repository.go` (`Save` memanggil `Validate`)
+- Cacat: `Engine.Allows` menggabungkan grant lintas lapis secara **union**, dan
+  `TenantRole.Validate` dulu tak membatasi ISI `Permissions` sama sekali. Admin tenant pemegang
+  `iam:tenant_role:buat` karena itu bisa membuat role tenant berisi `identity:credential:buat`,
+  menugaskannya ke dirinya sendiri, lalu menerbitkan kredensial ber-password pilihannya untuk
+  person mana pun yang id-nya ia ketahui (id person ter-clone terbaca di `gov.user_profiles`
+  tenantnya sendiri) — termasuk admin platform — lalu login sebagai orang itu. Satu tenant
+  mengambil alih seluruh platform.
+- **Dorman sampai PR-W2**: sebelum `/admin/identity/*` ada, tak satu pun permission `identity:*`
+  punya eksekutor. Ditutup di PR yang memasangnya, mengikuti preseden A5/A11 (kelemahan dorman
+  yang dipromosikan oleh wiring wajib dibayar di PR wiring-nya).
+- Properti sekarang: namespace `identity:` tertutup bagi role tenant, ditolak di DOMAIN dan
+  ditegakkan di PINTU TULIS repo (bukan hanya di use case). Dikunci
+  `tenantrole/domain/entity_test.go`.
+- **Yang DITUTUP hanya jalur STRING.** Otorisasi di-resolve dari NAMA role, bukan dari lapis
+  asalnya, jadi masih ada jalur kedua ke tujuan yang sama yang tak pernah menyebut `identity:`
+  sama sekali — lihat **B8**. Jangan membaca entri ini sebagai "eskalasi tenant → platform sudah
+  tak mungkin".
+- Cek lanjutan reviewer: apakah ada namespace platform LAIN yang perlu ikut direservasi seiring
+  permukaan admin bertambah, dan apakah baris `gov.tenant_role_permissions` yang terlanjur ada
+  (di deployment mana pun) perlu disapu — hari ini tidak ada deployment.
+
+### B7. Containment aktor→TARGET pada mutasi identity — `OPEN` (butuh keputusan port + kebijakan)
+- `identity/usecase/create_credential.go` (**paling kuat — PR-W2**),
+  `identity/usecase/assign_employment_tenant.go` (`validateAssignment`),
+  `identity/usecase/assign_central_role.go`
+- Cacat: ketiganya memeriksa **apakah aktor punya permission**, tak pernah **apakah TARGET berada
+  dalam wewenang aktor**. Konsekuensinya:
+  (a) **`CreateCredential`** menerima `person_id` MANA PUN. UNIQUE-nya `(cred_type, cred_value)`,
+  bukan `person_id`, jadi kredensial TAMBAHAN untuk orang yang sudah punya kredensial tetap
+  berhasil — dan `passwordAuthenticator` me-resolve login murni lewat
+  `(cred_type, cred_value) → credential.person_id`. Menerbitkan kredensial karena itu SETARA
+  dengan menjadi target: pemegang `identity:credential:buat` dapat login sebagai admin platform
+  mana pun yang id person-nya ia ketahui (id ter-clone terbaca di `gov.user_profiles` tenantnya
+  sendiri). Ini yang terkuat dari ketiganya — dua lainnya menghasilkan penugasan, yang ini
+  menghasilkan OTENTIKASI langsung sebagai korban.
+  (b) pemegang `identity:assignment:tugaskan` dari central role SCOPED (mis. helpdesk regional
+  Jatim) dapat menugaskan siapa pun ke tenant DI LUAR scope-nya, karena `in.TenantID` tak pernah
+  dibandingkan dengan `tenant_scope` aktor.
+  (c) pemegang `identity:central_role:assign` dapat menugaskan role GLOBAL (mis. `super_admin`) —
+  termasuk kepada dirinya sendiri — sehingga permission "menugaskan role" efektif setara dengan
+  "menjadi apa pun".
+- Benang merahnya satu: **scope disaring hanya saat LOGIN** (klaim `tenant_scope` dibangun
+  `CentralRoleResolver`), tak pernah diperiksa lagi terhadap TARGET satu operasi.
+- Kenapa belum ditutup di PR-W2: penegakannya menuntut aktor tahu `tenant_scope`-nya sendiri saat
+  eksekusi. Nilai itu ADA di klaim JWT tapi TIDAK terekspos lewat `port.AuthContext` (yang hanya
+  punya `TenantID()`, `HasRole`, `HasCentralRole`) — menambahkannya = perubahan kontrak port
+  lintas layer, dan aturan mana yang benar (boleh menugaskan ke tenant selain tenant token?
+  bolehkah menugaskan role yang tak dipegang sendiri — "no privilege escalation"?) adalah
+  keputusan kebijakan yang layak ADR, bukan tambalan.
+- Aturan yang belum diputuskan (karena itu bukan tambalan): bolehkah menugaskan ke tenant selain
+  tenant token? bolehkah memberikan role yang tak dipegang sendiri ("no privilege escalation")?
+  bolehkah menerbitkan kredensial untuk orang yang wewenangnya melampaui wewenang penerbit?
+- Mitigasi yang berlaku sekarang: ketiga permission hanya bisa datang dari role SENTRAL (B6),
+  jadi pemegangnya selalu ditunjuk admin platform — bukan siapa pun yang bisa mengelola role
+  tenantnya sendiri. Itu memperkecil POPULASI penyerang, bukan menutup properti; ia juga tak
+  membatasi eskalasi LATERAL antar principal platform, maupun scoped → global.
+
+### B8. Nama role TENANT yang bertabrakan dengan nama role SENTRAL naik ke LayerGlobal — `OPEN` (butuh ADR core)
+- `core/permission/composite.go` (`CompositeCatalog.Lookup`), `core/permission/engine.go`
+  (`Allows` membaca `role.Layer` dari hasil Lookup), `gateway/context.go` (`roleList` meratakan
+  `TenantRoles`+`CentralRoles` jadi satu daftar NAMA), `tenantrole/domain/entity.go`
+  (`tenantRoleNameRe` sebentuk dengan `centralRoleNameRe`)
+- Cacat: otorisasi di-resolve dari NAMA role, dan nama kehilangan LAPIS ASALNYA begitu masuk
+  klaim. `Lookup` mencoba central lebih dulu, jadi role TENANT yang kebetulan (atau sengaja)
+  bernama sama dengan role sentral akan me-resolve ke DEFINISI SENTRAL — mewarisi permission-nya
+  sekaligus `LayerGlobal`, yang menang tanpa syarat dan melewati intersection strict.
+- Komentar di `composite.go` hanya mengantisipasi arah SEBALIKNYA ("tenant tak boleh men-*shadow*
+  role global dengan menurunkannya ke LayerTenant"). Arah NAIK tak dijaga apa pun: tak ada
+  reservasi nama, dan kedua regex nama sebentuk (`^[a-z][a-z0-9_]{2,99}$`) sehingga `super_admin`
+  adalah nama role tenant yang sah.
+- Akibatnya **B6 bisa dilewati tanpa menyebut `identity:` sama sekali**: admin tenant membuat role
+  tenant bernama persis `super_admin` (daftar permission-nya tak relevan, boleh kosong),
+  menugaskannya ke dirinya, login ulang → `Claims.TenantRoles` memuat `super_admin` → `Lookup`
+  mengembalikan role sentral ber-LayerGlobal → seluruh permission `identity:*` terbuka, lalu
+  dirantai dengan B7(a) menjadi pengambilalihan platform.
+- **Dorman hari ini**: `tenantrole/usecase` belum punya permukaan HTTP, jadi pembuatan role tenant
+  baru bisa dilakukan lewat pemanggil use case langsung / tulis DB tenant. Kelas dormansi yang
+  SAMA dengan B6 — dan B6 diputuskan layak dibayar saat wiring membuat payoff-nya nyata. Karena
+  itu ini WAJIB ditutup sebelum `tenantrole` mendapat permukaan HTTP (kandidat PR-W3).
+- Kenapa tak ditutup di PR-W2: penutup yang benar menyentuh `core/permission` — membawa lapis asal
+  bersama tiap role sampai ke titik evaluasi, alih-alih me-resolve nama telanjang. `core/` hanya
+  boleh berubah lewat ADR (CLAUDE.md). Penutup sempit (menolak nama role tenant yang bertabrakan
+  dengan katalog sentral di pintu tulis) pun butuh port baru: katalog sentral hidup di identity DB,
+  sedangkan `TenantRole.Validate` ada di domain tenant.
+
 ### B3. Fail-closed scope central role (PR-2.3.2) — `HARDENED`
 - `identity/adapter/db/central_role_resolver.go`, `identity/domain/central_role.go` (`AppliesTo`)
 - Properti: otoritas global vs scoped = `scope_type` (BUKAN kekosongan `tenant_scope`). Scoped
