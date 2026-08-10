@@ -3,7 +3,10 @@ package usecase_test
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -220,7 +223,7 @@ func TestPasswordAuth_HashTiruanDariVerifierYangSama(t *testing.T) {
 	spy := &spyPasswords{fakePasswords: fx.passwords}
 
 	uc := usecase.NewLoginCitizen(fx.creds, fx.persons, spy, fx.issuer, fx.limiter,
-		usecase.DefaultLoginPolicy())
+		usecase.DefaultLoginPolicy(), fx.gate)
 	_, err := uc.Execute(context.Background(), usecase.LoginCitizenInput{
 		CredType: domain.CredEmail, CredValue: "tak-ada@example.com", Password: "rahasia",
 	})
@@ -254,4 +257,144 @@ func (s *spyPasswords) Hash(plain string) (string, error) {
 func (s *spyPasswords) Verify(hash, plain string) error {
 	s.verified = append(s.verified, hash)
 	return s.fakePasswords.Verify(hash, plain)
+}
+
+// --- Gerbang concurrency bcrypt (temuan /code-review atas perbaikan A11) ---
+//
+// Penyeragaman biaya kerja menutup orakel timing DENGAN CARA membuat setiap percobaan membayar
+// bcrypt — termasuk nilai yang tak terdaftar, yang sebelumnya berhenti murah di lookup. Itu
+// mengalikan biaya per-request anonim 20-50×, dan lapis 1 tak membendungnya karena ia ber-key
+// nilai MENTAH: penyerang yang mengirim nilai acak berbeda tiap request tak pernah menyentuh kuota
+// mana pun. Tanpa batas concurrency, `/auth/*` yang memang dilayani tanpa otentikasi menjadi jalur
+// menjenuhkan CPU seluruh proses — bukan cuma login.
+
+// blockingPasswords menahan Verify PERTAMA sampai dilepas, agar kejenuhan gerbang bisa diuji tanpa
+// sleep. HANYA yang pertama: panggilan berikutnya lewat begitu saja, supaya test GAGAL (bukan
+// menggantung) bila gerbangnya suatu saat dilewati — test yang hang menyandera CI alih-alih
+// melaporkan cacat.
+type blockingPasswords struct {
+	*fakePasswords
+	mu       sync.Mutex
+	terpakai bool
+	masuk    chan struct{} // diisi saat Verify pertama mulai
+	lepas    chan struct{} // ditunggu Verify pertama sebelum kembali
+}
+
+func (b *blockingPasswords) Verify(hash, plain string) error {
+	b.mu.Lock()
+	menahan := !b.terpakai
+	b.terpakai = true
+	b.mu.Unlock()
+	if menahan {
+		b.masuk <- struct{}{}
+		<-b.lepas
+	}
+	return b.fakePasswords.Verify(hash, plain)
+}
+
+// Saat seluruh slot terpakai dan waktu tunggu habis, percobaan berikutnya dijawab 429 — BUKAN 401.
+// Ini benar justru karena kejenuhan adalah keadaan PROSES: ia sama untuk kredensial yang ada maupun
+// tidak, jadi tak menceritakan apa pun tentang keberadaan akun (beda dari kuota lapis 2, yang hanya
+// tercapai untuk kredensial nyata dan karena itu wajib 401).
+func TestVerifyGate_Jenuh_429BukanOrakel(t *testing.T) {
+	fx := newLoginFixture()
+	_, emp := fx.seedEmployee(t)
+	blocker := &blockingPasswords{
+		fakePasswords: fx.passwords,
+		masuk:         make(chan struct{}),
+		lepas:         make(chan struct{}),
+	}
+	// Satu slot, tanpa waktu tunggu berarti: percobaan kedua harus langsung menyerah.
+	gate := usecase.NewVerifyGate(1, time.Millisecond)
+	uc := usecase.NewLoginCitizen(fx.creds, fx.persons, blocker, fx.issuer, fx.limiter,
+		usecase.DefaultLoginPolicy(), gate)
+	ucEmp := usecase.NewLoginEmployee(fx.creds, fx.persons, fx.emps, fx.assigns, fx.tenants,
+		blocker, fx.central, fx.tenantRoles, fx.issuer, fx.limiter, usecase.DefaultLoginPolicy(), gate)
+
+	fx.creds.add(&domain.Credential{
+		ID: uuid.New(), PersonID: uuid.New(), CredType: domain.CredEmail,
+		CredValue: "budi@example.com", SecretHash: "h:rahasia",
+	})
+
+	selesai := make(chan struct{})
+	go func() {
+		defer close(selesai)
+		_, _ = uc.Execute(context.Background(), usecase.LoginCitizenInput{
+			CredType: domain.CredEmail, CredValue: "budi@example.com", Password: "rahasia",
+		})
+	}()
+	<-blocker.masuk // slot satu-satunya kini dipegang goroutine di atas
+
+	// Kredensial NYATA saat gerbang jenuh → 429.
+	_, err := ucEmp.Execute(context.Background(), usecase.LoginEmployeeInput{
+		CredType: domain.CredNIP, CredValue: emp.NIP, Password: "rahasia",
+	})
+	assertTooManyRequests(t, err)
+
+	// Kredensial TAK DIKENAL saat gerbang jenuh → 429 juga. Keduanya harus tak bisa dibedakan:
+	// gerbang tak boleh menjadi orakel baru menggantikan yang ditutup.
+	_, errTakDikenal := ucEmp.Execute(context.Background(), usecase.LoginEmployeeInput{
+		CredType: domain.CredNIP, CredValue: "199001012015011999", Password: "rahasia",
+	})
+	assertTooManyRequests(t, errTakDikenal)
+	if err.Error() != errTakDikenal.Error() {
+		t.Fatalf("respons gerbang jenuh berbeda antara kredensial ada (%q) dan tak ada (%q)", err, errTakDikenal)
+	}
+
+	blocker.lepas <- struct{}{}
+	<-selesai
+}
+
+// Slot dilepas setelah Verify selesai — gerbang membatasi, bukan menyumbat permanen.
+func TestVerifyGate_SlotDilepasSetelahVerify(t *testing.T) {
+	fx := newLoginFixture()
+	_, emp := fx.seedEmployee(t)
+	fx.assignTenant(emp, "pemkot-surabaya", true, true)
+	fx.gate = usecase.NewVerifyGate(1, time.Second)
+
+	for i := 0; i < 3; i++ {
+		if _, err := fx.loginEmployee().Execute(context.Background(), usecase.LoginEmployeeInput{
+			CredType: domain.CredNIP, CredValue: emp.NIP, Password: "rahasia",
+		}); err != nil {
+			t.Fatalf("percobaan ke-%d gagal (%v) — slot tak dilepas setelah Verify", i+1, err)
+		}
+	}
+}
+
+// Gate nil ditolak saat konstruksi. Penyeragaman biaya kerja TANPA batas concurrency adalah
+// perbaikan yang membawa regresi DoS-nya sendiri; ia tak boleh bisa dirakit setengah.
+func TestNewLoginCitizen_GateNil_Panic(t *testing.T) {
+	fx := newLoginFixture()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("gate nil harus panic saat konstruksi, bukan diam-diam tanpa batas concurrency")
+		}
+	}()
+	usecase.NewLoginCitizen(fx.creds, fx.persons, fx.passwords, fx.issuer, fx.limiter,
+		usecase.DefaultLoginPolicy(), nil)
+}
+
+// Lapis 2 dipanggil TANPA SYARAT — jumlah operasi limiter sama untuk kredensial yang ada maupun
+// tidak. Selama store-nya map in-process selisihnya tak terasa; begitu ia Redis (yang memang
+// direncanakan `port.RateLimiter`), satu panggilan ekstra = satu round trip jaringan, yaitu bentuk
+// lemah dari orakel yang ditutup A11. Diuji sebagai BENTUK key, seperti test A7 di atas.
+func TestPasswordAuth_LapisDuaDipanggilJugaSaatKredensialTakAda(t *testing.T) {
+	fx := newLoginFixture()
+
+	_, err := fx.loginEmployee().Execute(context.Background(), usecase.LoginEmployeeInput{
+		CredType: domain.CredNIP, CredValue: "199001012015011999", Password: "rahasia",
+	})
+	assertUnauthorized(t, err)
+
+	var lapis2 int
+	for key, n := range fx.limiter.calls {
+		if strings.HasPrefix(key, "login:cred:") {
+			lapis2 += n
+		}
+	}
+	if lapis2 != 1 {
+		t.Fatalf("lapis 2 dipanggil %d kali untuk kredensial tak ada, harus 1 — jumlah operasi "+
+			"limiter yang berbeda antar jalur menjadi orakel keberadaan akun begitu limiter "+
+			"berpindah ke store jaringan", lapis2)
+	}
 }

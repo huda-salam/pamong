@@ -43,9 +43,10 @@ func NewLoginEmployee(
 	issuer port.TokenIssuer,
 	limiter port.RateLimiter,
 	policy LoginPolicy,
+	gate *VerifyGate,
 ) *LoginEmployee {
 	return &LoginEmployee{
-		auth:     newPasswordAuthenticator(creds, persons, passwords, limiter, policy),
+		auth:     newPasswordAuthenticator(creds, persons, passwords, limiter, policy, gate),
 		resolver: employeeTenantResolver{employments: employments, assigns: assigns, tenants: tenants, now: time.Now},
 		minter:   scopedTokenMinter{central: central, tenantRoles: tenantRoles, issuer: issuer},
 		issuer:   issuer,

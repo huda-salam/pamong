@@ -29,7 +29,8 @@ type LoginCitizen struct {
 
 // NewLoginCitizen merakit alur login citizen. Tidak menerima resolver role apa pun — disengaja.
 // limiter+policy: proteksi brute-force yang sama persis dengan jalur employee (PR-W1); portal
-// publik justru yang paling terekspos, jadi ia tak boleh dapat perlakuan lebih longgar.
+// publik justru yang paling terekspos, jadi ia tak boleh dapat perlakuan lebih longgar. gate WAJIB
+// instance yang SAMA dengan jalur employee — dua gerbang = batas concurrency berlipat dua.
 func NewLoginCitizen(
 	creds domain.CredentialRepository,
 	persons domain.PersonRepository,
@@ -37,9 +38,10 @@ func NewLoginCitizen(
 	issuer port.TokenIssuer,
 	limiter port.RateLimiter,
 	policy LoginPolicy,
+	gate *VerifyGate,
 ) *LoginCitizen {
 	return &LoginCitizen{
-		auth:   newPasswordAuthenticator(creds, persons, passwords, limiter, policy),
+		auth:   newPasswordAuthenticator(creds, persons, passwords, limiter, policy, gate),
 		issuer: issuer,
 	}
 }

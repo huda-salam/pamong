@@ -88,7 +88,9 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
     dengan jalur "kredensial tak dikenal" dan menuntut keduanya identik.
   - Limiter error → **fail-closed**. Ambang default 10/15 menit per kredensial (bukan per IP).
   - **Biaya kerja SERAGAM di semua jalur kegagalan** — 401 seragam saja tak cukup selama jalur
-    tanpa bcrypt bisa dibedakan dengan stopwatch. Lihat **A11** (`TERTUTUP`, PR-W1).
+    tanpa bcrypt bisa dibedakan dengan stopwatch. Lihat **A11** (`TERTUTUP`, PR-W1). Konsekuensinya
+    setiap percobaan membayar bcrypt, jadi `VerifyGate` (batas concurrency) adalah pasangan wajibnya
+    — dan kuota per-IP di butir bawah naik prioritas: ia kini penutup DoS, bukan cuma pelengkap.
   - **Keterbatasan sadar**: `port.RateLimiter` hanya menghitung (tanpa Reset), jadi login BERHASIL
     pun memakai kuota. Menambah Reset = menyediakan jalur "nolkan penghitung"; butuh ADR bila kelak
     dianggap perlu.
@@ -166,11 +168,42 @@ kebocoran lintas-tenant, kripto token, dan integritas audit.
     password salah · password benar) plus jalur citizen; `TestPasswordAuth_HashTiruanDariVerifierYangSama`
     mengunci asal hash tiruan. Test berbasis waktu flaky di CI dan tak membuktikan propertinya.
     Mutasi diverifikasi: mengembalikan early-return di ketiga jalur cepat membuat test GAGAL.
-- **Sisa risiko yang diterima**: jalur error store (lapis 1 & 2) tetap pulang lebih awal — ia
-  menjawab 500, jadi timing tak menambah apa pun yang tak sudah dibedakan status; dan lapis-1
-  memakai store yang sama sehingga gagal lebih dulu untuk nilai dikenal maupun tidak. Selisih waktu
-  di HULU bcrypt (jumlah query yang dijalankan sesudah verifikasi berhasil) tak menjadi orakel
-  keberadaan akun karena ia hanya tercapai setelah password benar.
+  - **Lapis 2 dipanggil TANPA SYARAT** (key sentinel `login:cred:absent` bila nilai tak me-resolve),
+    supaya jumlah operasi limiter sama di kedua jalur. Tak terasa selama store-nya map in-process;
+    begitu `port.RateLimiter` berpindah ke Redis sesuai rencananya, satu panggilan ekstra menjadi
+    satu round trip jaringan — bentuk lemah dari orakel yang sama. Sentinel sengaja SATU key tetap,
+    bukan key ber-nilai: yang terakhir menggandakan ruang key yang dibatasi A9. **Diuji**:
+    `TestPasswordAuth_LapisDuaDipanggilJugaSaatKredensialTakAda`.
+- **Regresi yang dibawa perbaikan ini, ikut ditutup: DoS habis-CPU** (ditemukan `/code-review`).
+  Penyeragaman bekerja DENGAN CARA membuat nilai tak terdaftar ikut membayar bcrypt (~60-100 ms
+  CPU), naik 20-50× dari sebelumnya. Lapis 1 tak membendungnya karena ber-key nilai MENTAH —
+  penyerang yang mengirim nilai acak berbeda tiap request tak pernah menyentuh kuota mana pun — dan
+  `/auth/*` sengaja tanpa middleware `RateLimit` (lihat A5). net/http juga tak membatasi
+  concurrency, jadi beberapa ratus rps dari satu host menjenuhkan seluruh core dan menjatuhkan
+  monolit, termasuk rute bisnis.
+  - Penutupnya: `usecase.VerifyGate` — gerbang yang membatasi **concurrency** bcrypt (default
+    GOMAXPROCS slot, tunggu 2 detik), SATU instance dipakai bersama jalur employee & citizen,
+    dirakit di `cmd/server.newAuthHandler`. Gate nil ditolak konstruktor.
+  - **Concurrency, bukan laju** — disengaja. Kuota global ber-laju menolak begitu jatah habis
+    (persis "mematikan login bagi semua orang" yang sudah jadi alasan menolak `RateLimit` di
+    `/auth/*`); gerbang concurrency membuat permintaan mengantre, jadi pengguna sah tetap dilayani
+    dengan throughput lebih rendah.
+  - Jenuh → **429**, dan itu BUKAN orakel baru: kejenuhan adalah keadaan proses, sama untuk
+    kredensial yang ada maupun tidak. **Diuji**: `TestVerifyGate_Jenuh_429BukanOrakel` menuntut
+    kedua jalur menjawab error yang identik; `TestVerifyGate_SlotDilepasSetelahVerify`.
+- **Sisa risiko yang diterima**:
+  - Gerbang adalah **containment, bukan kekebalan**: di bawah serangan cukup deras antrean tetap
+    penuh dan pengguna sah ikut kehabisan waktu tunggu. Yang dijamin hanya bahwa kerusakan berhenti
+    di jalur auth alih-alih menghabiskan CPU seluruh proses. Penutup sebenarnya = **kuota per-IP**
+    di depan rute anonim — masih `OPEN` di A5 (menunggu keputusan proxy tepercaya).
+  - `/auth/public/otp/verify` juga membayar bcrypt (OTPCodec) tanpa gerbang. Eksposurnya
+    **pra-existing** (tak diubah PR ini) dan tetap ber-lapis-1 per nilai mentah, tapi gerbang
+    concurrency yang melingkupi seluruh grup `/auth/*` akan lebih tepat daripada yang per-use-case.
+    → **OPEN**, ambil bersama keputusan per-IP.
+  - Jalur error store (lapis 1 & 2) tetap pulang lebih awal — ia menjawab 500, jadi timing tak
+    menambah apa pun yang tak sudah dibedakan status. Selisih waktu di HULU bcrypt (query sesudah
+    verifikasi berhasil) tak menjadi orakel keberadaan akun karena hanya tercapai setelah password
+    benar.
 
 ### A6. Jalur OTP citizen + rate-limit (PR-2.4.4) — `HARDENED`, perlu konfirmasi reviewer
 - `identity/usecase/request_otp.go`, `verify_otp.go`, `otp.go` (policy+helper seragam);

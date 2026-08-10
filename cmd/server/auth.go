@@ -69,15 +69,18 @@ func wireAuth(
 	}
 
 	loginPolicy := usecase.DefaultLoginPolicy()
+	// SATU gerbang untuk kedua permukaan login: ia membatasi concurrency bcrypt proses ini, dan
+	// gerbang terpisah per use case akan melipatgandakan batas yang justru ingin ditegakkan.
+	verifyGate := usecase.NewVerifyGate(0, 0) // 0,0 = GOMAXPROCS slot, tunggu 2s
 	otpPolicy := usecase.DefaultOTPPolicy()
 	otps := identitydb.NewOTPRepo(identityPool)
 	otpCodec := identityauth.NewOTPCodec()
 
 	return identityhttp.NewHandler(
 		usecase.NewLoginEmployee(creds, persons, employments, assigns, tenants, passwords,
-			central, tenantRoles, issuer, limiter, loginPolicy),
+			central, tenantRoles, issuer, limiter, loginPolicy, verifyGate),
 		usecase.NewSelectTenant(employments, assigns, tenants, central, tenantRoles, issuer),
-		usecase.NewLoginCitizen(creds, persons, passwords, issuer, limiter, loginPolicy),
+		usecase.NewLoginCitizen(creds, persons, passwords, issuer, limiter, loginPolicy, verifyGate),
 		usecase.NewRequestOTP(creds, persons, otps, otpCodec, sender, limiter, logger, otpPolicy, nil),
 		usecase.NewVerifyOTP(creds, persons, otps, otpCodec, limiter, issuer, otpPolicy, nil),
 	), nil

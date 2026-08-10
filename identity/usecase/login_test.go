@@ -193,6 +193,7 @@ type loginFixture struct {
 	issuer      *fakeIssuer
 	limiter     *fakeLimiter   // proteksi brute-force jalur password (PR-W1)
 	passwords   *fakePasswords // menghitung Verify — lihat TestPasswordAuth_BiayaKerjaSeragam
+	gate        *usecase.VerifyGate
 }
 
 func newLoginFixture() *loginFixture {
@@ -207,13 +208,14 @@ func newLoginFixture() *loginFixture {
 		issuer:      &fakeIssuer{},
 		limiter:     newFakeLimiter(),
 		passwords:   newFakePasswords(),
+		gate:        usecase.NewVerifyGate(0, 0),
 	}
 }
 
 func (fx *loginFixture) loginEmployee() *usecase.LoginEmployee {
 	return usecase.NewLoginEmployee(fx.creds, fx.persons, fx.emps, fx.assigns, fx.tenants,
 		fx.passwords, fx.central, fx.tenantRoles, fx.issuer,
-		fx.limiter, usecase.DefaultLoginPolicy())
+		fx.limiter, usecase.DefaultLoginPolicy(), fx.gate)
 }
 
 func (fx *loginFixture) selectTenant() *usecase.SelectTenant {
@@ -222,7 +224,7 @@ func (fx *loginFixture) selectTenant() *usecase.SelectTenant {
 
 func (fx *loginFixture) loginCitizen() *usecase.LoginCitizen {
 	return usecase.NewLoginCitizen(fx.creds, fx.persons, fx.passwords, fx.issuer,
-		fx.limiter, usecase.DefaultLoginPolicy())
+		fx.limiter, usecase.DefaultLoginPolicy(), fx.gate)
 }
 
 // seedEmployee membuat person aktif + employment ASN aktif + credential NIP berpassword.

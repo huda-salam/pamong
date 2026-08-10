@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"runtime"
 	"time"
 
 	"github.com/google/uuid"
@@ -35,6 +36,67 @@ func DefaultLoginPolicy() LoginPolicy {
 	return LoginPolicy{Limit: 10, Window: 15 * time.Minute}
 }
 
+// VerifyGate membatasi BERAPA BANYAK verifikasi password yang berjalan bersamaan — dan ia adalah
+// pasangan wajib dari penyeragaman biaya kerja di bawah, bukan hiasan.
+//
+// Sebelum penyeragaman, nilai yang tak terdaftar berhenti di lookup (~2-5 ms). Sesudahnya SETIAP
+// percobaan membayar bcrypt (~60-100 ms CPU) — itulah yang menutup orakel timing, dan sekaligus
+// mengalikan biaya per-request anonim 20-50×. Rate limit yang ada tak membendungnya: lapis 1
+// ber-key NILAI MENTAH, jadi penyerang yang mengirim nilai acak berbeda tiap request tak pernah
+// menyentuh kuota mana pun, dan `/auth/*` sengaja dilayani tanpa middleware RateLimit (kuncinya
+// per-principal; pra-otentikasi principal selalu uuid.Nil → satu bucket global yang justru
+// mematikan login bagi semua orang — lihat REVIEW_BACKLOG A5). net/http juga tak membatasi
+// concurrency, jadi tanpa gerbang ini beberapa ratus rps dari satu host menjenuhkan seluruh core
+// dan menjatuhkan monolit — termasuk rute bisnis yang tak ada hubungannya dengan login.
+//
+// Yang dibatasi CONCURRENCY, bukan laju. Bedanya menentukan: kuota global ber-laju akan menolak
+// begitu jatah habis (persis cara "mematikan login bagi semua orang" yang sudah ditolak untuk
+// middleware RateLimit), sedangkan gerbang concurrency membuat permintaan MENGANTRE — pengguna sah
+// tetap dilayani, throughput-nya saja yang turun.
+//
+// Ini CONTAINMENT, bukan kekebalan: di bawah serangan yang cukup deras antrean tetap penuh dan
+// pengguna sah ikut kehabisan waktu tunggu. Yang dijamin gerbang ini hanya bahwa kerusakannya
+// berhenti di jalur auth alih-alih menghabiskan CPU seluruh proses. Penutup sebenarnya = kuota
+// per-IP di depan rute anonim, yang menunggu keputusan proxy tepercaya (REVIEW_BACKLOG A5, OPEN).
+type VerifyGate struct {
+	slots chan struct{}
+	wait  time.Duration
+}
+
+// NewVerifyGate membuat gerbang. maxConcurrent <= 0 → GOMAXPROCS (bcrypt terikat CPU, jadi slot
+// melebihi jumlah core hanya menambah antrean tanpa menambah throughput). wait <= 0 → 2 detik:
+// cukup panjang untuk menyerap lonjakan wajar (satu verifikasi ~60-100 ms), cukup pendek agar
+// permintaan yang tak akan terlayani dilepas alih-alih menahan goroutine & koneksi.
+//
+// SATU gerbang dipakai bersama seluruh permukaan login (employee & citizen) — dibuat sekali di
+// composition root lalu diteruskan ke kedua konstruktor. Gerbang per-use-case akan melipatgandakan
+// batas sesuai jumlah permukaan, yaitu persis angka yang seharusnya dibatasi.
+func NewVerifyGate(maxConcurrent int, wait time.Duration) *VerifyGate {
+	if maxConcurrent <= 0 {
+		maxConcurrent = runtime.GOMAXPROCS(0)
+	}
+	if wait <= 0 {
+		wait = 2 * time.Second
+	}
+	return &VerifyGate{slots: make(chan struct{}, maxConcurrent), wait: wait}
+}
+
+// acquire menahan satu slot. Jenuh melebihi wait → 429 (errTooManyLogin). 429 di sini BUKAN orakel:
+// kejenuhan adalah keadaan proses, sama untuk kredensial yang ada maupun tidak — berbeda dari kuota
+// lapis 2 yang hanya tercapai untuk kredensial nyata dan karena itu wajib menjawab 401.
+func (g *VerifyGate) acquire(ctx context.Context) (release func(), err error) {
+	timer := time.NewTimer(g.wait)
+	defer timer.Stop()
+	select {
+	case g.slots <- struct{}{}:
+		return func() { <-g.slots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
+		return nil, errTooManyLogin()
+	}
+}
+
 // passwordAuthenticator memverifikasi (cred_type, cred_value, password) → person aktif. SATU
 // implementasi dipakai jalur employee & citizen: kalau aturannya disalin, salah satu salinan akan
 // menyimpang diam-diam saat yang lain diperbaiki (doktrin yang sama dengan crypto.FieldSealer).
@@ -56,6 +118,7 @@ type passwordAuthenticator struct {
 	// dummyHash adalah hash ber-cost SAMA dengan hash asli, dipakai untuk verifikasi tiruan
 	// pada jalur yang tak punya hash asli — lihat newPasswordAuthenticator & authenticate.
 	dummyHash string
+	gate      *VerifyGate
 }
 
 // dummyPassword adalah plaintext yang di-hash sekali saat konstruksi. Nilainya tidak rahasia
@@ -81,7 +144,12 @@ func newPasswordAuthenticator(
 	passwords port.PasswordVerifier,
 	limiter port.RateLimiter,
 	policy LoginPolicy,
+	gate *VerifyGate,
 ) passwordAuthenticator {
+	if gate == nil {
+		panic("usecase.newPasswordAuthenticator: VerifyGate nil — penyeragaman biaya kerja tanpa " +
+			"batas concurrency membuat rute /auth/* anonim bisa menjenuhkan CPU seluruh proses")
+	}
 	dummy, err := passwords.Hash(dummyPassword)
 	if err != nil {
 		panic("usecase.newPasswordAuthenticator: gagal menyiapkan hash tiruan — " +
@@ -89,7 +157,7 @@ func newPasswordAuthenticator(
 	}
 	return passwordAuthenticator{
 		creds: creds, persons: persons, passwords: passwords,
-		limiter: limiter, policy: policy, dummyHash: dummy,
+		limiter: limiter, policy: policy, dummyHash: dummy, gate: gate,
 	}
 }
 
@@ -128,28 +196,42 @@ func (a passwordAuthenticator) authenticate(ctx context.Context, t domain.CredTy
 	hash, eligible := a.dummyHash, false
 
 	cred, credErr := a.creds.FindByTypeValue(ctx, t, value)
+
+	// Lapis 2 — habisnya kuota menjawab 401 SERAGAM, bukan 429. Lapis ini hanya BERMAKNA untuk
+	// kredensial yang BENAR-BENAR ADA, jadi 429 di sini akan memberi tahu penyerang bahwa nilai
+	// yang ia tebak terdaftar — orakel keberadaan akun satu-probe-per-target. Cermin dari "diam
+	// saat kuota habis" di RequestOTP, disesuaikan dengan jalur yang responsnya 401.
+	//
+	// Allow dipanggil TANPA SYARAT, dengan key sentinel bila kredensial tak ada. Kalau ia hanya
+	// dipanggil di cabang "ketemu", kredensial yang ada membayar satu operasi limiter lebih banyak
+	// daripada yang tidak — tak terasa selama store-nya map in-process, tapi `port.RateLimiter`
+	// memang dirancang untuk pindah ke Redis, dan di sana selisihnya menjadi satu round trip
+	// jaringan. Itu bentuk lemah dari orakel yang sedang ditutup file ini; membiarkannya berarti
+	// mengulang pola A11 — properti yang aman sampai implementasi di bawahnya berubah.
+	credKey := absentCredKey
 	if credErr == nil {
-		// Lapis 2 — habisnya kuota menjawab 401 SERAGAM, bukan 429. Lapis ini hanya tercapai untuk
-		// kredensial yang BENAR-BENAR ADA, jadi 429 di sini akan memberi tahu penyerang bahwa
-		// nilai yang ia tebak terdaftar — orakel keberadaan akun satu-probe-per-target. Cermin dari
-		// "diam saat kuota habis" di RequestOTP, disesuaikan dengan jalur yang responsnya 401.
-		allowed, err = a.limiter.Allow(ctx, loginCredKey(cred.ID), a.policy.Limit, a.policy.Window)
-		if err != nil {
-			// Error store → 500 di kedua lapis, untuk nilai dikenal maupun tidak (lapis 1 memakai
-			// store yang sama & gagal lebih dulu), jadi bukan orakel — dan status yang berbeda
-			// sudah membedakannya tanpa perlu timing.
-			return nil, err
-		}
-		// Kuota habis & credential tanpa password (SSO/OTP-only) TIDAK berhenti di sini: keduanya
-		// jatuh ke Verify tiruan, sama seperti kredensial yang tak ada.
-		if allowed && cred.SecretHash != "" {
-			hash, eligible = cred.SecretHash, true
-		}
+		credKey = loginCredKey(cred.ID)
+	}
+	allowed, err = a.limiter.Allow(ctx, credKey, a.policy.Limit, a.policy.Window)
+	if err != nil {
+		return nil, err // fail-closed, sama seperti lapis 1
+	}
+	// Kuota habis & credential tanpa password (SSO/OTP-only) TIDAK berhenti di sini: keduanya
+	// jatuh ke Verify tiruan, sama seperti kredensial yang tak ada.
+	if credErr == nil && allowed && cred.SecretHash != "" {
+		hash, eligible = cred.SecretHash, true
 	}
 
+	// Gerbang concurrency — HARUS melingkupi Verify, bukan menggantikannya. Lihat VerifyGate.
+	release, err := a.gate.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
 	// SATU-SATUNYA titik panggil Verify di alur ini. `!eligible` menjaga kasus tepi hash tiruan:
 	// password yang kebetulan sama dengan dummyPassword akan lolos Verify, dan tetap harus ditolak.
-	if verifyErr := a.passwords.Verify(hash, password); verifyErr != nil || !eligible {
+	verifyErr := a.passwords.Verify(hash, password)
+	release() // slot dilepas sebelum query person: yang mahal & perlu dibatasi hanya bcrypt.
+	if verifyErr != nil || !eligible {
 		return nil, errInvalidCredential()
 	}
 
@@ -190,6 +272,12 @@ func hashKeyPart(value string) string {
 }
 
 func loginCredKey(credID uuid.UUID) string { return "login:cred:" + credID.String() }
+
+// absentCredKey adalah key lapis 2 untuk nilai yang TIDAK me-resolve ke kredensial mana pun. Ia
+// ada semata agar jumlah operasi limiter sama di kedua jalur; penghitungnya tak dipakai untuk
+// keputusan apa pun (`allowed` hanya dibaca saat kredensial ketemu). Sengaja SATU key tetap, bukan
+// key ber-nilai: yang terakhir menggandakan ruang key yang justru dibatasi di REVIEW_BACKLOG A9.
+const absentCredKey = "login:cred:absent"
 
 // errTooManyLogin dipakai saat lapis 1 terlampaui → HTTP 429.
 func errTooManyLogin() error {

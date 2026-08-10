@@ -197,12 +197,14 @@ func newFixture(t *testing.T) *fixture {
 	passwords := auth.NewBcryptVerifier()
 	issuer := fakeIssuer{}
 	pol := usecase.DefaultLoginPolicy()
+	// Satu gerbang untuk kedua permukaan login, meniru cmd/server.newAuthHandler.
+	gate := usecase.NewVerifyGate(0, 0)
 
 	fx.handler = identityhttp.NewHandler(
 		usecase.NewLoginEmployee(fx.creds, fx.persons, emps, assigns, tenants, passwords,
-			fakeRoles{}, fakeRoles{}, issuer, fx.limiter, pol),
+			fakeRoles{}, fakeRoles{}, issuer, fx.limiter, pol, gate),
 		usecase.NewSelectTenant(emps, assigns, tenants, fakeRoles{}, fakeRoles{}, issuer),
-		usecase.NewLoginCitizen(fx.creds, fx.persons, passwords, issuer, fx.limiter, pol),
+		usecase.NewLoginCitizen(fx.creds, fx.persons, passwords, issuer, fx.limiter, pol, gate),
 		usecase.NewRequestOTP(fx.creds, fx.persons, otps, fakeCodec{}, fx.messaging, fx.limiter,
 			testkit.NewNoopLogger(), usecase.DefaultOTPPolicy(), nil),
 		usecase.NewVerifyOTP(fx.creds, fx.persons, otps, fakeCodec{}, fx.limiter, issuer,
