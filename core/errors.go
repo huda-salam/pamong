@@ -95,3 +95,17 @@ func ErrTooManyRequests(reason string) error {
 		Message: reason,
 	}
 }
+
+// ErrTokenTooLarge dipublikasikan saat token yang akan diterbitkan melampaui pagar ukuran
+// (HTTP 409). Kondisinya bukan kesalahan input klien dan bukan gangguan sementara: himpunan
+// role aktor membuat token tak akan bisa dipakai di balik proxy, dan hanya admin yang bisa
+// memperbaikinya (kurangi role, atau naikkan GOV_AUTH_TOKEN_MAX_BYTES bila proxy memang lebih
+// longgar). Karena itu 409 (konflik dengan keadaan sekarang, retry tak menolong) — BUKAN 503
+// (mengundang retry sia-sia) dan bukan 500 generik yang menyembunyikan sebab yang actionable.
+// Lihat ADR-020.
+func ErrTokenTooLarge(reason string) error {
+	return &FrameworkError{
+		Code:    "TOKEN_TOO_LARGE",
+		Message: reason,
+	}
+}

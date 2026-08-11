@@ -60,7 +60,9 @@ func httpStatus(code string) int {
 		return http.StatusForbidden
 	case "VALIDATION_ERROR":
 		return http.StatusUnprocessableEntity
-	case "CONFLICT":
+	case "CONFLICT", "TOKEN_TOO_LARGE":
+		// TOKEN_TOO_LARGE (ADR-020): himpunan role aktor bertabrakan dengan pagar ukuran token.
+		// Retry tak menolong; yang harus berubah adalah keadaan (role) atau ambang ops.
 		return http.StatusConflict
 	case "TOO_MANY_REQUESTS":
 		return http.StatusTooManyRequests

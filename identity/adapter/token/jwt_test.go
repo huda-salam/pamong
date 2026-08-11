@@ -68,7 +68,7 @@ func assertUnauthorized(t *testing.T, err error) {
 
 // TestJWTCodec_IssueVerify_RoundTrip — DoD: token valid diverifikasi; SEMUA klaim utuh.
 func TestJWTCodec_IssueVerify_RoundTrip(t *testing.T) {
-	c := NewJWTCodec(testSecret, time.Hour, &fakeRevoked{})
+	c := NewJWTCodec(Options{Secret: testSecret, TTL: time.Hour, Revoked: &fakeRevoked{}})
 	now := time.Unix(1_700_000_000, 0).UTC()
 	c.now = func() time.Time { return now }
 
@@ -107,7 +107,7 @@ func TestJWTCodec_IssueVerify_RoundTrip(t *testing.T) {
 
 // TestJWTCodec_Issue_UniqueJTI — tiap penerbitan punya jti berbeda (untuk revocation).
 func TestJWTCodec_Issue_UniqueJTI(t *testing.T) {
-	c := NewJWTCodec(testSecret, time.Hour, &fakeRevoked{})
+	c := NewJWTCodec(Options{Secret: testSecret, TTL: time.Hour, Revoked: &fakeRevoked{}})
 	raw1, err := c.Issue(context.Background(), sampleClaims())
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +132,7 @@ func TestJWTCodec_Issue_UniqueJTI(t *testing.T) {
 // TestJWTCodec_Verify_Revoked — DoD: token revoked ditolak.
 func TestJWTCodec_Verify_Revoked(t *testing.T) {
 	store := &fakeRevoked{}
-	c := NewJWTCodec(testSecret, time.Hour, store)
+	c := NewJWTCodec(Options{Secret: testSecret, TTL: time.Hour, Revoked: store})
 
 	raw, err := c.Issue(context.Background(), sampleClaims())
 	if err != nil {
@@ -152,7 +152,7 @@ func TestJWTCodec_Verify_Revoked(t *testing.T) {
 
 // TestJWTCodec_Verify_Expired — token kedaluwarsa ditolak (clock dimajukan melewati exp).
 func TestJWTCodec_Verify_Expired(t *testing.T) {
-	c := NewJWTCodec(testSecret, time.Hour, &fakeRevoked{})
+	c := NewJWTCodec(Options{Secret: testSecret, TTL: time.Hour, Revoked: &fakeRevoked{}})
 	base := time.Unix(1_700_000_000, 0).UTC()
 	c.now = func() time.Time { return base }
 
@@ -167,7 +167,7 @@ func TestJWTCodec_Verify_Expired(t *testing.T) {
 
 // TestJWTCodec_Verify_TamperedSignature — tanda tangan diubah → ditolak.
 func TestJWTCodec_Verify_TamperedSignature(t *testing.T) {
-	c := NewJWTCodec(testSecret, time.Hour, &fakeRevoked{})
+	c := NewJWTCodec(Options{Secret: testSecret, TTL: time.Hour, Revoked: &fakeRevoked{}})
 	raw, err := c.Issue(context.Background(), sampleClaims())
 	if err != nil {
 		t.Fatal(err)
@@ -195,12 +195,12 @@ func TestJWTCodec_Verify_TamperedSignature(t *testing.T) {
 
 // TestJWTCodec_Verify_WrongSecret — token sah tapi diverifikasi dengan secret lain → ditolak.
 func TestJWTCodec_Verify_WrongSecret(t *testing.T) {
-	issuer := NewJWTCodec(testSecret, time.Hour, &fakeRevoked{})
+	issuer := NewJWTCodec(Options{Secret: testSecret, TTL: time.Hour, Revoked: &fakeRevoked{}})
 	raw, err := issuer.Issue(context.Background(), sampleClaims())
 	if err != nil {
 		t.Fatal(err)
 	}
-	verifier := NewJWTCodec([]byte("secret-lain-yang-juga-cukup-panjang"), time.Hour, &fakeRevoked{})
+	verifier := NewJWTCodec(Options{Secret: []byte("secret-lain-yang-juga-cukup-panjang"), TTL: time.Hour, Revoked: &fakeRevoked{}})
 	_, err = verifier.Verify(context.Background(), raw)
 	assertUnauthorized(t, err)
 }
@@ -208,7 +208,7 @@ func TestJWTCodec_Verify_WrongSecret(t *testing.T) {
 // TestJWTCodec_Verify_AlgNoneRejected — token alg=none (tanpa tanda tangan) → ditolak
 // (pin algoritma mencegah alg=none / alg-confusion).
 func TestJWTCodec_Verify_AlgNoneRejected(t *testing.T) {
-	c := NewJWTCodec(testSecret, time.Hour, &fakeRevoked{})
+	c := NewJWTCodec(Options{Secret: testSecret, TTL: time.Hour, Revoked: &fakeRevoked{}})
 	raw, err := jwt.NewWithClaims(jwt.SigningMethodNone, validJWTClaims()).
 		SignedString(jwt.UnsafeAllowNoneSignatureType)
 	if err != nil {
@@ -220,7 +220,7 @@ func TestJWTCodec_Verify_AlgNoneRejected(t *testing.T) {
 
 // TestJWTCodec_Verify_WrongIssuerRejected — issuer asing, walau tanda tangan benar → ditolak.
 func TestJWTCodec_Verify_WrongIssuerRejected(t *testing.T) {
-	c := NewJWTCodec(testSecret, time.Hour, &fakeRevoked{})
+	c := NewJWTCodec(Options{Secret: testSecret, TTL: time.Hour, Revoked: &fakeRevoked{}})
 	claims := validJWTClaims()
 	claims.Issuer = "penipu" // bukan internalIssuer
 	raw, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(testSecret)
@@ -234,7 +234,7 @@ func TestJWTCodec_Verify_WrongIssuerRejected(t *testing.T) {
 // TestJWTCodec_Verify_StoreError_FailClosed — bila store revocation gagal, Verify menolak
 // (fail-closed) dengan error internal (BUKAN 401, agar terlihat sebagai kegagalan sistem).
 func TestJWTCodec_Verify_StoreError_FailClosed(t *testing.T) {
-	c := NewJWTCodec(testSecret, time.Hour, &fakeRevoked{err: errors.New("db mati")})
+	c := NewJWTCodec(Options{Secret: testSecret, TTL: time.Hour, Revoked: &fakeRevoked{err: errors.New("db mati")}})
 	raw, err := c.Issue(context.Background(), sampleClaims()) // Issue tak menyentuh store
 	if err != nil {
 		t.Fatal(err)

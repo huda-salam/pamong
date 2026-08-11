@@ -210,7 +210,7 @@ func TestE2E_CreateSuratMasuk_201(t *testing.T) {
 	// Auth stack — secret sama dipakai untuk verifier (server) & issuer (mint token).
 	secret := []byte("e2e-test-secret-0123456789-abcdef")
 	revoked := identitydb.NewRevokedTokenStore(identityPool)
-	verifier := identitytoken.NewJWTCodec(secret, time.Hour, revoked)
+	verifier := identitytoken.NewJWTCodec(identitytoken.Options{Secret: secret, TTL: time.Hour, Revoked: revoked})
 	centralCatalog, err := identitydb.NewCentralRoleCatalog(ctx, identitydb.NewCentralRoleRepo(identityPool))
 	if err != nil {
 		t.Fatalf("central catalog: %v", err)
@@ -230,7 +230,7 @@ func TestE2E_CreateSuratMasuk_201(t *testing.T) {
 	})
 
 	// Mint token employee ber-role operator_surat pada tenant pemkot-a.
-	issuer := identitytoken.NewJWTCodec(secret, time.Hour, revoked)
+	issuer := identitytoken.NewJWTCodec(identitytoken.Options{Secret: secret, TTL: time.Hour, Revoked: revoked})
 	token, err := issuer.Issue(ctx, port.Claims{
 		PersonID: uuid.New(), Persona: "employee", EmploymentStatus: "asn",
 		TenantID: tenantID, TenantRoles: []string{"operator_surat"},

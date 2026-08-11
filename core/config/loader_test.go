@@ -3,6 +3,8 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -354,5 +356,92 @@ func TestLoad_DurationDariYAML(t *testing.T) {
 func TestCryptoConfig_DEKCacheTTLDefault(t *testing.T) {
 	if got := (config.CryptoConfig{}).DEKCacheTTLOrDefault(); got != 5*time.Minute {
 		t.Fatalf("TTL default = %v, mau 5m", got)
+	}
+}
+
+// TestLoad_TokenMaxBytesTerlaluKecil: pagar ukuran token (ADR-020) yang disetel di bawah ukuran
+// token dasar memblokir SELURUH login — dan bentuk kegagalannya (semua orang gagal login,
+// tanpa perubahan kode) sama membingungkannya dengan masalah yang pagar itu cegah. Salah ketik
+// satu digit karenanya harus gagal saat boot, di semua env (bukan hanya production).
+func TestLoad_TokenMaxBytesTerlaluKecil(t *testing.T) {
+	for _, env := range []string{"development", "staging", "production"} {
+		dir := t.TempDir()
+		writeYAML(t, dir, env+".yaml", "env: "+env+"\nauth:\n  token_max_bytes: 614\n")
+
+		_, err := config.Load(config.WithDir(dir), config.WithEnv(env))
+		if err == nil {
+			t.Errorf("env=%s: auth.token_max_bytes=614 harus ditolak Validate()", env)
+			continue
+		}
+		if !strings.Contains(err.Error(), "token_max_bytes") {
+			t.Errorf("env=%s: pesan tak menunjuk field yang salah: %v", env, err)
+		}
+	}
+}
+
+// TestLoad_TokenMaxBytesKosongSah: 0 (tidak diset) berarti "pakai default aman adapter token",
+// bukan "tanpa pagar" — jadi ia tidak boleh menahan boot. Default-nya ditegakkan di
+// identity/adapter/token (TestJWTCodec_Issue_AmbangNol_PakaiDefault), bukan di sini.
+func TestLoad_TokenMaxBytesKosongSah(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "development.yaml", "env: development\n")
+
+	cfg, err := config.Load(config.WithDir(dir), config.WithEnv("development"))
+	if err != nil {
+		t.Fatalf("config tanpa auth.token_max_bytes harus sah: %v", err)
+	}
+	if cfg.Auth.TokenMaxBytes != 0 {
+		t.Fatalf("TokenMaxBytes = %d, mau 0 (biarkan adapter yang memberi default)", cfg.Auth.TokenMaxBytes)
+	}
+}
+
+// TestLoad_TokenMaxBytesDariEnv: ambang adalah kebijakan ops, jadi ia harus bisa dinaikkan lewat
+// env var tanpa menyentuh file config (mis. deployment di belakang ALB dengan batas 16 KiB).
+func TestLoad_TokenMaxBytesDariEnv(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "development.yaml", "env: development\nauth:\n  token_max_bytes: 6144\n")
+	t.Setenv("GOV_AUTH_TOKEN_MAX_BYTES", "15000")
+
+	cfg, err := config.Load(config.WithDir(dir), config.WithEnv("development"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Auth.TokenMaxBytes != 15000 {
+		t.Fatalf("TokenMaxBytes = %d, mau 15000 (env menang atas YAML)", cfg.Auth.TokenMaxBytes)
+	}
+}
+
+// TestLoad_TokenMaxBytesTerlaluBesar: ambang token juga MENURUNKAN MaxHeaderBytes
+// (cmd/server.maxHeaderBytes), jadi nilai raksasa membatalkan sendiri tujuan pagar — batas header
+// kembali selonggar default Go 1 MiB. Angka yang "terasa aman karena besar" harus ditolak saat
+// boot, bukan diam-diam menghasilkan konfigurasi yang lebih longgar dari sebelum pagar ada.
+func TestLoad_TokenMaxBytesTerlaluBesar(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, "development.yaml", "env: development\nauth:\n  token_max_bytes: 1000000\n")
+
+	_, err := config.Load(config.WithDir(dir), config.WithEnv("development"))
+	if err == nil {
+		t.Fatalf("auth.token_max_bytes=1000000 harus ditolak (plafon %d)", config.MaxTokenMaxBytes)
+	}
+	if !strings.Contains(err.Error(), "token_max_bytes") {
+		t.Errorf("pesan tak menunjuk field yang salah: %v", err)
+	}
+}
+
+// TestLoad_TokenMaxBytesBatasSah: kedua ujung yang SAH harus benar-benar lolos — pagar yang
+// menolak nilai batasnya sendiri akan mengirim ops menebak-nebak.
+func TestLoad_TokenMaxBytesBatasSah(t *testing.T) {
+	for _, v := range []int{config.MinTokenMaxBytes, config.MaxTokenMaxBytes} {
+		dir := t.TempDir()
+		writeYAML(t, dir, "development.yaml",
+			"env: development\nauth:\n  token_max_bytes: "+strconv.Itoa(v)+"\n")
+
+		cfg, err := config.Load(config.WithDir(dir), config.WithEnv("development"))
+		if err != nil {
+			t.Fatalf("token_max_bytes=%d harus sah: %v", v, err)
+		}
+		if cfg.Auth.TokenMaxBytes != v {
+			t.Fatalf("TokenMaxBytes = %d, mau %d", cfg.Auth.TokenMaxBytes, v)
+		}
 	}
 }

@@ -355,9 +355,20 @@ GOV_LOG_LEVEL=info                   # debug | info | warn | error
 GOV_LOG_FORMAT=json                  # json | text (text hanya untuk dev)
 
 # Auth
+# Token SSO EKSTERNAL (verifikasi token dari IdP lain).
 GOV_AUTH_JWKS_URL=https://sso.gov.example/jwks
 GOV_AUTH_ISSUER=https://sso.gov.example
 GOV_AUTH_AUDIENCE=pamong
+# Token INTERNAL (diterbitkan & diverifikasi Pamong sendiri, HS256; ADR-007).
+GOV_AUTH_TOKEN_SECRET=...            # kunci HMAC; wajib & ≥32 karakter di production
+GOV_AUTH_TOKEN_TTL=3600              # umur token internal (detik); 0 = default 1 jam
+# Pagar ukuran token (ADR-020): token di atas ambang DITOLAK saat login — bukan diterbitkan lalu
+# ditolak proxy (login 200, lalu SEMUA request 400 tanpa jejak di log aplikasi). 0/kosong =
+# default aman 6144 byte, di bawah batas header nginx 8 KiB. Naikkan hanya bila proxy di depan
+# memang lebih longgar (ALB 16 KiB). Tak ada nilai yang mematikan pagar; <1024 dan >65536 ditolak
+# saat boot. Nilai EFEKTIF ikut di-log saat boot — env yang tak bisa di-parse (mis. "16k")
+# diabaikan loader secara sengaja, jadi periksa log itu bila setelan terasa tak berpengaruh.
+GOV_AUTH_TOKEN_MAX_BYTES=0
 
 # Rate limiting
 GOV_RATELIMIT_ENABLED=true

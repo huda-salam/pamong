@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -174,10 +175,11 @@ func TestE2E_Login_LaluAksesRuteBisnis(t *testing.T) {
 	// persis seperti run(). Kalau keduanya dirakit dari secret berbeda, login berhasil tapi token
 	// yang dihasilkannya ditolak 401 di request berikutnya — jenis kesalahan yang cuma terlihat
 	// dengan menempuh kedua langkah dalam satu test.
-	codec := identitytoken.NewJWTCodec(
-		[]byte("e2e-test-secret-0123456789-abcdef"), time.Hour,
-		identitydb.NewRevokedTokenStore(identityPool),
-	)
+	codec := identitytoken.NewJWTCodec(identitytoken.Options{
+		Secret:  []byte("e2e-test-secret-0123456789-abcdef"),
+		TTL:     time.Hour,
+		Revoked: identitydb.NewRevokedTokenStore(identityPool),
+	})
 	centralCatalog, err := identitydb.NewCentralRoleCatalog(ctx, identitydb.NewCentralRoleRepo(identityPool))
 	if err != nil {
 		t.Fatalf("central catalog: %v", err)
@@ -282,6 +284,78 @@ func TestE2E_Login_LaluAksesRuteBisnis(t *testing.T) {
 	if strings.Contains(recSalah.Body.String(), nip) {
 		t.Fatalf("respons login gagal mengutip NIP yang dicoba — jalur samping ADR-009 §6: %s",
 			recSalah.Body.String())
+	}
+
+	// === Langkah 4 (DoD PR-W3c): akun yang SAMA menumpuk role sampai tokennya melewati pagar ===
+	//
+	// Ini bentuk kegagalan yang pagar ADR-020 ada untuk mencegah, dan ia hanya bisa dibuktikan
+	// dari ujung ke ujung: role dibaca resolver tenant NYATA saat login, jadi tak ada satu pun
+	// tempat di jalur ini yang tahu berapa besar token akan jadi sampai ia ditandatangani.
+	// Tanpa pagar, langkah ini akan LULUS dengan 200 + token 7 KB — dan setiap request berikutnya
+	// ditolak proxy 400 tanpa jejak di log aplikasi.
+	seedBanyakRoleTenant(t, ctx, connMgr, tenantID, personID, 50, 100)
+
+	recBesar := httptest.NewRecorder()
+	reqBesar := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(loginBody))
+	reqBesar.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(recBesar, reqBesar)
+
+	if recBesar.Code != http.StatusConflict {
+		t.Fatalf("login akun ber-50-role-panjang: mau 409, dapat %d — body: %s",
+			recBesar.Code, recBesar.Body.String())
+	}
+	var gagal struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+		Token   string `json:"token"`
+	}
+	if err := json.Unmarshal(recBesar.Body.Bytes(), &gagal); err != nil {
+		t.Fatalf("decode respons login oversize: %v — body: %s", err, recBesar.Body.String())
+	}
+	if gagal.Code != "TOKEN_TOO_LARGE" {
+		t.Fatalf("code = %q, mau TOKEN_TOO_LARGE (kegagalan yang bisa dialertkan ops): %s",
+			gagal.Code, recBesar.Body.String())
+	}
+	// Inti DoD: token itu TIDAK PERNAH sampai ke klien. Bila ia lolos, klien akan menyimpannya
+	// dan gagal pada request berikutnya di tempat yang tak bisa didiagnosis.
+	if gagal.Token != "" {
+		t.Fatalf("token oversize bocor ke klien (%d byte)", len(gagal.Token))
+	}
+	if !strings.Contains(recBesar.Body.String(), "role tenant") {
+		t.Fatalf("pesan tak menuntun ke sebabnya (jumlah role): %s", recBesar.Body.String())
+	}
+}
+
+// seedBanyakRoleTenant menugaskan n role tenant bernama panjang (nameLen karakter) ke user —
+// bentuk yang PERSIS diizinkan tenantRoleNameRe hari ini, sebab tak ada batas panjang di sana.
+// Inilah cara akun nyata membengkak: admin tenant yang mengakumulasi role lintas tahun.
+func seedBanyakRoleTenant(
+	t *testing.T, ctx context.Context, connMgr *db.TenantConnManager,
+	tenantID string, userID uuid.UUID, n, nameLen int,
+) {
+	t.Helper()
+	tenantPool, err := connMgr.Tenant(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("tenant pool: %v", err)
+	}
+	roles := tenantroledb.NewTenantRoleRepo(tenantPool)
+	assigns := tenantroledb.NewTenantRoleAssignmentRepo(tenantPool)
+	for i := 0; i < n; i++ {
+		suffix := strconv.Itoa(i)
+		name := strings.Repeat("r", nameLen-len(suffix)) + suffix
+		role := &tenantroledomain.TenantRole{
+			ID: uuid.New(), Name: name, Label: "Role " + suffix,
+			Permissions: []string{"surat_masuk:surat:baca"},
+		}
+		if err := roles.Save(ctx, role); err != nil {
+			t.Fatalf("simpan role %d: %v", i, err)
+		}
+		if err := assigns.Save(ctx, &tenantroledomain.TenantRoleAssignment{
+			ID: uuid.New(), UserID: userID, RoleID: role.ID, AssignedBy: userID,
+			ValidFrom: time.Now().Add(-24 * time.Hour),
+		}); err != nil {
+			t.Fatalf("simpan assignment role %d: %v", i, err)
+		}
 	}
 }
 

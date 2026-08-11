@@ -1,7 +1,8 @@
 # ADR-007: Token internal JWT HS256, seam verify, dan revocation via jti
 
 ## Status
-Accepted
+Accepted · **Amended by ADR-020** (pagar ukuran token: `Issue` menolak token di atas ambang
+`GOV_AUTH_TOKEN_MAX_BYTES`; Keputusan 2 di bawah tetap berlaku selebihnya)
 
 ## Konteks
 Sub-phase 2.4 (auth flow) butuh fondasi token: identity harus bisa **menerbitkan** token

@@ -1084,7 +1084,7 @@ tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
     `POST /admin/identity/credentials` ✅ (e2e, dengan kontrol positif 201 untuk target biasa).
     Keduanya diverifikasi lewat MUTASI dua arah.
 
-- **PR-W3c** Pagar ukuran token JWT ← W3a
+- **PR-W3c** ✅ Pagar ukuran token JWT ← W3a — **SELESAI** (ADR-020, amends ADR-007)
   - **URUTAN: dikerjakan SEGERA setelah W3a, MENDAHULUI W3b.** Huruf di sini identitas, bukan
     urutan — W3b (wiring Authority) menyusul sesudahnya.
   - Masalah: `central_roles[]` + `tenant_roles[]` adalah satu-satunya klaim yang bertumbuh, dan
@@ -1109,6 +1109,26 @@ tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
     konstanta — deployment di belakang ALB (16 KB) boleh lebih longgar dari nginx (8 KB).
   - DoD: token yang melewati ambang ditolak saat login dengan error eksplisit + ter-log, dan ada
     test yang menerbitkan token melewati ambang lalu memastikan ia TIDAK pernah sampai ke klien.
+  - **Hasil:** pagar di `JWTCodec.Issue` (`core.ErrTokenTooLarge` → 409 `TOKEN_TOO_LARGE`, pesan
+    menyebut jumlah role) + `port.MetricsPort.RecordSize` (histogram byte; `auth_token_bytes` untuk
+    token yang lolos, counter `auth_token_oversize_total` untuk penolakan) + `MaxHeaderBytes`
+    diturunkan dari ambang token (`maxHeaderBytes()`, `max(16 KiB, ambang+8 KiB)`). Ambang =
+    `GOV_AUTH_TOKEN_MAX_BYTES`; 0 = default 6 KiB, <1 KiB ditolak saat boot; tak ada nilai yang
+    mematikan pagar. `NewJWTCodec` beralih ke `token.Options`. DoD dibuktikan **Langkah 4**
+    `TestE2E_Login_LaluAksesRuteBisnis`: akun yang login normal di Langkah 1 menumpuk 50 role
+    @100 karakter lewat repo NYATA, lalu login berikutnya dijawab 409 tanpa token di badan
+    respons. Token yang masih lolos di atas 80% ambang ter-log `Warn` (peringatan dini: pagar
+    yang hanya menolak akan mengunci akun tepat saat rilis tanpa sinyal sebelumnya), dan nilai
+    ambang EFEKTIF + `MaxHeaderBytes` ikut di-log saat boot (loader sengaja mengabaikan env yang
+    tak bisa di-parse, jadi `=16k` diam-diam menyisakan default). Angka ROADMAP di atas dikunci sebagai test
+    (`TestJWTCodec_UkuranTokenTumbuhSesuaiJumlahRole`: dasar 383 B, 137,6 B/role, 100 role =
+    14.139 B) sehingga "memasukkan permission ke token" gagal lantang. 5 mutasi diverifikasi.
+  - **Belum ter-expose:** kedua metrik baru menunggu `GET /metrics` di **PR-W6** (lihat butir (a)
+    di sana). Sinyal yang bekerja hari ini = log.
+  - **Tidak diselesaikan di sini (sengaja):** batas jumlah/panjang nama role tenant —
+    `tenantRoleNameRe` masih tanpa batas panjang. Pagar token menangkap AKIBAT, bukan sebabnya;
+    membatasi di pintu tulis `tenantrole` adalah perubahan perilaku bagi tenant yang mungkin sudah
+    punya nama panjang. Lihat "Keputusan tertunda" ADR-020.
 
 - **PR-W3b** Wiring Authority live → `SetScopedEvaluator` ← W1, 2.3.5, W3a
   - Bangun `permission.Authority` (`Roles []RoleRef` + RoleGrants dari resolver tenant, emitter
@@ -1162,6 +1182,10 @@ tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
     `defer tp.Shutdown(ctx)` agar batch span ter-flush. Menutup marker
     `DEFERRED(Phase-5.1.1)` di `infra/observability/metrics.go:56` + backlog
     "[Phase-5.1.1] Live wiring metrics endpoint".
+    - **Sudah ada yang MENUNGGU endpoint ini:** `auth_token_bytes` (histogram byte) &
+      `auth_token_oversize_total` dari pagar ukuran token PR-W3c/ADR-020. Sampai W6 mendarat,
+      pertumbuhan ukuran token hanya terlihat lewat log `Warn` di 80% ambang — cukup untuk
+      menemukan AKUN, tak cukup untuk melihat TREN. Sertakan alert pada counter itu saat mount.
   - (b) Rakit `audit.NewReader` + handler baca audit ber-permission. **Menuntut keputusan
     REVIEW_BACKLOG E1 lebih dulu:** entri audit identity ber-realm `_central` tak akan
     pernah cocok dengan tenant aktor di `Reader` — siapa yang berwenang membaca audit

@@ -288,6 +288,13 @@ type AuthConfig struct {
 	TokenSecret     string `yaml:"token_secret" env:"GOV_AUTH_TOKEN_SECRET"` // kunci HMAC; wajib & ≥32 byte di production
 	TokenTTLSeconds int    `yaml:"token_ttl" env:"GOV_AUTH_TOKEN_TTL"`       // umur token internal (detik); 0 = default
 
+	// TokenMaxBytes = pagar ukuran token terbit (ADR-020). Ini KEBIJAKAN OPS, bukan konstanta:
+	// batas header yang sesungguhnya ada di proxy di depan aplikasi dan berbeda per deployment
+	// (nginx 8 KiB per header, ALB 16 KiB), jadi angkanya harus bisa dinaikkan tanpa rilis.
+	// 0 = pakai default aman adapter token (token.DefaultMaxBytes) — pagar TETAP aktif, karena
+	// deployment yang lupa menyetel ini justru yang paling butuh dilindungi.
+	TokenMaxBytes int `yaml:"token_max_bytes" env:"GOV_AUTH_TOKEN_MAX_BYTES"`
+
 	// Token SSO eksternal (verifikasi token dari IdP lain).
 	JWKSURL  string `yaml:"jwks_url" env:"GOV_AUTH_JWKS_URL"`
 	Issuer   string `yaml:"issuer" env:"GOV_AUTH_ISSUER"`
@@ -313,6 +320,23 @@ type RateLimitConfig struct {
 // minTokenSecretLen adalah panjang minimum kunci HMAC token internal (HS256). 32 byte =
 // 256 bit, setara ukuran output HS256; kunci lebih pendek melemahkan tanda tangan.
 const minTokenSecretLen = 32
+
+// MinTokenMaxBytes & MaxTokenMaxBytes mengurung auth.token_max_bytes (ADR-020) dari kedua sisi.
+//
+// Lantai 1 KiB: token dasar tanpa satu pun role sudah 383 byte (diukur, ADR-020), jadi nilai di
+// bawah ini pasti
+// salah ketik — dan akibatnya memblokir SEMUA login.
+//
+// Plafon 64 KiB: ambang ini juga MENURUNKAN http.Server.MaxHeaderBytes (lihat
+// cmd/server.maxHeaderBytes), sehingga nilai raksasa membatalkan sendiri tujuan pagar ini —
+// batas header kembali selonggar default Go 1 MiB, dan satu klien bisa menahan buffer sebesar itu
+// per koneksi. 64 KiB sudah jauh di atas batas proxy mana pun yang lazim (nginx 8 KiB, ALB 16 KiB);
+// deployment yang merasa butuh lebih sedang memakai token sebagai penyimpan data, bukan identitas.
+// Keduanya diekspor agar composition root memakai angka yang SAMA, bukan salinannya.
+const (
+	MinTokenMaxBytes = 1024
+	MaxTokenMaxBytes = 64 * 1024
+)
 
 // nilai sah untuk field enumeratif — divalidasi saat boot agar salah ketik gagal cepat.
 var (
@@ -381,6 +405,25 @@ func (c *AppConfig) Validate() error {
 		case len(keys) == 0:
 			errs = append(errs, "crypto.master_key wajib untuk kms_driver=static (base64 32-byte, dari secret store/env — jangan di-commit)")
 		}
+	}
+
+	// Pagar ukuran token (ADR-020) yang disetel TERLALU KECIL memblokir SEMUA login — token
+	// dasar tanpa satu pun role saja sudah 383 byte. Salah ketik satu digit ("614" alih-alih
+	// "6144") karenanya menjatuhkan seluruh otentikasi, dan bentuk kegagalannya sama
+	// membingungkannya dengan masalah yang pagar ini ada untuk mencegah. Tolak saat boot.
+	switch {
+	case c.Auth.TokenMaxBytes == 0: // 0 = pakai default aman adapter token; sah.
+	case c.Auth.TokenMaxBytes < MinTokenMaxBytes:
+		errs = append(errs, fmt.Sprintf(
+			"auth.token_max_bytes=%d terlalu kecil (minimal %d; token tanpa role saja 383 byte, "+
+				"nilai di bawah ini memblokir semua login) — 0 berarti pakai default aman",
+			c.Auth.TokenMaxBytes, MinTokenMaxBytes))
+	case c.Auth.TokenMaxBytes > MaxTokenMaxBytes:
+		errs = append(errs, fmt.Sprintf(
+			"auth.token_max_bytes=%d terlalu besar (maksimal %d): ambang ini juga menurunkan "+
+				"MaxHeaderBytes, jadi nilai sebesar itu justru mengembalikan batas header ke "+
+				"kelonggaran default Go 1 MiB — kebalikan dari tujuan pagar",
+			c.Auth.TokenMaxBytes, MaxTokenMaxBytes))
 	}
 
 	// Di production, koneksi sentral wajib terisi — tidak boleh jalan dengan default kosong.

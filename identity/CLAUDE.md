@@ -164,6 +164,38 @@ keluar. Acuan bentuknya: `seedAdminBootstrap` di `cmd/server/admin_identity_e2e_
 - **Residu yang disengaja:** yang diperiksa wewenang SENTRAL target; role TENANT target hidup di
   DB tenant dan butuh port lintas-DB baru. Sisa risikonya lateral di dalam satu tenant.
 
+## Pagar ukuran token (PR-W3c · ADR-020)
+
+`JWTCodec.Issue` **menolak** token yang melewati ambang (`GOV_AUTH_TOKEN_MAX_BYTES`, default
+`token.DefaultMaxBytes` = 6 KiB) — tidak diterbitkan, dan `core.ErrTokenTooLarge` (409
+`TOKEN_TOO_LARGE`) menyebut jumlah role. `central_roles[]` + `tenant_roles[]` satu-satunya klaim
+yang bertumbuh (≈ `panjang_nama × 1,37` byte per role); tanpa pagar, akun ber-role banyak
+menerbitkan token yang ditolak PROXY, bukan aplikasi: login 200 lalu setiap request 400 tanpa
+jejak di log Go.
+
+- **Jangan memasukkan permission ke token** "supaya tak perlu katalog". Satu role dengan 40
+  permission harus tetap SATU entri. Dijaga assertion biaya-per-role di
+  `TestJWTCodec_UkuranTokenTumbuhSesuaiJumlahRole` — ia gagal bila muatan per role bertambah.
+- **Jangan memangkas role agar token muat.** Login akan terasa berhasil lalu permission ditolak
+  acak bergantung role mana yang terpotong: kegagalan otorisasi senyap, lebih buruk dari 409.
+- **`MaxBytes` kosong bukan "tanpa pagar"** — ia berarti default. Tak ada nilai yang mematikan
+  pagar; deployment tanpa proxy menuliskan angka besar secara eksplisit.
+- **`Metrics` & `Logger` di `token.Options` wajib diisi di produksi.** Nil hanya untuk unit test:
+  pagar tetap menegakkan, tapi penolakan yang tak ter-log/tak ter-metrik hanya memindahkan
+  kegagalan senyap dari proxy ke aplikasi. Token sendiri TIDAK PERNAH ikut ter-log — ia
+  kredensial, sekalipun tak terpakai.
+- **Token di atas 80% ambang ter-log `Warn` walau LOLOS.** Itu satu-satunya peringatan dini yang
+  hidup hari ini: histogram `auth_token_bytes` & counter `auth_token_oversize_total` belum bisa
+  di-scrape sampai `GET /metrics` ter-mount (PR-W6). Jangan menghapus log itu "karena sudah ada
+  metrik".
+- **Saat mendiagnosis "akun terkunci", percayai LOG, bukan status yang dilihat user.** Kuota login
+  dipakai juga oleh percobaan yang berhasil (tanpa `Reset`, sengaja), jadi akun yang terkunci pagar
+  akan berpindah dari 409 `TOKEN_TOO_LARGE` ke 429 bila ia mencoba berulang — dan 429 menunjuk
+  sebab yang salah.
+- **Ambang token & `http.Server.MaxHeaderBytes` harus koheren.** Yang kedua DITURUNKAN dari yang
+  pertama di `cmd/server.maxHeaderBytes`; menyetelnya sendiri membuka pagar kedua yang menolak
+  token yang baru saja dinyatakan sah.
+
 ## Sentinel SYSTEM actor (PR-W2)
 
 `domain.SystemActorID` = `00000000-0000-0000-0000-000000000001`, satu baris NYATA di `id.persons`
@@ -277,3 +309,4 @@ bisa menugaskannya). Melonggarkan FK menghapus ketelusuran SELURUH baris demi sa
 - PRD.md, core/permission/PRD.md, port/user.go, port/auth.go
 - ADR-003 (audit identity), ADR-009 (klasifikasi & enkripsi field), ADR-015 (`PurposeOf`),
   ADR-016 (pengikatan baris), **ADR-017 (realm kunci sentral)**
+- ADR-007 (token internal HS256) + **ADR-020 (pagar ukuran token)**, ADR-019 (containment wewenang)

@@ -168,10 +168,11 @@ func TestE2E_AdminIdentity_PenugasanMelahirkanCloneTerenkripsi(t *testing.T) {
 	router.Get("/healthz", healthz)
 	mountAdminIdentityRoutes(router, adminHandler)
 
-	codec := identitytoken.NewJWTCodec(
-		[]byte("w2-e2e-secret-0123456789-abcdef"), time.Hour,
-		identitydb.NewRevokedTokenStore(identityPool),
-	)
+	codec := identitytoken.NewJWTCodec(identitytoken.Options{
+		Secret:  []byte("w2-e2e-secret-0123456789-abcdef"),
+		TTL:     time.Hour,
+		Revoked: identitydb.NewRevokedTokenStore(identityPool),
+	})
 	// Catalog dibangun SESUDAH role sentral di-seed: ia snapshot proses, jadi role yang lahir
 	// setelahnya tak terlihat sampai restart (perilaku yang memang didokumentasikan).
 	centralCatalog, err := identitydb.NewCentralRoleCatalog(ctx, identitydb.NewCentralRoleRepo(identityPool))

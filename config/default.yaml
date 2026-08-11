@@ -107,6 +107,14 @@ auth:
   # GOV_AUTH_TOKEN_SECRET. Wajib & ≥32 karakter di production (divalidasi saat boot).
   token_secret: ""
   token_ttl: 3600        # umur token internal (detik); 0 = default 1 jam
+  # token_max_bytes: pagar ukuran token terbit (ADR-020). Token yang melewatinya DITOLAK saat
+  # login — bukan diterbitkan lalu ditolak proxy (login 200 lalu semua request 400 tanpa jejak
+  # di log aplikasi). 0 = default aman 6144 byte, DI BAWAH batas header nginx 8 KiB; naikkan
+  # bila proxy di depan memang lebih longgar (ALB 16 KiB). Tak ada nilai yang mematikan pagar:
+  # <1024 dan >65536 ditolak saat boot (yang kedua karena ambang ini juga menurunkan
+  # MaxHeaderBytes). Nilai efektif yang berlaku ikut di-log saat boot — periksa di sana bila
+  # setelan terasa tak berpengaruh.
+  token_max_bytes: 0
   # Token SSO EKSTERNAL (verifikasi token dari IdP lain) — dipakai PR auth eksternal.
   jwks_url: ""
   issuer: ""

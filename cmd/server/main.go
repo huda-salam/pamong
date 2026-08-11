@@ -103,10 +103,28 @@ func run() error {
 	// --- Auth stack (PR-5.1.2) ---
 	// Token verifier internal (HS256, ADR-007): verifikasi tanda tangan + jti-revocation
 	// (revoked store di identity DB). Ini seam TokenVerifier yang dikonsumsi middleware auth.
-	verifier := identitytoken.NewJWTCodec(
-		[]byte(cfg.Auth.TokenSecret),
-		cfg.Auth.TokenTTL(),
-		identitydb.NewRevokedTokenStore(identityPool),
+	// Ambang pagar token dihitung SEKALI di sini lalu dipakai codec DAN MaxHeaderBytes, supaya
+	// keduanya mustahil menyimpang (ADR-020 Keputusan 4).
+	tokenMaxBytes := effectiveTokenMaxBytes(cfg.Auth.TokenMaxBytes)
+	verifier := identitytoken.NewJWTCodec(identitytoken.Options{
+		Secret:  []byte(cfg.Auth.TokenSecret),
+		TTL:     cfg.Auth.TokenTTL(),
+		Revoked: identitydb.NewRevokedTokenStore(identityPool),
+		// Pagar ukuran token (ADR-020) + observasinya. metrics & logger WAJIB di sini —
+		// penolakan tanpa log/metrik hanya memindahkan kegagalan senyap dari proxy ke aplikasi.
+		MaxBytes: tokenMaxBytes,
+		Metrics:  metrics,
+		Logger:   logger,
+	})
+	// Nilai EFEKTIF pagar dicatat saat boot, bukan hanya nilai yang ditulis ops. Loader sengaja
+	// mengabaikan env var yang tak bisa di-parse (core/config/loader.go: satu env rusak tak boleh
+	// menjatuhkan boot), jadi `GOV_AUTH_TOKEN_MAX_BYTES=16k` diam-diam menyisakan default —
+	// dan justru dalam insiden "admin terkunci"-lah orang menyetel knob ini lalu perlu memastikan
+	// setelannya benar-benar berlaku. Satu baris log menutup lingkar umpan-baliknya.
+	logger.Info(ctx, "pagar ukuran token aktif",
+		port.F("token_max_bytes", tokenMaxBytes),
+		port.F("dari_config", cfg.Auth.TokenMaxBytes),
+		port.F("max_header_bytes", maxHeaderBytes(tokenMaxBytes)),
 	)
 	// Katalog role sentral: snapshot proses dari identity DB (dibaca sekali saat boot; gagal =
 	// gagal boot, fail-fast philosophy #4 — tanpa katalog RBAC tak bisa ditegakkan).
@@ -278,6 +296,11 @@ func run() error {
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		// Batas header dinyatakan EKSPLISIT, diturunkan dari pagar token (ADR-020). Default Go
+		// 1 MiB adalah nilai yang tak pernah dipilih siapa pun: ia jauh di atas batas proxy mana
+		// pun (nginx 8 KiB, ALB 16 KiB) sehingga aplikasi tak pernah jadi yang menolak — dan
+		// sekaligus mengizinkan satu klien menahan 1 MiB buffer per koneksi.
+		MaxHeaderBytes: maxHeaderBytes(tokenMaxBytes),
 	}
 
 	serveErr := make(chan error, 1)
@@ -307,6 +330,52 @@ func run() error {
 	// pada jalur gagal — termasuk `return` di atas saat Shutdown timeout.
 	logger.Info(ctx, "server HTTP berhenti; menguras event bus")
 	return nil
+}
+
+// maxHeaderBytes menghitung batas header HTTP dari pagar ukuran token (ADR-020). Keduanya harus
+// KOHEREN: token yang lolos pagar wajib bisa dikirim kembali sebagai "Authorization: Bearer …",
+// jadi batas header tak boleh lebih rendah dari ambang token. Bila ops menaikkan ambang token ke
+// 16 KiB untuk deployment di belakang ALB tanpa batas header ikut naik, hasilnya adalah pagar
+// KEDUA yang menolak token yang baru saja dinyatakan sah (431) — kegagalan yang sama
+// membingungkannya dengan yang hendak dicegah, hanya berpindah tempat.
+//
+// PENTING soal satuan yang dibandingkan: `MaxHeaderBytes` membatasi request line + SELURUH header
+// digabung (Go menambah ±4 KiB slop internal), sementara batas proxy yang kita jadikan acuan
+// (nginx `large_client_header_buffers` 8 KiB, ALB 16 KiB) berlaku PER header. Jadi slack di sini
+// tidak boleh sekadar sebesar prefiks "Authorization: Bearer ": ia harus memuat semua header LAIN
+// di request yang sama — Cookie (bisa beberapa KiB), Referer, User-Agent, header trace. 16 KiB
+// dipilih untuk itu, dan lantai 32 KiB menjaga konfigurasi bawaan tetap lebih longgar dari total
+// header request nyata mana pun yang wajar. Keduanya tetap belasan kali lebih ketat dari default
+// Go 1 MiB — setengah alasan nilai ini dinyatakan eksplisit adalah agar satu klien tak bisa
+// menahan buffer sebesar itu per koneksi.
+func maxHeaderBytes(tokenMaxBytes int) int {
+	tokenMaxBytes = effectiveTokenMaxBytes(tokenMaxBytes)
+	const (
+		floor = 32 << 10 // total header request nyata + token pada ambang default
+		slack = 16 << 10 // ruang untuk SEMUA header selain Authorization (Cookie dsb)
+	)
+	if n := tokenMaxBytes + slack; n > floor {
+		return n
+	}
+	return floor
+}
+
+// effectiveTokenMaxBytes menerjemahkan nilai config menjadi ambang yang BENAR-BENAR berlaku:
+// 0/negatif → default adapter token, dan dikurung pada plafon yang sama dengan validasi config.
+//
+// Kurungan itu bukan duplikasi validasi. config.Validate sudah menolak nilai di atas plafon, tapi
+// fungsi ini tak boleh bergantung padanya: pemanggil lain (test, tooling) bisa memberi angka apa
+// pun, dan tanpa kurungan `tokenMaxBytes + slack` di maxHeaderBytes MELUAP jadi negatif — batas
+// header lalu jatuh ke floor sementara pagar token praktis mati, yaitu aplikasi menolak token yang
+// ia sendiri terbitkan.
+func effectiveTokenMaxBytes(tokenMaxBytes int) int {
+	if tokenMaxBytes <= 0 {
+		return identitytoken.DefaultMaxBytes
+	}
+	if tokenMaxBytes > config.MaxTokenMaxBytes {
+		return config.MaxTokenMaxBytes
+	}
+	return tokenMaxBytes
 }
 
 // workflowActions adalah WorkflowRegistry minimal: menyimpan pemetaan nama→use case yang

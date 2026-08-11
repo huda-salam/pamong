@@ -118,6 +118,7 @@ var _ port.MetricsPort = (*MockMetrics)(nil)
 func NewMockMetrics() *MockMetrics { return &MockMetrics{} }
 
 func (m *MockMetrics) RecordDuration(_ string, _ time.Duration, _ map[string]string) {}
+func (m *MockMetrics) RecordSize(_ string, _ int, _ map[string]string)               {}
 func (m *MockMetrics) IncrCounter(_ string, _ map[string]string)                     {}
 func (m *MockMetrics) SetGauge(_ string, _ float64, _ map[string]string)             {}
 

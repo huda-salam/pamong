@@ -29,6 +29,14 @@ type PrometheusMetrics struct {
 	counters   map[string]*labeledVec[*prometheus.CounterVec]
 	gauges     map[string]*labeledVec[*prometheus.GaugeVec]
 	histograms map[string]*labeledVec[*prometheus.HistogramVec]
+	// histUnit mengingat SATUAN yang mengklaim tiap nama histogram. Tanpa ini, RecordDuration &
+	// RecordSize berbagi map histograms yang ber-key nama saja: nama yang dipakai keduanya akan
+	// diam-diam memakai bucket yang terdaftar LEBIH DULU, sehingga observasi byte masuk bucket
+	// detik dan menumpuk seluruhnya di +Inf. Penjaga tipe di getOrRegister tak menangkapnya —
+	// keduanya *HistogramVec, jadi lookup map sudah pulang sebelum Register dipanggil. Itu persis
+	// kegagalan "metriknya ada tapi tak menjawab apa pun" yang menjadi alasan port/metrics.go
+	// memisahkan kedua method.
+	histUnit map[string]string
 }
 
 // labeledVec mengingat nama label yang dikunci saat *Vec dibuat, sehingga
@@ -48,6 +56,7 @@ func NewPrometheusMetrics() *PrometheusMetrics {
 		counters:   make(map[string]*labeledVec[*prometheus.CounterVec]),
 		gauges:     make(map[string]*labeledVec[*prometheus.GaugeVec]),
 		histograms: make(map[string]*labeledVec[*prometheus.HistogramVec]),
+		histUnit:   make(map[string]string),
 	}
 }
 
@@ -124,6 +133,26 @@ func getOrRegister[V prometheus.Collector](
 	return lv
 }
 
+// claimHistogramUnit menandai name sebagai milik satuan unit, atau menolak bila nama itu sudah
+// diklaim satuan lain. Penolakan berarti observasi di-SKIP — sama seperti kegagalan registrasi:
+// metrics adalah concern lintas-potong yang tak boleh menjatuhkan transaksi bisnis pemanggil.
+// Dipanggil SEBELUM getOrRegister karena keduanya memakai p.mu yang tidak reentrant.
+func (p *PrometheusMetrics) claimHistogramUnit(name, unit string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if have, ok := p.histUnit[name]; ok {
+		return have == unit
+	}
+	p.histUnit[name] = unit
+	return true
+}
+
+// Satuan histogram — lihat claimHistogramUnit.
+const (
+	unitSeconds = "seconds"
+	unitBytes   = "bytes"
+)
+
 // IncrCounter menaikkan counter Prometheus bernama name sebesar satu.
 func (p *PrometheusMetrics) IncrCounter(name string, tags map[string]string) {
 	lv := getOrRegister(p, p.counters, name, tags, func(labelNames []string) *prometheus.CounterVec {
@@ -150,6 +179,9 @@ func (p *PrometheusMetrics) SetGauge(name string, v float64, tags map[string]str
 // RecordDuration mencatat durasi d (dalam detik) ke histogram Prometheus
 // bernama name, memakai bucket default Prometheus (prometheus.DefBuckets).
 func (p *PrometheusMetrics) RecordDuration(name string, d time.Duration, tags map[string]string) {
+	if !p.claimHistogramUnit(name, unitSeconds) {
+		return // nama ini sudah dipakai satuan lain (byte) — bucket-nya tak akan cocok
+	}
 	lv := getOrRegister(p, p.histograms, name, tags, func(labelNames []string) *prometheus.HistogramVec {
 		return prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    name,
@@ -161,4 +193,26 @@ func (p *PrometheusMetrics) RecordDuration(name string, d time.Duration, tags ma
 		return
 	}
 	lv.vec.WithLabelValues(values(lv.labelNames, tags)...).Observe(d.Seconds())
+}
+
+// RecordSize mencatat ukuran (byte) ke histogram Prometheus bernama name dengan bucket
+// EKSPONENSIAL bersatuan byte (256 B … 64 KiB) — bukan prometheus.DefBuckets yang bersatuan
+// detik. Rentang itu dipilih untuk artefak header/token: batas proxy yang lazim (nginx 8 KiB,
+// ALB 16 KiB) jatuh di tengah bucket sehingga "seberapa dekat ke batas" terbaca dari grafik,
+// bukan hanya "sudah lewat".
+func (p *PrometheusMetrics) RecordSize(name string, bytes int, tags map[string]string) {
+	if !p.claimHistogramUnit(name, unitBytes) {
+		return // nama ini sudah dipakai satuan lain (detik) — bucket-nya tak akan cocok
+	}
+	lv := getOrRegister(p, p.histograms, name, tags, func(labelNames []string) *prometheus.HistogramVec {
+		return prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    name,
+			Help:    name,
+			Buckets: prometheus.ExponentialBuckets(256, 2, 9), // 256 B, 512 B, … 64 KiB
+		}, labelNames)
+	})
+	if lv == nil {
+		return
+	}
+	lv.vec.WithLabelValues(values(lv.labelNames, tags)...).Observe(float64(bytes))
 }
