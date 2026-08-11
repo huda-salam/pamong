@@ -141,3 +141,104 @@ func TestAllowsInUnit_DelegatedGrant(t *testing.T) {
 	mustAllow(t, eng, auth, permSuratBaca, bpkad, true)
 	mustAllow(t, eng, auth, permSuratBaca, dinkes, false)
 }
+
+// --- AllowsSubtreeIn (PR-W3b · ADR-021) ---
+//
+// Pertanyaan "berwenang atas unit ini BESERTA keturunannya" berbeda mendasar dari "berwenang atas
+// unit ini". Ia dipakai saat actor MEMBERIKAN jangkauan subtree kepada orang lain: tanpa itu,
+// pemegang wewenang atas satu unit saja bisa menerbitkan assignment ber-`include_subtree` dan
+// membagikan jangkauan atas turunan yang ia sendiri tak punya.
+
+// TestAllowsSubtree_GrantUnitTanpaSubtree_Ditolak adalah inti aturannya: grant yang terikat PERSIS
+// pada sebuah unit menutupi unit itu, tapi TIDAK keturunannya.
+func TestAllowsSubtree_GrantUnitTanpaSubtree_Ditolak(t *testing.T) {
+	unit := uuid.New()
+	auth := permission.Authority{
+		Roles:      []permission.RoleRef{permission.TenantRef("admin")},
+		RoleGrants: []permission.Grant{{Permission: "iam:tenant_role:assign", UnitKerjaID: unit}},
+	}
+	eng := permission.NewScopedEngine(
+		permission.NewEngine(permission.NewMemoryCatalog().
+			Define("admin", permission.LayerTenant, "iam:tenant_role:assign")),
+		fakeHierarchy{},
+	)
+
+	// Kontrol: unit itu sendiri BOLEH.
+	if ok, err := eng.AllowsInUnit(context.Background(), auth, "iam:tenant_role:assign",
+		permission.ResourceScope{UnitKerjaID: unit}); err != nil || !ok {
+		t.Fatalf("AllowsInUnit pada unit sendiri: mau (true, nil), dapat (%v, %v)", ok, err)
+	}
+	// Yang diuji: subtree atas unit yang sama harus DITOLAK.
+	ok, err := eng.AllowsSubtreeIn(context.Background(), auth, "iam:tenant_role:assign",
+		permission.ResourceScope{UnitKerjaID: unit})
+	if err != nil {
+		t.Fatalf("AllowsSubtreeIn: %v", err)
+	}
+	if ok {
+		t.Fatal("grant tanpa Subtree menjawab BOLEH untuk jangkauan subtree — " +
+			"pemegang satu unit bisa membagikan jangkauan seluruh turunannya")
+	}
+}
+
+// TestAllowsSubtree_GrantBerSubtree_Lolos: unit itu sendiri maupun keturunannya.
+func TestAllowsSubtree_GrantBerSubtree_Lolos(t *testing.T) {
+	induk, anak := uuid.New(), uuid.New()
+	auth := permission.Authority{
+		Roles: []permission.RoleRef{permission.TenantRef("admin")},
+		RoleGrants: []permission.Grant{
+			{Permission: "iam:tenant_role:assign", UnitKerjaID: induk, Subtree: true},
+		},
+	}
+	eng := permission.NewScopedEngine(
+		permission.NewEngine(permission.NewMemoryCatalog().
+			Define("admin", permission.LayerTenant, "iam:tenant_role:assign")),
+		fakeHierarchy{parent: map[uuid.UUID]uuid.UUID{anak: induk}},
+	)
+
+	for name, unit := range map[string]uuid.UUID{"unit sendiri": induk, "keturunan": anak} {
+		if ok, err := eng.AllowsSubtreeIn(context.Background(), auth, "iam:tenant_role:assign",
+			permission.ResourceScope{UnitKerjaID: unit}); err != nil || !ok {
+			t.Fatalf("%s: mau (true, nil), dapat (%v, %v)", name, ok, err)
+		}
+	}
+}
+
+// TestAllowsSubtree_TenantWide_Lolos: wewenang se-tenant menjangkau apa pun, termasuk subtree.
+func TestAllowsSubtree_TenantWide_Lolos(t *testing.T) {
+	auth := permission.Authority{
+		Roles:      []permission.RoleRef{permission.CentralRef("super_admin")},
+		RoleGrants: []permission.Grant{{Permission: "iam:tenant_role:assign", TenantWide: true}},
+	}
+	eng := permission.NewScopedEngine(
+		permission.NewEngine(permission.NewMemoryCatalog().
+			Define("super_admin", permission.LayerGlobal, "iam:tenant_role:assign")),
+		fakeHierarchy{},
+	)
+	if ok, err := eng.AllowsSubtreeIn(context.Background(), auth, "iam:tenant_role:assign",
+		permission.ResourceScope{UnitKerjaID: uuid.New()}); err != nil || !ok {
+		t.Fatalf("TenantWide: mau (true, nil), dapat (%v, %v)", ok, err)
+	}
+}
+
+// TestAllowsSubtree_Delegasi_JalurMandiri: delegasi ber-Subtree memang melimpahkan jangkauan
+// turunan, dan seperti AllowsInUnit ia tak tunduk pada Tahap 1 RBAC.
+func TestAllowsSubtree_Delegasi_JalurMandiri(t *testing.T) {
+	unit := uuid.New()
+	auth := permission.Authority{
+		DelegatedGrants: []permission.Grant{
+			{Permission: "keuangan:spm:terbitkan", UnitKerjaID: unit, Subtree: true},
+		},
+	}
+	eng := permission.NewScopedEngine(permission.NewEngine(permission.NewMemoryCatalog()), fakeHierarchy{})
+
+	if ok, err := eng.AllowsSubtreeIn(context.Background(), auth, "keuangan:spm:terbitkan",
+		permission.ResourceScope{UnitKerjaID: unit}); err != nil || !ok {
+		t.Fatalf("delegasi ber-subtree: mau (true, nil), dapat (%v, %v)", ok, err)
+	}
+	// Delegasi TANPA subtree tidak boleh menjawab ya.
+	auth.DelegatedGrants[0].Subtree = false
+	if ok, _ := eng.AllowsSubtreeIn(context.Background(), auth, "keuangan:spm:terbitkan",
+		permission.ResourceScope{UnitKerjaID: unit}); ok {
+		t.Fatal("delegasi tanpa subtree menjawab BOLEH untuk jangkauan subtree")
+	}
+}

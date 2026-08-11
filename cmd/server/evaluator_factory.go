@@ -49,6 +49,11 @@ type evaluatorFactory struct {
 	ttl     time.Duration // 0 = tak pernah kedaluwarsa (cache selama umur proses)
 	now     func() time.Time
 
+	// scopedDeps membangun bahan data-level per tenant (jangkauan unit + tree OPD). nil =
+	// lapis ABAC tak dirakit; setiap pengecekan unit lalu menjawab TIDAK (fail-closed), bukan
+	// lolos. Lihat buildScoped di scoped_evaluator.go.
+	scopedDeps scopedDepsBuilder
+
 	mu    sync.RWMutex
 	cache map[string]tenantCatalogEntry // tenant_id → catalog tenant (snapshot + waktu build)
 }
@@ -69,13 +74,15 @@ type tenantCatalogBuilder func(ctx context.Context, tenantID string) (permission
 // SoD dari manifest (Registry.StrictPermissions); ttl = umur cache catalog tenant (0 = tak
 // pernah kedaluwarsa).
 func newEvaluatorFactory(central permission.RoleCatalog, connMgr *db.TenantConnManager, strict []permission.Permission, ttl time.Duration) *evaluatorFactory {
-	return newEvaluatorFactoryWith(central, func(ctx context.Context, tenantID string) (permission.RoleCatalog, error) {
+	f := newEvaluatorFactoryWith(central, func(ctx context.Context, tenantID string) (permission.RoleCatalog, error) {
 		pool, err := connMgr.Tenant(ctx, tenantID)
 		if err != nil {
 			return nil, err
 		}
 		return tenantroledb.NewTenantRoleCatalog(ctx, tenantroledb.NewTenantRoleRepo(pool))
 	}, strict, ttl)
+	f.scopedDeps = newScopedDepsBuilder(connMgr)
+	return f
 }
 
 // newEvaluatorFactoryWith merakit factory dengan builder catalog tenant kustom (dipakai test).
@@ -93,18 +100,33 @@ func newEvaluatorFactoryWith(central permission.RoleCatalog, build tenantCatalog
 // Build mengembalikan evaluator RBAC untuk request ini. Citizen (TenantID kosong) mendapat
 // Engine central-only (tak ada lapis tenant untuknya); employee mendapat Engine di atas
 // composite central+tenant.
-func (f *evaluatorFactory) Build(ctx context.Context, claims *port.Claims) (port.PermissionEvaluator, error) {
+func (f *evaluatorFactory) Build(ctx context.Context, claims *port.Claims) (port.PermissionEvaluator, port.ScopedEvaluator, error) {
 	if claims.TenantID == "" {
 		// Citizen: hanya lapis central. Composite dengan tenant nil — BUKAN katalog central
 		// telanjang — supaya ref ber-origin tenant (yang tak semestinya ada di token citizen)
 		// tetap tak ditemukan alih-alih ikut dicari di katalog central (ADR-019).
-		return permission.NewEngine(permission.NewCompositeCatalog(f.central, nil), f.strict...), nil
+		cat := permission.NewCompositeCatalog(f.central, nil)
+		engine := permission.NewEngine(cat, f.strict...)
+		return engine, f.buildScoped(engine, cat, claims), nil
 	}
 	tenantCat, err := f.tenantCatalog(ctx, claims.TenantID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return permission.NewEngine(permission.NewCompositeCatalog(f.central, tenantCat), f.strict...), nil
+	// Katalog & engine yang SAMA dipakai kedua evaluator: composite memberi resolusi PER LAPIS
+	// ASAL (ADR-019) untuk emitter grant sentral, dan engine memberi Tahap 1 (RBAC) bagi
+	// ScopedEngine. Tak ada kemungkinan dua jalur otorisasi menjawab dari katalog berbeda.
+	//
+	// CompositeCatalog, bukan f.central langsung: emitter menuntut permission.RefCatalog
+	// (LookupRef), dan katalog PRODUKSI (identitydb.CentralRoleCatalog) hanya punya Lookup.
+	// Sebuah type-assert ke RefCatalog di sini akan selalu gagal di produksi dan membuat
+	// CentralGrants tak pernah mengemisikan apa pun — super_admin platform akan mendapat 403
+	// dari SETIAP pengecekan unit, sementara test (yang memakai MemoryCatalog, pemenuh kedua
+	// kontrak) tetap hijau. Composite adalah satu-satunya pemenuh RefCatalog yang dipakai
+	// produksi; jangan menggantinya dengan assertion.
+	cat := permission.NewCompositeCatalog(f.central, tenantCat)
+	engine := permission.NewEngine(cat, f.strict...)
+	return engine, f.buildScoped(engine, cat, claims), nil
 }
 
 // tenantCatalog mengembalikan (get-or-build) catalog role tenant. Build dilakukan DI LUAR lock

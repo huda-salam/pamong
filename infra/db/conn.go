@@ -4,6 +4,7 @@
 package db
 
 import (
+	"context"
 	"errors"
 
 	"github.com/huda-salam/pamong/port"
@@ -13,6 +14,20 @@ import (
 
 // Conn adalah alias untuk port.DBConn agar adapter bisa memakai nama yang lebih pendek.
 type Conn = port.DBConn
+
+// TxConn adalah Conn yang juga bisa membuka TRANSAKSI. Dipakai repo yang harus menulis beberapa
+// tabel secara atomik (mis. role + grant permission-nya) tapi tetap ingin dirakit sekali saat
+// boot dan dirutekan per-request.
+//
+// Ia ada sebagai interface, bukan *Pool telanjang, justru karena itu: `*Pool` mengikat repo ke
+// SATU database, sementara realita repo ini DB-per-tenant (ADR-004). Dipenuhi oleh `*Pool`
+// (satu DB tetap — test, tooling, DB sentral) DAN `*TenantRoutingConn` (routing per-request dari
+// klaim token). Tanpa seam ini, repo ber-transaksi hanya bisa dipakai lewat pool yang dipilih
+// saat boot — yaitu tidak bisa dipakai di jalur request multi-tenant sama sekali.
+type TxConn interface {
+	Conn
+	Begin(ctx context.Context) (*Tx, error)
+}
 
 // IsNoRows mengembalikan true jika error adalah "tidak ada baris ditemukan".
 func IsNoRows(err error) bool {

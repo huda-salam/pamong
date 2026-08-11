@@ -272,6 +272,19 @@ func run() error {
 	}
 	mountAdminIdentityRoutes(router, adminIdentity)
 
+	// Administrasi wewenang TENANT (PR-W3b): role tenant, penugasannya ber-scope unit kerja, dan
+	// delegasi/PLT. Inilah PEMANGGIL PRODUKSI pertama `RequirePermissionInUnit` — lapis ABAC yang
+	// lengkap sejak PR-2.3.5 tapi tak pernah dipakai siapa pun. Evaluator-nya dipasang di
+	// middleware auth (scoped_evaluator.go); tanpa grup ini evaluator itu jadi seam dorman (DoD 11).
+	//
+	// Audit & repo memakai tenantDB (routing per-request dari klaim token), jadi satu perakitan
+	// melayani semua tenant tanpa tenant pernah datang dari body.
+	adminIAM, err := wireAdminIAM(tenantDB, db.NewAuditRepo(tenantDB))
+	if err != nil {
+		return fmt.Errorf("administrasi wewenang tenant (tenantrole/delegation): %w", err)
+	}
+	mountAdminIAMRoutes(router, adminIAM)
+
 	// --- HTTP server + middleware stack + graceful shutdown ---
 	handler := buildServerHandler(serverDeps{
 		router:         router,

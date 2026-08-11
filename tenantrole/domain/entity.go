@@ -100,6 +100,9 @@ func (a *TenantRoleAssignment) Validate() error {
 	if a.AssignedBy == uuid.Nil {
 		return ErrAssignedByKosong
 	}
+	if a.UnitKerjaID != nil && *a.UnitKerjaID == uuid.Nil {
+		return ErrUnitKerjaNol
+	}
 	return nil
 }
 

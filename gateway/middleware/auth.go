@@ -11,18 +11,21 @@ import (
 	"github.com/huda-salam/pamong/port"
 )
 
-// EvaluatorFactory membangun port.PermissionEvaluator dari Claims yang sudah terverifikasi.
-// Interface ini disembunyikan dari middleware sehingga middleware tidak bergantung pada
-// detail core/permission (catalog, engine) — hanya pada port.PermissionEvaluator yang
-// sudah dikenal. Implementasi konkret (CompositeCatalog + Engine per-request atau cached)
-// dibangun di luar middleware dan disuntik saat bootstrap.
+// EvaluatorFactory membangun kedua evaluator permission dari Claims yang sudah terverifikasi:
+// RBAC (port.PermissionEvaluator) dan data-level/ABAC (port.ScopedEvaluator). Interface ini
+// menyembunyikan detail core/permission (catalog, engine, Authority) dari middleware — yang
+// konkret dirakit di composition root dan disuntik lewat interface ini.
 //
-// Citizen (TenantID kosong) tetap dapat evaluator — biasanya Engine hanya dengan
+// Keduanya datang dari SATU panggilan, bukan dua factory, karena keduanya diturunkan dari bahan
+// yang sama (katalog role tenant + klaim). Dua seam terpisah akan mengundang perakitan yang
+// menyimpang — dan penyimpangan di sini berarti RBAC dan ABAC menjawab dari dunia yang berbeda.
+//
+// Citizen (TenantID kosong) tetap dapat evaluator RBAC — biasanya Engine hanya dengan
 // CentralRoleCatalog (tanpa tenant). Implementasi dapat mengembalikan nil untuk menandakan
 // "default permisif" bila tidak ada catalog tersedia; Auth middleware memaknainya sebagai
 // anonymous (eval tidak di-set → RequirePermission default permisif).
 type EvaluatorFactory interface {
-	Build(ctx context.Context, claims *port.Claims) (port.PermissionEvaluator, error)
+	Build(ctx context.Context, claims *port.Claims) (port.PermissionEvaluator, port.ScopedEvaluator, error)
 }
 
 // Auth mengembalikan middleware yang memverifikasi JWT pada setiap request (PRD gateway F3,
@@ -31,8 +34,9 @@ type EvaluatorFactory interface {
 //  1. Ekstrak "Bearer <token>" dari header Authorization.
 //  2. Panggil verifier.Verify — tolak (401) bila token tak valid, kedaluwarsa, atau dicabut.
 //  3. Bangun gateway.Context dari Claims (personID, persona, roles, tenantID, dll).
-//  4. Panggil factory.Build — bangun evaluator RBAC (Engine + CompositeCatalog) dari Claims;
-//     suntik ke Context via SetPermissionEvaluator.
+//  4. Panggil factory.Build — bangun evaluator RBAC (Engine + CompositeCatalog) DAN evaluator
+//     data-level (ScopedEngine + Authority) dari Claims; suntik ke Context via
+//     SetPermissionEvaluator & SetScopedEvaluator.
 //  5. Teruskan ke handler berikutnya.
 //
 // Request tanpa header Authorization diteruskan sebagai anonymous (Context kosong, eval nil).
@@ -42,8 +46,10 @@ type EvaluatorFactory interface {
 // yang ter-wire (factory.Build) untuk request ber-token. Jangan mengandalkan RequirePermission
 // sendirian untuk menolak anonymous.
 //
-// ScopedEvaluator (RequirePermissionInUnit) tetap default permisif hingga wiring Authority
-// live di PR berikutnya (DEFERRED Phase-2.4, ROADMAP "Wiring Authority live").
+// Sejak PR-W3b, request ber-token JUGA membawa ScopedEvaluator, sehingga
+// RequirePermissionInUnit benar-benar MENEGAKKAN (sebelumnya default permisif). Request anonim
+// tetap tanpa evaluator: penolakannya berasal dari pemisahan rute publik/internal, bukan dari
+// RequirePermission* — lihat catatan di atas.
 func Auth(verifier port.TokenVerifier, factory EvaluatorFactory) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -62,7 +68,7 @@ func Auth(verifier port.TokenVerifier, factory EvaluatorFactory) func(http.Handl
 
 			c := gateway.NewContextFromClaims(r.Context(), claims)
 
-			eval, err := factory.Build(r.Context(), claims)
+			eval, scoped, err := factory.Build(r.Context(), claims)
 			if err != nil {
 				gateway.WriteError(w, err)
 				return
@@ -70,8 +76,9 @@ func Auth(verifier port.TokenVerifier, factory EvaluatorFactory) func(http.Handl
 			if eval != nil {
 				c.SetPermissionEvaluator(eval)
 			}
-			// DEFERRED(Phase-2.4): c.SetScopedEvaluator — wiring Authority (ScopedEngine)
-			// menunggu emitter central-role→Grant TenantWide + DelegatedGrants live.
+			if scoped != nil {
+				c.SetScopedEvaluator(scoped)
+			}
 
 			next.ServeHTTP(w, gateway.WithContext(r, c))
 		})

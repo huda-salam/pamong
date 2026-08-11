@@ -21,6 +21,13 @@ type TestContext struct {
 	personID uuid.UUID
 	perms    map[string]bool
 	roles    map[string]bool
+	// units = jangkauan unit kerja actor bila test menyatakannya (WithUnitAuthority). nil =
+	// unit diabaikan; non-nil = hanya unit di dalamnya yang lolos RequirePermissionInUnit.
+	units map[uuid.UUID]bool
+	// subtrees = unit yang jangkauannya MENYERTAKAN keturunan (WithSubtreeAuthority). Dipisah
+	// dari units karena itu justru pertanyaan yang berbeda: memberi `include_subtree` menuntut
+	// wewenang atas turunan, bukan atas unit itu saja (ADR-021).
+	subtrees map[uuid.UUID]bool
 }
 
 var _ port.AuthContext = (*TestContext)(nil)
@@ -43,6 +50,42 @@ func WithPermission(perm string) Option {
 // WithRole menambahkan satu role ke konteks.
 func WithRole(role string) Option {
 	return func(c *TestContext) { c.roles[role] = true }
+}
+
+// WithUnitAuthority menyatakan jangkauan unit actor secara EKSPLISIT: hanya unit yang disebut
+// (dan hanya itu) yang lolos RequirePermissionInUnit. uuid.Nil berarti wewenang SE-TENANT —
+// jangkauan TERLUAS, sesuai konvensi core/permission.RequireAuthorityOver — sehingga ia meloloskan
+// setiap unit konkret DAN setiap subtree, persis seperti grant TenantWide di produksi (lihat
+// tenantWide).
+//
+// Sekali dipakai, konteks berhenti mengabaikan unit; unit yang tak disebut ditolak. Itulah yang
+// membuat test containment bisa gagal saat aturannya dilepas.
+func WithUnitAuthority(units ...uuid.UUID) Option {
+	return func(c *TestContext) {
+		if c.units == nil {
+			c.units = make(map[uuid.UUID]bool)
+		}
+		for _, u := range units {
+			c.units[u] = true
+		}
+	}
+}
+
+// WithSubtreeAuthority menyatakan actor berwenang atas unit BESERTA KETURUNANNYA. Ia juga
+// memberi wewenang atas unit itu sendiri (superset dari WithUnitAuthority).
+func WithSubtreeAuthority(units ...uuid.UUID) Option {
+	return func(c *TestContext) {
+		if c.subtrees == nil {
+			c.subtrees = make(map[uuid.UUID]bool)
+		}
+		if c.units == nil {
+			c.units = make(map[uuid.UUID]bool)
+		}
+		for _, u := range units {
+			c.subtrees[u] = true
+			c.units[u] = true
+		}
+	}
 }
 
 // WithPersonID menyetel person_id konteks.
@@ -94,11 +137,55 @@ func (c *TestContext) RequirePermission(perm string) error {
 	return nil
 }
 
-// RequirePermissionInUnit di testkit mengabaikan unit (scope ABAC tidak diuji di unit test
-// modul) — cukup memeriksa kepemilikan permission seperti RequirePermission. Test yang menguji
-// scope data-level memakai core/permission.ScopedEngine langsung (lihat scoped_engine_test).
-func (c *TestContext) RequirePermissionInUnit(perm string, _ uuid.UUID) error {
-	return c.RequirePermission(perm)
+// RequirePermissionInUnit memeriksa kepemilikan permission, lalu — HANYA bila test menyatakan
+// jangkauan lewat WithUnitAuthority — memeriksa apakah unit sasaran ada dalam jangkauan itu.
+//
+// Default tanpa opsi tetap mengabaikan unit: mayoritas unit test modul tak berurusan dengan ABAC,
+// dan memaksa mereka menyatakan jangkauan hanya menambah derau. Tapi default itu TIDAK CUKUP untuk
+// use case yang MEMBERIKAN wewenang ber-scope (penugasan role, delegasi): di sana "unit diabaikan"
+// berarti test hijau untuk containment yang tak ada (ADR-021). Karena itu opsi ini disediakan di
+// testkit, bukan diakali per-paket dengan konteks tiruan sendiri.
+func (c *TestContext) RequirePermissionInUnit(perm string, unitID uuid.UUID) error {
+	if err := c.RequirePermission(perm); err != nil {
+		return err
+	}
+	if c.units == nil {
+		return nil // test tak menyatakan jangkauan → unit diabaikan (perilaku lama)
+	}
+	if c.tenantWide() || c.units[unitID] {
+		return nil
+	}
+	return core.ErrPermissionDenied(perm)
+}
+
+// tenantWide melaporkan apakah test menyatakan wewenang SE-TENANT (WithUnitAuthority(uuid.Nil)).
+//
+// Ia bukan kenyamanan, melainkan penyelarasan dengan produksi: uuid.Nil di sana bukan "sebuah unit
+// bernama nol" melainkan pertanyaan "punya grant TenantWide?" — dan grant TenantWide menutupi
+// SETIAP unit beserta keturunannya (permission.Grant.TenantWide, dicek lebih dulu di covers &
+// coversSubtree). Bila di sini uuid.Nil diperlakukan sebagai kunci map biasa, fake ini MENOLAK
+// pemeriksaan unit konkret yang produksi izinkan; test yang lulus dengannya menegakkan invariant
+// yang tak ada di produksi — kegagalan yang arahnya paling berbahaya untuk sebuah fake otorisasi:
+// ia terlihat lebih ketat, jadi tak ada yang curiga.
+func (c *TestContext) tenantWide() bool { return c.units[uuid.Nil] }
+
+// RequirePermissionInSubtree memeriksa kepemilikan permission lalu — bila test menyatakan
+// jangkauan — menuntut jangkauan yang MENYERTAKAN keturunan (WithSubtreeAuthority).
+//
+// Perhatikan asimetrinya, dan itu memang inti aturannya: WithUnitAuthority saja TIDAK cukup di
+// sini. Test yang mengharapkan `include_subtree` lolos dengan wewenang satu unit sedang menyatakan
+// eskalasi sebagai perilaku yang benar.
+func (c *TestContext) RequirePermissionInSubtree(perm string, unitID uuid.UUID) error {
+	if err := c.RequirePermission(perm); err != nil {
+		return err
+	}
+	if c.units == nil {
+		return nil // test tak menyatakan jangkauan → unit diabaikan (perilaku lama)
+	}
+	if c.tenantWide() || c.subtrees[unitID] {
+		return nil
+	}
+	return core.ErrPermissionDenied(perm)
 }
 
 // context.Context forwarding

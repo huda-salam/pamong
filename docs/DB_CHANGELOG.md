@@ -32,6 +32,28 @@ Jalur A/B/C merujuk tiga cara pembuatan skema yang dijelaskan di `DB_SCHEMA.md` 
 
 ---
 
+### 2026-08-11 · PR-W3b (wiring Authority + permukaan IAM tenant) · `HEAD`
+**DB:** tenant · **Jalur:** C (ensure-on-write) · **Down:** tidak (jalur C)
+
+Tak ada tabel/kolom/index yang berubah bentuknya. Yang berubah adalah **cara skema diterapkan**,
+dan itu masuk lingkup dokumen ini.
+
+- `~ gov.audit_logs` — kini dipastikan ada **saat penulisan audit pertama per tenant**
+  (`AuditRepo.ensureFor`, memo per proses ber-kunci tenant PERUTEAN `port.TenantFrom`), bukan
+  hanya lewat `EnsureSchema` saat boot. Alasannya
+  struktural: audit tenant baru punya penulis produksi di PR ini (mutasi `/admin/iam/*`), dan
+  tenant ditemukan saat request sehingga boot tak bisa membuat tabelnya untuk semua tenant.
+  DDL dijalankan DI LUAR transaksi chain agar tak memperpanjang `pg_advisory_xact_lock`.
+- `~ gov.tenant_roles`, `gov.tenant_role_permissions` — DDL-nya tidak berubah, tapi penulisnya
+  kini bisa dirutekan per-tenant: `TenantRoleRepo` menerima `db.TxConn` (dipenuhi `*db.Pool` DAN
+  `*db.TenantRoutingConn`) alih-alih `*db.Pool`. Sebelumnya repo ber-transaksi terikat satu DB
+  yang dipilih saat boot — yaitu tak bisa dipakai di jalur request multi-tenant sama sekali.
+
+**Kompatibilitas:** additive & tak reversibel-perlu — tak ada bentuk tabel yang berubah, tak ada
+backfill. Tenant lama yang tabel auditnya sudah ada tidak terpengaruh (DDL `IF NOT EXISTS`).
+
+---
+
 ### 2026-08-10 · PR-W2 (handler admin identity) · `HEAD`
 **DB:** identity · **Jalur:** B (`identity/migrations/010`) · **Down:** ada
 

@@ -140,3 +140,17 @@ Alur & aturan yang menopangnya:
 - PRD.md (root: Migration strategy, DB-per-tenant), port/repository.go
 - ADR-009 (klasifikasi & enkripsi field), ADR-015 (`PurposeOf`/pengikatan kolom),
   ADR-016 (pengikatan baris lewat AAD), ADR-002 (audit diff)
+
+## TxConn — transaksi yang ikut dirutekan (PR-W3b)
+
+`db.TxConn` = `Conn` + `Begin`. Ia ada karena repo ber-transaksi (`TenantRoleRepo`, `AuditRepo`)
+dulu memegang `*db.Pool`, dan pool telanjang mengikat repo ke SATU database — yaitu membuatnya tak
+bisa dipakai di jalur request multi-tenant sama sekali (ADR-004). Dipenuhi `*Pool` (satu DB tetap:
+test, tooling, DB sentral) DAN `*TenantRoutingConn` (pool dipilih dari tenant di context tiap
+panggilan).
+
+- **Transaksi tak melintasi tenant:** ia lahir dari satu pool, dan pool itu dipilih dari context.
+- **`AuditRepo` memastikan `gov.audit_logs` per tenant saat penulisan PERTAMA** (`ensureFor`, memo
+  per proses), DI LUAR transaksi chain — DDL di dalam tx akan memperpanjang advisory lock dan
+  kegagalannya menggagalkan penulisan yang sah. `EnsureSchema` eksplisit tetap untuk pemakaian
+  satu-DB.

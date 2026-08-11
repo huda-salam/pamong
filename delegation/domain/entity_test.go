@@ -65,3 +65,24 @@ func TestDelegation_AppliesTo(t *testing.T) {
 		t.Error("delegasi yang belum mulai tidak boleh aktif")
 	}
 }
+
+// TestDelegation_UnitNolDitolak — alasan identik dengan padanannya di tenantrole: uuid.Nil adalah
+// pertanyaan "berwenang se-tenant?", jadi ia tak boleh bisa menjadi jangkauan sebuah baris.
+func TestDelegation_UnitNolDitolak(t *testing.T) {
+	nol := uuid.Nil
+	d := &domain.Delegation{
+		ID: uuid.New(), FromUserID: uuid.New(), ToUserID: uuid.New(), AssignedBy: uuid.New(),
+		Permissions: []string{"keuangan:spm:baca"},
+		UnitKerjaID: &nol,
+		ValidFrom:   time.Now(),
+		ValidUntil:  time.Now().Add(time.Hour),
+	}
+	if err := d.Validate(); err == nil {
+		t.Fatal("unit_kerja_id = UUID nol harus ditolak (pakai nil untuk seluruh tenant)")
+	}
+
+	d.UnitKerjaID = nil
+	if err := d.Validate(); err != nil {
+		t.Fatalf("unit_kerja_id nil (seluruh tenant) harus sah: %v", err)
+	}
+}

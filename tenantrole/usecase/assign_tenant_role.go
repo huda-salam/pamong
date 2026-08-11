@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/huda-salam/pamong/core/permission"
 	"github.com/huda-salam/pamong/port"
 	"github.com/huda-salam/pamong/tenantrole/domain"
 )
@@ -12,6 +13,12 @@ import (
 // opsional menyempitkan scope ke satu unit kerja; IncludeSubtree memperluas jangkauan ke
 // keturunan unit pada hierarki OPD (ditegakkan data-level di core/permission.ScopedEngine,
 // PR-2.3.5). Mutasi ter-audit lewat dekorator repo (ADR-003).
+//
+// CONTAINMENT UNIT (PR-W3b, ADR-021): pemberi wewenang tak boleh memberi LEBIH LUAS dari yang ia
+// pegang. Punya `iam:tenant_role:assign` menjawab "boleh menugaskan", bukan "boleh menugaskan di
+// mana pun" — tanpa lapis kedua, admin yang wewenangnya dibatasi ke satu OPD bisa menugaskan role
+// di OPD lain, atau menugaskan se-tenant, lalu memanen wewenang itu lewat akun yang ia kendalikan.
+// Aturan yang sama dengan ADR-019 pada lapis sentral, kini pada lapis tenant.
 //
 // DEFERRED(Phase-2.4): publish event penugasan role tenant untuk refresh/revoke token.
 type AssignTenantRole struct {
@@ -33,9 +40,9 @@ type AssignTenantRoleInput struct {
 	ValidUntil     *time.Time
 }
 
-// Execute: permission → bentuk assignment → validasi → persist.
+// Execute: permission (RBAC + containment unit) → bentuk assignment → validasi → persist.
 func (uc *AssignTenantRole) Execute(ctx port.AuthContext, in AssignTenantRoleInput) (*domain.TenantRoleAssignment, error) {
-	if err := ctx.RequirePermission(domain.PermTenantRoleAssign); err != nil {
+	if err := permission.RequireAuthorityOver(ctx, domain.PermTenantRoleAssign, in.UnitKerjaID, in.IncludeSubtree); err != nil {
 		return nil, err
 	}
 

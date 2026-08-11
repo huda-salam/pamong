@@ -52,6 +52,9 @@ func (d *Delegation) Validate() error {
 	if !d.ValidUntil.After(d.ValidFrom) {
 		return ErrPeriodeTerbalik
 	}
+	if d.UnitKerjaID != nil && *d.UnitKerjaID == uuid.Nil {
+		return ErrUnitKerjaNol
+	}
 	return nil
 }
 

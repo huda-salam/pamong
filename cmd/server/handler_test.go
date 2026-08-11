@@ -31,8 +31,10 @@ func (f *fakeVerifier) Verify(_ context.Context, raw string) (*port.Claims, erro
 
 type fakeFactory struct{}
 
-func (fakeFactory) Build(context.Context, *port.Claims) (port.PermissionEvaluator, error) {
-	return permission.NewEngine(permission.NewMemoryCatalog()), nil
+func (fakeFactory) Build(context.Context, *port.Claims) (port.PermissionEvaluator, port.ScopedEvaluator, error) {
+	// Scoped nil = default permisif di gateway.Context — cukup untuk test stack yang tak menguji
+	// ABAC; penegakannya diuji terpisah (scoped_evaluator_test.go + DoD e2e).
+	return permission.NewEngine(permission.NewMemoryCatalog()), nil, nil
 }
 
 type fakeTenantResolver struct{}

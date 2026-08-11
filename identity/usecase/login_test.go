@@ -169,16 +169,17 @@ type stubAuthCtx struct {
 	personID uuid.UUID
 }
 
-func (c stubAuthCtx) PersonID() uuid.UUID                             { return c.personID }
-func (c stubAuthCtx) Persona() string                                 { return c.persona }
-func (c stubAuthCtx) EmploymentStatus() string                        { return "" }
-func (c stubAuthCtx) TenantID() string                                { return "" }
-func (c stubAuthCtx) HasRole(string) bool                             { return false }
-func (c stubAuthCtx) HasCentralRole(string) bool                      { return false }
-func (c stubAuthCtx) RequirePermission(string) error                  { return nil }
-func (c stubAuthCtx) RequirePermissionInUnit(string, uuid.UUID) error { return nil }
-func (c stubAuthCtx) IsCitizen() bool                                 { return c.persona == domain.PersonaCitizen }
-func (c stubAuthCtx) IsCrossTenant() bool                             { return false }
+func (c stubAuthCtx) PersonID() uuid.UUID                                { return c.personID }
+func (c stubAuthCtx) Persona() string                                    { return c.persona }
+func (c stubAuthCtx) EmploymentStatus() string                           { return "" }
+func (c stubAuthCtx) TenantID() string                                   { return "" }
+func (c stubAuthCtx) HasRole(string) bool                                { return false }
+func (c stubAuthCtx) HasCentralRole(string) bool                         { return false }
+func (c stubAuthCtx) RequirePermission(string) error                     { return nil }
+func (c stubAuthCtx) RequirePermissionInUnit(string, uuid.UUID) error    { return nil }
+func (c stubAuthCtx) RequirePermissionInSubtree(string, uuid.UUID) error { return nil }
+func (c stubAuthCtx) IsCitizen() bool                                    { return c.persona == domain.PersonaCitizen }
+func (c stubAuthCtx) IsCrossTenant() bool                                { return false }
 
 // --- Helper perakitan ---
 

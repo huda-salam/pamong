@@ -97,3 +97,131 @@ func TestCreateDelegation_InvalidPeriod(t *testing.T) {
 		t.Fatalf("delegasi tanpa valid_until harus ditolak dgn ErrValidUntilWajib, dapat: %v", err)
 	}
 }
+
+// --- Containment unit (PR-W3b, ADR-021) ---
+//
+// Delegasi adalah jalur MANDIRI di evaluator (tak tunduk strict-intersection role), jadi ia
+// permukaan eskalasi paling langsung: pembuat delegasi se-tenant bisa melimpahkan wewenang ke akun
+// mana pun tanpa menyentuh satu pun role.
+
+// TestCreateDelegation_UnitDiluarJangkauan_Ditolak: unit sasaran di luar jangkauan pembuat → 403.
+func TestCreateDelegation_UnitDiluarJangkauan_Ditolak(t *testing.T) {
+	repo := &fakeDelegationRepo{}
+	uc := usecase.NewCreateDelegation(repo, domain.NewNonDelegableSet())
+
+	unitSaya, unitOrangLain := uuid.New(), uuid.New()
+	ctx := testkit.Ctx(t,
+		testkit.WithPermission(domain.PermDelegasiBuat),
+		testkit.WithUnitAuthority(unitSaya),
+	)
+
+	if _, err := uc.Execute(ctx, usecase.CreateDelegationInput{
+		FromUserID: uuid.New(), ToUserID: uuid.New(),
+		Permissions: []string{"keuangan:spm:baca"},
+		UnitKerjaID: &unitOrangLain,
+		ValidUntil:  time.Now().Add(time.Hour),
+	}); err == nil {
+		t.Fatal("delegasi pada unit di luar jangkauan harus ditolak")
+	}
+	if repo.saved != nil {
+		t.Fatalf("delegasi tersimpan padahal ditolak: %+v", repo.saved)
+	}
+}
+
+// TestCreateDelegation_SeTenantTanpaWewenangSeTenant_Ditolak: eskalasi lewat field yang dibiarkan
+// kosong — `unit_kerja_id` nil = SELURUH TENANT.
+func TestCreateDelegation_SeTenantTanpaWewenangSeTenant_Ditolak(t *testing.T) {
+	repo := &fakeDelegationRepo{}
+	uc := usecase.NewCreateDelegation(repo, domain.NewNonDelegableSet())
+
+	ctx := testkit.Ctx(t,
+		testkit.WithPermission(domain.PermDelegasiBuat),
+		testkit.WithUnitAuthority(uuid.New()), // satu unit, bukan se-tenant
+	)
+
+	if _, err := uc.Execute(ctx, usecase.CreateDelegationInput{
+		FromUserID: uuid.New(), ToUserID: uuid.New(),
+		Permissions: []string{"keuangan:spm:baca"},
+		UnitKerjaID: nil,
+		ValidUntil:  time.Now().Add(time.Hour),
+	}); err == nil {
+		t.Fatal("pembuat ber-scope satu unit tidak boleh membuat delegasi SE-TENANT " +
+			"hanya dengan mengosongkan unit_kerja_id")
+	}
+	if repo.saved != nil {
+		t.Fatalf("delegasi se-tenant tersimpan padahal ditolak: %+v", repo.saved)
+	}
+}
+
+// TestCreateDelegation_DalamJangkauan_Lolos: kasus normal (PLT satu OPD) tak boleh ikut tertutup.
+func TestCreateDelegation_DalamJangkauan_Lolos(t *testing.T) {
+	repo := &fakeDelegationRepo{}
+	uc := usecase.NewCreateDelegation(repo, domain.NewNonDelegableSet())
+
+	unit := uuid.New()
+	ctx := testkit.Ctx(t,
+		testkit.WithPermission(domain.PermDelegasiBuat),
+		testkit.WithUnitAuthority(unit),
+	)
+
+	if _, err := uc.Execute(ctx, usecase.CreateDelegationInput{
+		FromUserID: uuid.New(), ToUserID: uuid.New(),
+		Permissions: []string{"keuangan:spm:baca"},
+		UnitKerjaID: &unit,
+		ValidUntil:  time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("delegasi di unit sendiri harus lolos: %v", err)
+	}
+	if repo.saved == nil {
+		t.Fatal("delegasi tak tersimpan")
+	}
+}
+
+// TestCreateDelegation_SubtreeTanpaWewenangSubtree_Ditolak — alasan identik dengan padanannya di
+// tenantrole, dan di sini lebih tajam: delegasi tak tunduk strict-intersection role, jadi jangkauan
+// subtree yang terlanjur dilimpahkan berlaku penuh bagi delegatee.
+func TestCreateDelegation_SubtreeTanpaWewenangSubtree_Ditolak(t *testing.T) {
+	repo := &fakeDelegationRepo{}
+	uc := usecase.NewCreateDelegation(repo, domain.NewNonDelegableSet())
+
+	unit := uuid.New()
+	ctx := testkit.Ctx(t,
+		testkit.WithPermission(domain.PermDelegasiBuat),
+		testkit.WithUnitAuthority(unit), // satu unit saja
+	)
+
+	if _, err := uc.Execute(ctx, usecase.CreateDelegationInput{
+		FromUserID: uuid.New(), ToUserID: uuid.New(),
+		Permissions: []string{"keuangan:spm:baca"},
+		UnitKerjaID: &unit, IncludeSubtree: true,
+		ValidUntil: time.Now().Add(time.Hour),
+	}); err == nil {
+		t.Fatal("pembuat ber-wewenang satu unit tidak boleh melimpahkan jangkauan SUBTREE")
+	}
+	if repo.saved != nil {
+		t.Fatalf("delegasi subtree tersimpan padahal ditolak: %+v", repo.saved)
+	}
+}
+
+func TestCreateDelegation_SubtreeDenganWewenangSubtree_Lolos(t *testing.T) {
+	repo := &fakeDelegationRepo{}
+	uc := usecase.NewCreateDelegation(repo, domain.NewNonDelegableSet())
+
+	unit := uuid.New()
+	ctx := testkit.Ctx(t,
+		testkit.WithPermission(domain.PermDelegasiBuat),
+		testkit.WithSubtreeAuthority(unit),
+	)
+
+	if _, err := uc.Execute(ctx, usecase.CreateDelegationInput{
+		FromUserID: uuid.New(), ToUserID: uuid.New(),
+		Permissions: []string{"keuangan:spm:baca"},
+		UnitKerjaID: &unit, IncludeSubtree: true,
+		ValidUntil: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("pemegang wewenang subtree harus bisa melimpahkan ber-subtree: %v", err)
+	}
+	if repo.saved == nil || !repo.saved.IncludeSubtree {
+		t.Fatalf("delegasi subtree tak tersimpan sebagaimana mestinya: %+v", repo.saved)
+	}
+}

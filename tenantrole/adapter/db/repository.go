@@ -15,13 +15,18 @@ var (
 )
 
 // TenantRoleRepo mengakses gov.tenant_roles + gov.tenant_role_permissions pada TENANT DB.
-// Memegang *db.Pool (bukan db.Conn) karena Save menulis role + grant permission-nya secara
+// Memegang db.TxConn (bukan db.Conn) karena Save menulis role + grant permission-nya secara
 // atomik dalam satu transaksi. Pola RBAC kanonik yang sama dengan CentralRoleRepo (id.*).
+//
+// TxConn, bukan *db.Pool: pool telanjang mengikat repo ke SATU database, sementara role tenant
+// hidup di DB-per-tenant (ADR-004). Dengan seam ini repo yang sama dipakai oleh test/tooling
+// (pool tetap) dan oleh jalur request (TenantRoutingConn — pool dipilih dari klaim token
+// per-request).
 type TenantRoleRepo struct {
-	pool *db.Pool
+	conn db.TxConn
 }
 
-func NewTenantRoleRepo(pool *db.Pool) *TenantRoleRepo { return &TenantRoleRepo{pool: pool} }
+func NewTenantRoleRepo(conn db.TxConn) *TenantRoleRepo { return &TenantRoleRepo{conn: conn} }
 
 // Save menulis role + seluruh permission-nya atomik. Nama duplikat → core.ErrConflict.
 // Schema dipastikan ada lebih dulu (ensure-on-write) di luar transaksi role.
@@ -35,10 +40,10 @@ func (r *TenantRoleRepo) Save(ctx context.Context, role *domain.TenantRole) erro
 	if err := role.Validate(); err != nil {
 		return err
 	}
-	if err := ensureTenantRoleSchema(ctx, r.pool); err != nil {
+	if err := ensureTenantRoleSchema(ctx, r.conn); err != nil {
 		return err
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := r.conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -69,10 +74,10 @@ func (r *TenantRoleRepo) Save(ctx context.Context, role *domain.TenantRole) erro
 const tenantRoleCols = `id, name, label, description, created_at`
 
 func (r *TenantRoleRepo) FindByID(ctx context.Context, id uuid.UUID) (*domain.TenantRole, error) {
-	if err := ensureTenantRoleSchema(ctx, r.pool); err != nil {
+	if err := ensureTenantRoleSchema(ctx, r.conn); err != nil {
 		return nil, err
 	}
-	role, err := r.scanOne(r.pool.QueryRow(ctx,
+	role, err := r.scanOne(r.conn.QueryRow(ctx,
 		`SELECT `+tenantRoleCols+` FROM gov.tenant_roles WHERE id = $1`, id), id.String())
 	if err != nil {
 		return nil, err
@@ -84,10 +89,10 @@ func (r *TenantRoleRepo) FindByID(ctx context.Context, id uuid.UUID) (*domain.Te
 }
 
 func (r *TenantRoleRepo) FindByName(ctx context.Context, name string) (*domain.TenantRole, error) {
-	if err := ensureTenantRoleSchema(ctx, r.pool); err != nil {
+	if err := ensureTenantRoleSchema(ctx, r.conn); err != nil {
 		return nil, err
 	}
-	role, err := r.scanOne(r.pool.QueryRow(ctx,
+	role, err := r.scanOne(r.conn.QueryRow(ctx,
 		`SELECT `+tenantRoleCols+` FROM gov.tenant_roles WHERE name = $1`, name), name)
 	if err != nil {
 		return nil, err
@@ -101,10 +106,10 @@ func (r *TenantRoleRepo) FindByName(ctx context.Context, name string) (*domain.T
 // List mengembalikan seluruh role tenant dengan permission-nya terisi. Menghindari N+1:
 // satu query role + satu query permission, lalu di-stitch per role_id.
 func (r *TenantRoleRepo) List(ctx context.Context) ([]*domain.TenantRole, error) {
-	if err := ensureTenantRoleSchema(ctx, r.pool); err != nil {
+	if err := ensureTenantRoleSchema(ctx, r.conn); err != nil {
 		return nil, err
 	}
-	rows, err := r.pool.Query(ctx, `SELECT `+tenantRoleCols+` FROM gov.tenant_roles ORDER BY name ASC`)
+	rows, err := r.conn.Query(ctx, `SELECT `+tenantRoleCols+` FROM gov.tenant_roles ORDER BY name ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +129,7 @@ func (r *TenantRoleRepo) List(ctx context.Context) ([]*domain.TenantRole, error)
 		return nil, err
 	}
 
-	prows, err := r.pool.Query(ctx, `SELECT role_id, permission FROM gov.tenant_role_permissions`)
+	prows, err := r.conn.Query(ctx, `SELECT role_id, permission FROM gov.tenant_role_permissions`)
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +148,7 @@ func (r *TenantRoleRepo) List(ctx context.Context) ([]*domain.TenantRole, error)
 }
 
 func (r *TenantRoleRepo) permissionsOf(ctx context.Context, roleID uuid.UUID) ([]string, error) {
-	rows, err := r.pool.Query(ctx,
+	rows, err := r.conn.Query(ctx,
 		`SELECT permission FROM gov.tenant_role_permissions WHERE role_id = $1 ORDER BY permission ASC`, roleID)
 	if err != nil {
 		return nil, err

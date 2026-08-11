@@ -48,4 +48,15 @@ type PermissionEvaluator interface {
 // PermissionEvaluator yang menjawab "punya permission?" tanpa scope.
 type ScopedEvaluator interface {
 	AllowsInUnit(ctx context.Context, perm string, unitID uuid.UUID) (bool, error)
+
+	// AllowsSubtree melaporkan apakah actor berwenang atas unitID BESERTA SELURUH KETURUNANNYA
+	// pada hierarki OPD. Ia BUKAN AllowsInUnit yang dipanggil berulang: pertanyaannya berbeda
+	// secara mendasar, dan hanya wewenang yang memang menjangkau turunan (grant ber-Subtree atas
+	// unit itu/leluhurnya, atau TenantWide) yang boleh menjawab ya.
+	//
+	// Dipakai saat actor MEMBERIKAN jangkauan subtree kepada orang lain (ADR-021): tanpa
+	// pertanyaan ini, pemegang wewenang atas satu unit SAJA bisa menerbitkan assignment/delegasi
+	// ber-`include_subtree` pada unit itu dan dengan begitu memberi jangkauan atas seluruh
+	// keturunan yang ia sendiri tak punya.
+	AllowsSubtree(ctx context.Context, perm string, unitID uuid.UUID) (bool, error)
 }

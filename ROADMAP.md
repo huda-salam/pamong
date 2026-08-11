@@ -1130,7 +1130,7 @@ tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
     membatasi di pintu tulis `tenantrole` adalah perubahan perilaku bagi tenant yang mungkin sudah
     punya nama panjang. Lihat "Keputusan tertunda" ADR-020.
 
-- **PR-W3b** Wiring Authority live → `SetScopedEvaluator` ← W1, 2.3.5, W3a
+- **PR-W3b** ✅ Wiring Authority live → `SetScopedEvaluator` ← W1, 2.3.5, W3a — **SELESAI** (ADR-021, amends ADR-019)
   - Bangun `permission.Authority` (`Roles []RoleRef` + RoleGrants dari resolver tenant, emitter
     central-role→Grant `TenantWide`, DelegatedGrants dari resolver delegasi) →
     `ScopedEngine.Bind` → `gateway.Context.SetScopedEvaluator` di middleware Auth.
@@ -1149,6 +1149,57 @@ tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
     "[Phase-2.4] Wiring Authority live + seam scoped".
   - DoD: dua request token identik beda `unit_kerja` → satu lolos satu 403, lewat stack
     HTTP nyata (bukan pemanggilan engine langsung).
+  - **Hasil:** `permission.CentralGrants` (emitter sentral→Grant TenantWide) +
+    `permission.BuildAuthority` + `middleware.EvaluatorFactory.Build` kini mengembalikan DUA
+    evaluator (RBAC + scoped) dari satu panggilan → `SetScopedEvaluator` di Auth middleware.
+    Perakitan Authority **lazy & ter-memo** per request (dua query tenant DB hanya dibayar oleh
+    request yang benar-benar memeriksa unit); kegagalan resolver jadi ERROR, bukan `false`.
+    Konteks tanpa tenant dapat Authority KOSONG (menolak), bukan evaluator nil (permisif).
+    **Pemanggil produksi:** `AssignTenantRole` & `CreateDelegation` lewat
+    `permission.RequireAuthorityOver`, termasuk kasus `unit_kerja_id` KOSONG = se-tenant
+    (ditanyakan sebagai `AllowsInUnit(perm, uuid.Nil)`; `Validate` kedua domain kini menolak unit
+    ber-UUID nol supaya pertanyaan itu sahih). **Permukaan HTTP baru** `/admin/iam/{tenant-roles,
+    tenant-role-assignments,delegations}` di router bisnis (di balik RequireAuth), ter-audit.
+    DoD dibuktikan `TestE2E_ABAC_PenugasanRole_ScopeUnitDitegakkan`: token yang SAMA → unit
+    sendiri 201, unit lain 403, se-tenant 403, dan hanya satu baris tersimpan. 3 mutasi
+    diverifikasi (use case tanpa unit / middleware tak memasang evaluator / cabang se-tenant
+    dihapus) — semuanya membuat DoD gagal.
+  - **Efek samping yang dibayar di sini:** `db.TxConn` (Conn + `Begin`) lahir karena
+    `TenantRoleRepo` & `AuditRepo` memegang `*db.Pool` — yaitu tak bisa dipakai di jalur request
+    multi-tenant sama sekali. `TenantRoutingConn` kini merutekan transaksi juga, dan
+    `gov.audit_logs` mendapat penulis produksi pertamanya (ensure-on-write per tenant; lihat
+    DB_CHANGELOG PR-W3b).
+  - **Ditemukan review (3 putaran), diperbaiki di PR yang sama — semuanya lolos seluruh test
+    sebelum ditemukan:** (a) `RefCatalog` diperoleh lewat type-assert atas katalog sentral, yang
+    SELALU gagal di produksi (`identitydb.CentralRoleCatalog` tanpa `LookupRef`) → grant sentral
+    tak pernah terbit dan `super_admin` platform 403 di setiap unit; kini lewat `CompositeCatalog`
+    + test ber-katalog "Lookup-saja"; (b) `include_subtree` tak diperiksa → pemegang satu unit bisa
+    membagikan jangkauan seluruh keturunannya (eskalasi lewat BOOLEAN) → `AllowsSubtree` +
+    `RequirePermissionInSubtree`; (c) `NewNonDelegableSet()` kosong di wiring padahal ADR menjadikan
+    himpunan itu alasan menunda pemeriksaan per-permission → `DefaultNonDelegable` (`identity:*`,
+    `iam:*`, entri ber-namespace). Putaran KETIGA (atas perbaikan putaran kedua):
+    (d) `CreateTenantRole` tak memagari ISI role — containment menjaga DI MANA, bukan APA, sehingga
+    pemegang `iam:tenant_role:buat`+`assign` bisa MENCETAK role berisi `iam:delegasi:buat` yang tak
+    pernah diberikan kepadanya, menugaskannya ke dirinya sendiri di unitnya (lolos containment), dan
+    dengan itu membuat larangan `iam:*` pada delegasi berhenti berarti → `grantingPermissionPrefix`
+    (ADR-021 Keputusan 6; residu permission BISNIS dicatat eksplisit, tidak ditutup);
+    (e) `testkit.WithUnitAuthority(uuid.Nil)` didokumentasikan "se-tenant" tapi diperlakukan sebagai
+    kunci map biasa — fake LEBIH KETAT dari produksi (grant `TenantWide` menutupi setiap unit &
+    subtree), sehingga test bisa menghijaukan invariant yang tak ada → diselaraskan + test pembanding
+    langsung terhadap evaluator produksi; (f) wiring `SetScopedEvaluator` hanya tertangkap e2e
+    ber-tag `integration` — menghapusnya membuat seluruh suite non-integration tetap hijau (Context
+    tanpa evaluator = PERMISIF, jadi tiap assertion "harus lolos" tetap lolos) → uji middleware yang
+    membalik pertanyaannya (unit di LUAR jangkauan harus DITOLAK) + uji kegagalan factory harus
+    menolak request. Ketiganya mutation-verified.
+  - **Residu yang disengaja:** delegasi belum memeriksa apakah PEMBUAT memegang tiap permission
+    yang ia limpahkan (hanya jangkauan unit + `NonDelegableSet`); memegang `iam:tenant_role:buat`
+    BERSAMA `iam:tenant_role:assign` setara dengan memegang seluruh permission BISNIS tenant di
+    dalam jangkauan unit sendiri (sifat administrasi role — pagar berikutnya = flag `grantable_by`
+    di manifest, bukan aturan prefiks); belum ada use case revoke;
+    `unit_kerja_id` belum ber-FK ke `gov.org_units`; dan pengecekan unit pertama sebuah request
+    masih memicu DDL ensure-on-write di jalur otorisasi (pola `gov.*` repo ini — solusinya runner
+    migrasi framework-gov yang sudah ter-DEFERRED, bukan tambalan per-adapter). Lihat "Keputusan
+    tertunda" & §Konsekuensi ADR-021.
 
 - **PR-W4** Runtime workflow + notifikasi + scheduler ← W1, 3.2.x, 3.5.x, 3.6.x, N1–N3b
   - Blok dorman terbesar. Rakit: `DBStore` (definition) + `DBTemplateStore` + `Engine`

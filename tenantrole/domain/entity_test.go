@@ -109,3 +109,27 @@ func TestTenantRole_Validate_MenolakNamespaceIdentity(t *testing.T) {
 		})
 	}
 }
+
+// TestTenantRoleAssignment_UnitNolDitolak menjaga invariant yang menjadi DASAR containment
+// se-tenant (ADR-021): "seluruh tenant" HANYA boleh dinyatakan sebagai UnitKerjaID nil.
+//
+// Kalau satu baris boleh punya unit ber-UUID nol, ia menjadi grant unit-scoped yang menutupi
+// uuid.Nil — dan uuid.Nil-lah pertanyaan "apakah aktor berwenang se-tenant?". Satu baris seperti
+// itu menjawab "ya" tanpa pernah memberi wewenang se-tenant kepada siapa pun, membuka kembali
+// eskalasi yang ditutup dengan mengosongkan unit_kerja_id.
+func TestTenantRoleAssignment_UnitNolDitolak(t *testing.T) {
+	nol := uuid.Nil
+	a := &domain.TenantRoleAssignment{
+		ID: uuid.New(), UserID: uuid.New(), RoleID: uuid.New(), AssignedBy: uuid.New(),
+		UnitKerjaID: &nol,
+	}
+	if err := a.Validate(); err == nil {
+		t.Fatal("unit_kerja_id = UUID nol harus ditolak (pakai nil untuk seluruh tenant)")
+	}
+
+	// nil tetap sah: itulah cara menyatakan "seluruh tenant".
+	a.UnitKerjaID = nil
+	if err := a.Validate(); err != nil {
+		t.Fatalf("unit_kerja_id nil (seluruh tenant) harus sah: %v", err)
+	}
+}

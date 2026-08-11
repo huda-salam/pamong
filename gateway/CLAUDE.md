@@ -58,3 +58,17 @@ audit). gateway.Context mengimplementasi port.AuthContext.
 
 ## Rujukan
 - PRD.md, port/auth.go, core/domain (generation), identity (auth)
+
+## ScopedEvaluator kini terpasang (PR-W3b · ADR-021)
+
+`middleware.EvaluatorFactory.Build` mengembalikan **dua** evaluator (RBAC + scoped) dari satu
+panggilan, dan `Auth` memasang keduanya. Konsekuensinya: `RequirePermissionInUnit` **menegakkan**
+untuk request ber-token — sebelumnya default permisif.
+
+- **Satu factory, bukan dua.** Keduanya diturunkan dari bahan yang sama (katalog role tenant +
+  klaim); dua seam terpisah akan mengundang perakitan yang menyimpang, dan penyimpangan di sini
+  berarti RBAC & ABAC menjawab dari dunia yang berbeda.
+- **nil scoped = PERMISIF.** Itu sebabnya konteks tanpa tenant tetap dipasangi evaluator (Authority
+  kosong) alih-alih nil — lihat `cmd/server/scoped_evaluator.go`.
+- **Request anonim tetap tanpa evaluator.** Penolakannya berasal dari pemisahan rute publik/internal
+  saat registrasi router, bukan dari `RequirePermission*`.

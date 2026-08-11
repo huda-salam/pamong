@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/huda-salam/pamong/core/permission"
 	"github.com/huda-salam/pamong/delegation/domain"
 	"github.com/huda-salam/pamong/port"
 )
@@ -14,6 +15,17 @@ import (
 // CreateDelegation melimpahkan subset permission dari pejabat (FromUserID) ke pelaksana/PLT
 // (ToUserID) untuk rentang waktu terbatas. Menolak permission yang non-delegable. Mutasi
 // ter-audit lewat dekorator repo (ADR-003 / PRD F5 "delegasi tercatat di audit").
+//
+// CONTAINMENT UNIT (PR-W3b, ADR-021): jangkauan delegasi yang dibuat harus berada dalam jangkauan
+// pembuatnya — termasuk kasus `unit_kerja_id` kosong yang berarti SE-TENANT. Delegasi adalah jalur
+// MANDIRI di evaluator (tak tunduk strict-intersection role), jadi ia justru permukaan eskalasi
+// yang paling langsung: siapa pun yang bisa membuat delegasi se-tenant dapat melimpahkan wewenang
+// ke akun mana pun tanpa menyentuh satu pun role.
+//
+// RESIDU yang disengaja: yang diperiksa jangkauan UNIT, bukan apakah PEMBUAT memegang tiap
+// permission yang ia limpahkan. `NonDelegableSet` menutup permission yang paling berbahaya, dan
+// pemeriksaan per-permission menuntut evaluasi wewenang delegator (bukan pembuat) — lihat
+// "Keputusan tertunda" ADR-021.
 //
 // DEFERRED(Phase-2.4): publish event delegasi (refresh/revoke klaim token) + use case revoke.
 type CreateDelegation struct {
@@ -38,9 +50,10 @@ type CreateDelegationInput struct {
 	ValidUntil     time.Time
 }
 
-// Execute: permission → tolak non-delegable → bentuk entity → validasi → persist.
+// Execute: permission (RBAC + containment unit) → tolak non-delegable → bentuk entity →
+// validasi → persist.
 func (uc *CreateDelegation) Execute(ctx port.AuthContext, in CreateDelegationInput) (*domain.Delegation, error) {
-	if err := ctx.RequirePermission(domain.PermDelegasiBuat); err != nil {
+	if err := permission.RequireAuthorityOver(ctx, domain.PermDelegasiBuat, in.UnitKerjaID, in.IncludeSubtree); err != nil {
 		return nil, err
 	}
 

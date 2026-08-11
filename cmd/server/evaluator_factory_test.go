@@ -52,7 +52,7 @@ func TestEvaluatorFactory_Citizen_CentralOnly(t *testing.T) {
 		return nil, nil
 	})
 
-	eval, err := f.Build(context.Background(), &port.Claims{Persona: "citizen", TenantID: ""})
+	eval, _, err := f.Build(context.Background(), &port.Claims{Persona: "citizen", TenantID: ""})
 	if err != nil {
 		t.Fatalf("Build citizen: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestEvaluatorFactory_Employee_Composite(t *testing.T) {
 		return buildTenantCat(), nil
 	})
 
-	eval, err := f.Build(context.Background(), &port.Claims{Persona: "employee", TenantID: "pemkot-a"})
+	eval, _, err := f.Build(context.Background(), &port.Claims{Persona: "employee", TenantID: "pemkot-a"})
 	if err != nil {
 		t.Fatalf("Build employee: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestEvaluatorFactory_TenantCatalogCached(t *testing.T) {
 	})
 
 	for i := 0; i < 3; i++ {
-		if _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-a"}); err != nil {
+		if _, _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-a"}); err != nil {
 			t.Fatalf("Build #%d: %v", i, err)
 		}
 	}
@@ -103,7 +103,7 @@ func TestEvaluatorFactory_TenantCatalogCached(t *testing.T) {
 	}
 
 	// Tenant berbeda → build lagi (cache per tenant).
-	if _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-b"}); err != nil {
+	if _, _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-b"}); err != nil {
 		t.Fatalf("Build tenant lain: %v", err)
 	}
 	if buildCount != 2 {
@@ -118,11 +118,11 @@ func TestEvaluatorFactory_BuildError_TidakDicache(t *testing.T) {
 		return nil, errors.New("db tenant tak terjangkau")
 	})
 
-	if _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-a"}); err == nil {
+	if _, _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-a"}); err == nil {
 		t.Fatal("error build harus dipropagasi")
 	}
 	// Percobaan kedua harus mencoba build lagi (kegagalan tak di-cache).
-	if _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-a"}); err == nil {
+	if _, _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-a"}); err == nil {
 		t.Fatal("error build kedua harus tetap dipropagasi")
 	}
 	if buildCount != 2 {
@@ -148,7 +148,7 @@ func TestEvaluatorFactory_StrictPropagated(t *testing.T) {
 		return buildTenantStrict(), nil
 	}, strict, 0)
 
-	eval, err := f.Build(context.Background(), &port.Claims{Persona: "employee", TenantID: "pemkot-a"})
+	eval, _, err := f.Build(context.Background(), &port.Claims{Persona: "employee", TenantID: "pemkot-a"})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestEvaluatorFactory_StrictKosong_UnionMurni(t *testing.T) {
 	f := newTestFactory(buildCentral(), func(context.Context, string) (permission.RoleCatalog, error) {
 		return buildTenantStrict(), nil
 	})
-	eval, err := f.Build(context.Background(), &port.Claims{Persona: "employee", TenantID: "pemkot-a"})
+	eval, _, err := f.Build(context.Background(), &port.Claims{Persona: "employee", TenantID: "pemkot-a"})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -198,12 +198,12 @@ func TestEvaluatorFactory_TTL_RebuildSetelahKedaluwarsa(t *testing.T) {
 	f.now = func() time.Time { return now }
 
 	// Build pertama → 1x build.
-	if _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-a"}); err != nil {
+	if _, _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-a"}); err != nil {
 		t.Fatalf("Build #1: %v", err)
 	}
 	// Dalam TTL (maju 4 menit < 5 menit) → tetap cache, tak build ulang.
 	now = now.Add(4 * time.Minute)
-	if _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-a"}); err != nil {
+	if _, _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-a"}); err != nil {
 		t.Fatalf("Build #2 (dalam TTL): %v", err)
 	}
 	if buildCount != 1 {
@@ -211,7 +211,7 @@ func TestEvaluatorFactory_TTL_RebuildSetelahKedaluwarsa(t *testing.T) {
 	}
 	// Lewat TTL (total 6 menit >= 5 menit) → build ulang.
 	now = now.Add(2 * time.Minute)
-	if _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-a"}); err != nil {
+	if _, _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-a"}); err != nil {
 		t.Fatalf("Build #3 (lewat TTL): %v", err)
 	}
 	if buildCount != 2 {
@@ -231,11 +231,11 @@ func TestEvaluatorFactory_TTLNol_CacheSelamanya(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	f.now = func() time.Time { return now }
 
-	if _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-a"}); err != nil {
+	if _, _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-a"}); err != nil {
 		t.Fatalf("Build #1: %v", err)
 	}
 	now = now.Add(1000 * time.Hour) // maju jauh
-	if _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-a"}); err != nil {
+	if _, _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-a"}); err != nil {
 		t.Fatalf("Build #2: %v", err)
 	}
 	if buildCount != 1 {
@@ -255,7 +255,7 @@ func TestEvaluatorFactory_TTL_ConcurrentBuild(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-a"}); err != nil {
+			if _, _, err := f.Build(context.Background(), &port.Claims{TenantID: "pemkot-a"}); err != nil {
 				t.Errorf("Build konkuren: %v", err)
 			}
 		}()

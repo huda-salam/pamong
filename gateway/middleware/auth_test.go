@@ -2,6 +2,7 @@ package middleware_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -33,11 +34,13 @@ func (f *fakeVerifier) Verify(_ context.Context, raw string) (*port.Claims, erro
 // fakeFactory mengimplementasi middleware.EvaluatorFactory in-memory.
 // Mengembalikan Engine berbasis MemoryCatalog yang sudah dikonfigurasi.
 type fakeFactory struct {
-	eval port.PermissionEvaluator // evaluator yang selalu dikembalikan
+	eval   port.PermissionEvaluator // evaluator RBAC yang selalu dikembalikan
+	scoped port.ScopedEvaluator     // evaluator data-level (nil = tak disuntik)
+	err    error
 }
 
-func (f *fakeFactory) Build(_ context.Context, _ *port.Claims) (port.PermissionEvaluator, error) {
-	return f.eval, nil
+func (f *fakeFactory) Build(_ context.Context, _ *port.Claims) (port.PermissionEvaluator, port.ScopedEvaluator, error) {
+	return f.eval, f.scoped, f.err
 }
 
 // captureAuthHandler menangkap gateway.Context yang dilihat handler downstream.
@@ -287,5 +290,115 @@ func TestAuth_BearerFormat_HanyaPrefixBenar(t *testing.T) {
 	}
 	if res.personID != (uuid.UUID{}) {
 		t.Error("format bukan Bearer: personID harus zero")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ScopedEvaluator (ABAC data-level) — PR-W3b
+// ---------------------------------------------------------------------------
+
+// fakeScoped mengizinkan perm HANYA pada satu unit, dan tak pernah untuk pertanyaan subtree.
+// Bentuk paling sederhana yang bisa membedakan "evaluator terpasang" dari "evaluator nil":
+// dengan evaluator nil, gateway.Context default PERMISIF, jadi penolakan hanya mungkin bila
+// middleware benar-benar memasangnya.
+type fakeScoped struct {
+	perm string
+	unit uuid.UUID
+	err  error
+}
+
+func (f fakeScoped) AllowsInUnit(_ context.Context, perm string, unitID uuid.UUID) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	return perm == f.perm && unitID == f.unit, nil
+}
+
+func (f fakeScoped) AllowsSubtree(_ context.Context, _ string, _ uuid.UUID) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	return false, nil
+}
+
+// captureScopedHandler menangkap hasil pemeriksaan ber-scope yang dilihat handler downstream.
+func captureScopedHandler(perm string, unit uuid.UUID, unitErr, subtreeErr *error) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c := gateway.FromRequest(r)
+		*unitErr = c.RequirePermissionInUnit(perm, unit)
+		*subtreeErr = c.RequirePermissionInSubtree(perm, unit)
+		w.WriteHeader(http.StatusOK)
+	})
+}
+
+// TestAuth_ScopedEvaluatorTerpasang_UnitDitegakkan — pemeriksaan ber-scope MENEGAKKAN pada request
+// ber-token, bukan hanya "tidak error".
+//
+// Test ini menutup celah yang khas untuk wiring: sebelum ada uji ini, MENGHAPUS pemanggilan
+// SetScopedEvaluator di middleware tetap membuat seluruh suite non-integration hijau — karena
+// gateway.Context tanpa ScopedEvaluator menjawab IZIN (default permisif), sehingga tiap assertion
+// "harus lolos" tetap lolos dan tak ada assertion "harus ditolak" yang menyentuh jalur ini. Yang
+// menangkapnya hanya e2e ber-tag integration, yang tidak jalan di gerbang PR biasa. Karena itu
+// pertanyaannya dibalik: unit yang TIDAK berwenang harus DITOLAK.
+func TestAuth_ScopedEvaluatorTerpasang_UnitDitegakkan(t *testing.T) {
+	const perm = "test:data:buat"
+	unitBerwenang, unitLain := uuid.New(), uuid.New()
+
+	claims := &port.Claims{
+		PersonID:    uuid.New(),
+		Persona:     "employee",
+		TenantID:    "pemkot-a",
+		TenantRoles: []string{"admin_opd"},
+	}
+	verifier := &fakeVerifier{tokens: map[string]*port.Claims{"tok": claims}}
+	factory := &fakeFactory{
+		eval:   buildEngine(),
+		scoped: fakeScoped{perm: perm, unit: unitBerwenang},
+	}
+
+	var unitErr, subtreeErr error
+	h := middleware.Auth(verifier, factory)(captureScopedHandler(perm, unitLain, &unitErr, &subtreeErr))
+	if w := doAuthRequest(t, h, "tok"); w.Code != http.StatusOK {
+		t.Fatalf("expect 200, got %d", w.Code)
+	}
+	if unitErr == nil {
+		t.Error("RequirePermissionInUnit pada unit di LUAR jangkauan harus ditolak — " +
+			"pertanda ScopedEvaluator tidak terpasang (Context default permisif)")
+	}
+	if subtreeErr == nil {
+		t.Error("RequirePermissionInSubtree harus ditolak — pertanda ScopedEvaluator tidak terpasang")
+	}
+
+	// Sisi lain: unit yang memang berwenang tetap lolos, jadi penolakan di atas bukan sekadar
+	// "semua ditolak".
+	var okErr, okSubtree error
+	h = middleware.Auth(verifier, factory)(captureScopedHandler(perm, unitBerwenang, &okErr, &okSubtree))
+	doAuthRequest(t, h, "tok")
+	if okErr != nil {
+		t.Errorf("unit dalam jangkauan harus lolos: %v", okErr)
+	}
+}
+
+// TestAuth_FactoryError_Tolak — kegagalan merakit evaluator (mis. query jangkauan/hierarki gagal)
+// harus MENOLAK request, bukan meneruskannya tanpa evaluator. Meneruskannya berarti request
+// berjalan dengan Context yang default permisif: kegagalan infrastruktur berubah menjadi
+// pelonggaran otorisasi — arah kegagalan yang paling buruk.
+func TestAuth_FactoryError_Tolak(t *testing.T) {
+	claims := &port.Claims{PersonID: uuid.New(), Persona: "employee", TenantID: "pemkot-a"}
+	verifier := &fakeVerifier{tokens: map[string]*port.Claims{"tok": claims}}
+	factory := &fakeFactory{err: errors.New("baca jangkauan gagal")}
+
+	dipanggil := false
+	h := middleware.Auth(verifier, factory)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dipanggil = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	w := doAuthRequest(t, h, "tok")
+	if w.Code == http.StatusOK {
+		t.Fatalf("kegagalan factory harus menolak request, got %d", w.Code)
+	}
+	if dipanggil {
+		t.Error("handler downstream TIDAK boleh dijalankan saat evaluator gagal dirakit")
 	}
 }

@@ -24,6 +24,11 @@ type AuthContext interface {
 	// tenant-wide, termasuk lewat delegasi aktif). Dipakai handler yang melayani resource
 	// milik unit tertentu; unitID = unit pemilik resource.
 	RequirePermissionInUnit(perm string, unitID uuid.UUID) error
+	// RequirePermissionInSubtree menegakkan wewenang atas unitID BESERTA SELURUH KETURUNANNYA
+	// (ADR-021). Dipakai saat actor memberikan jangkauan subtree kepada orang lain — memberi
+	// `include_subtree` atas sebuah unit berarti memberi jangkauan atas turunannya, jadi ia
+	// menuntut wewenang yang menjangkau turunan itu, bukan wewenang atas unit itu saja.
+	RequirePermissionInSubtree(perm string, unitID uuid.UUID) error
 	IsCitizen() bool
 	IsCrossTenant() bool
 }

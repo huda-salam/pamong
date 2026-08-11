@@ -103,6 +103,48 @@ strict-intersection.
   di-mark strict:true -> intersection.
 - Delegasi punya valid_from/valid_until; kedaluwarsa = otomatis tidak berlaku.
 
+## Containment jangkauan (PR-W3b · ADR-021)
+
+`RequireAuthorityOver(ctx, perm, unit *uuid.UUID, includeSubtree bool)` adalah SATU-SATUNYA
+implementasi aturan
+"pemberi wewenang tak boleh memberi lebih luas dari yang ia pegang". Dipakai
+`tenantrole.AssignTenantRole` & `delegation.CreateDelegation`.
+
+- **`unit == nil` (= seluruh tenant) ditanyakan sebagai `AllowsInUnit(perm, uuid.Nil)`.** Itu bukan
+  trik: se-tenant adalah jangkauan terluas, jadi ia menuntut wewenang terluas. Sahihnya bergantung
+  pada invariant domain — `TenantRoleAssignment.Validate` & `Delegation.Validate` MENOLAK unit
+  ber-UUID nol — sehingga hanya grant `TenantWide` yang bisa menutupinya. **Jangan melonggarkan
+  invariant itu**; satu baris ber-unit nol menjawab "ya" pada pertanyaan se-tenant tanpa pernah
+  memberi wewenang se-tenant kepada siapa pun.
+- **`include_subtree` adalah PERTANYAAN LAIN, bukan varian.** Memberi subtree atas sebuah unit =
+  memberi jangkauan atas seluruh keturunannya, jadi ia lewat `RequirePermissionInSubtree` →
+  `AllowsSubtree`, yang hanya dijawab ya oleh `TenantWide` atau grant ber-`Subtree` atas unit
+  itu/leluhurnya. Grant yang terikat persis pada satu unit menutupi unit itu tapi BUKAN
+  keturunannya — memakai `AllowsInUnit` untuk pertanyaan ini adalah eskalasi lewat boolean.
+- **Jangan menyalin aturan ini ke paket use case.** Dua salinan akan menyimpang saat salah satunya
+  diperbaiki (alasan yang sama dengan `crypto.FieldSealer`).
+- **`RequirePermission` tidak dipanggil terpisah sebelumnya** — Tahap 1 `AllowsInUnit` sudah RBAC
+  utuh (strict-intersection + global-precedence). Menambahkannya hanya menduplikasi keputusan.
+- **Aturan ini PER USE CASE.** Pemanggil baru (CLI, importer, workflow action) tidak otomatis
+  terlindungi, dan konteks tanpa `ScopedEvaluator` membuatnya diam-diam permisif.
+- **Ia menjawab DI MANA, bukan APA.** Containment jangkauan tak membatasi permission apa yang boleh
+  dimasukkan ke dalam sebuah role — itu pagar terpisah di `tenantrole.CreateTenantRole`
+  (`grantingPermissionPrefix`, ADR-021 Keputusan 6). Keduanya dibutuhkan: tanpa yang kedua, pemberi
+  wewenang cukup MENCETAK permission baru lalu menugaskannya di dalam jangkauannya sendiri.
+
+## Perakitan Authority (PR-W3b)
+
+`BuildAuthority` = `Roles` (apa adanya dari klaim; strict-intersection butuh SEMUA ref) +
+`RoleGrants` (grant sentral `TenantWide` dari `CentralGrants` ∪ grant assignment tenant) +
+`DelegatedGrants` (terpisah — jalur mandiri).
+
+- **Role sentral selalu `TenantWide`.** Scope teritorialnya sudah disaring saat login (ADR-019
+  Keputusan 3); menerjemahkannya jadi unit-scoped mematikan wewenang lintas-unit.
+- **Kegagalan resolver = error, bukan Authority bolong.** Authority bolong terasa seperti "tidak
+  berwenang" bagi orang yang sebenarnya berwenang, dan menyembunyikan DB tenant yang tak terjangkau.
+- **Konteks tanpa tenant → Authority KOSONG, bukan evaluator nil.** nil = permisif di
+  `gateway.Context`.
+
 ## Pitfall umum
 - **Menambah RoleCatalog baru tanpa jalur LookupRef yang menghormati origin.** Katalog yang
   mengabaikannya membuka ulang B8 di satu lapis saja, tanpa satu pun gejala — lihat

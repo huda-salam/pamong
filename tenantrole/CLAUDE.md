@@ -42,3 +42,30 @@ per-tenant, tanpa scope_type (role tenant selalu satu tenant).
 
 ## Rujukan
 - CLAUDE.md root ("Identity & manajemen user" → Lapisan 2), core/permission/CLAUDE.md
+
+## Permukaan HTTP & containment (PR-W3b · ADR-021)
+
+`/admin/iam/tenant-roles` & `/admin/iam/tenant-role-assignments` (`tenantrole/adapter/http`)
+dipasang pada **ROUTER BISNIS** lewat `cmd/server.mountAdminIAMRoutes` — di balik RequireAuth.
+Jangan menirunya dari `/auth/*` (yang sengaja di top mux, di LUAR RequireAuth): pada request
+anonim `gateway.Context` tak punya evaluator, dan tanpa evaluator `RequirePermission` bersifat
+PERMISIF — rute yang lolos RequireAuth juga lolos permission, dan `tenant-role-assignments`
+menjadi cara siapa pun menugaskan role apa pun kepada siapa pun. Dikunci
+`cmd/server/admin_iam_routes_test.go`.
+
+- **`AssignTenantRole` memakai `permission.RequireAuthorityOver`, bukan `RequirePermission`.**
+  Memegang `iam:tenant_role:assign` menjawab "boleh menugaskan", bukan "boleh menugaskan DI MANA
+  PUN". `unit_kerja_id` KOSONG = seluruh tenant = jangkauan terluas, jadi ia juga diperiksa —
+  tanpa itu, admin ber-scope satu OPD cukup mengosongkan field untuk menugaskan se-tenant.
+- **`Validate` menolak `unit_kerja_id` ber-UUID nol.** "Seluruh tenant" HANYA dinyatakan `nil`.
+  Ini yang membuat pertanyaan wewenang se-tenant (`AllowsInUnit(perm, uuid.Nil)`) sahih.
+- **`CreateTenantRole` menuntut pembuat MEMEGANG tiap permission `iam:*` yang ia masukkan ke role**
+  (`grantingPermissionPrefix`, ADR-021 Keputusan 6). Containment jangkauan menjaga DI MANA wewenang
+  diberikan; tanpa pagar ini, pemberi wewenang cukup MENCETAK permission `iam:` yang tak pernah
+  diberikan kepadanya lalu menugaskannya kepada dirinya sendiri di unitnya (lolos containment) —
+  dan larangan `iam:*` pada delegasi berhenti berarti. Permission BISNIS sengaja tidak dituntut
+  (lihat residu di ADR-021: pasangan `buat`+`assign` = wewenang setingkat admin tenant).
+- **`TenantRoleRepo` menerima `db.TxConn`, bukan `*db.Pool`.** Save-nya transaksional (role +
+  grant atomik) sementara role tenant hidup di DB-per-tenant; pool telanjang mengikatnya ke satu
+  DB yang dipilih saat boot — yaitu tak bisa dipakai di jalur request. Jangan mengembalikannya
+  ke `*db.Pool` "supaya sederhana".

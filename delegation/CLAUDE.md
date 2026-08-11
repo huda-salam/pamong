@@ -46,3 +46,33 @@ Beda dari penugasan cross-tenant (PJ/PLT antar tenant = `id.tenant_assignments`,
 
 ## Rujukan
 - core/permission/PRD.md (F5), core/permission/CLAUDE.md, tenantrole/CLAUDE.md
+
+## Permukaan HTTP & containment (PR-W3b · ADR-021)
+
+`/admin/iam/delegations` (`delegation/adapter/http`) dipasang pada ROUTER BISNIS lewat
+`cmd/server.mountAdminIAMRoutes` — di balik RequireAuth, alasan sama dengan tenantrole.
+
+- **`CreateDelegation` memakai `permission.RequireAuthorityOver`.** Delegasi adalah jalur MANDIRI
+  di evaluator (tak tunduk strict-intersection role), jadi ia permukaan eskalasi paling langsung:
+  pembuat delegasi se-tenant bisa melimpahkan wewenang ke akun mana pun tanpa menyentuh satu pun
+  role. `unit_kerja_id` KOSONG = seluruh tenant, dan karenanya ikut diperiksa.
+- **`Validate` menolak `unit_kerja_id` ber-UUID nol** — alasan identik dengan tenantrole.
+- **RESIDU yang disengaja:** yang diperiksa jangkauan UNIT, bukan apakah pembuat MEMEGANG tiap
+  permission yang ia limpahkan. `NonDelegableSet` menutup yang paling berbahaya; pemeriksaan
+  per-permission menuntut evaluasi wewenang DELEGATOR (bukan pembuat) — lihat "Keputusan tertunda"
+  ADR-021. Jangan menganggapnya sudah tertutup.
+
+## Larangan minimum delegasi (PR-W3b · ADR-021 Keputusan 4b)
+
+`domain.DefaultNonDelegable()` — dipakai composition root — melarang `identity:*` dan `iam:*` di
+semua tenant. **Jangan menggantinya dengan `NewNonDelegableSet()` kosong** "karena tenant belum
+punya kebijakan": himpunan kosong membuat delegasi menjadi jalur pemberian wewenang tanpa pagar apa
+pun, sementara pembuatnya belum diwajibkan memegang sendiri permission yang ia limpahkan.
+
+- `identity:*` sudah dipagari agar tak bisa masuk role tenant (`reservedPermissionPrefix`); tanpa
+  pagar yang sama di sini, jalan pintasnya tinggal "delegasikan" alih-alih "berikan lewat role".
+- `iam:*` = kemampuan MEMBERI wewenang. Melimpahkannya berarti melimpahkan kemampuan melimpahkan;
+  sekali lolos, containment unit bisa dilebarkan sendiri oleh penerimanya secara berantai.
+- Entri berbentuk **namespace** (`ns:*`), bukan daftar permission utuh, supaya permission baru di
+  keluarga yang dilarang tak diam-diam menjadi boleh didelegasikan.
+- Larangan spesifik-tenant ditumpuk: `DefaultNonDelegable("keuangan:spm:ttd_kpa")`.

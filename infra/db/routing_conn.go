@@ -27,7 +27,10 @@ type TenantRoutingConn struct {
 	mgr *TenantConnManager
 }
 
-var _ port.DBConn = (*TenantRoutingConn)(nil)
+var (
+	_ port.DBConn = (*TenantRoutingConn)(nil)
+	_ TxConn      = (*TenantRoutingConn)(nil)
+)
 
 // NewTenantRoutingConn membungkus TenantConnManager sebagai DBConn ber-routing per-tenant.
 func NewTenantRoutingConn(mgr *TenantConnManager) *TenantRoutingConn {
@@ -41,6 +44,20 @@ func (c *TenantRoutingConn) pool(ctx context.Context) (*Pool, error) {
 		return nil, fmt.Errorf("db: tenant_id tak ada di context — tak bisa memilih tenant DB (butuh middleware tenant / WithTenant)")
 	}
 	return c.mgr.Tenant(ctx, tenantID)
+}
+
+// Begin membuka transaksi pada pool tenant untuk context ini — routing yang sama dengan query
+// tunggal, hanya pada level transaksi. Ini yang membuat repo ber-transaksi (mis. TenantRoleRepo:
+// role + grant permission atomik) bisa dipakai di jalur request multi-tenant.
+//
+// Transaksi TIDAK melintasi tenant: ia lahir dari satu pool, dan pool itu dipilih dari tenant di
+// context. Tak ada jalan di sini untuk sebuah transaksi menyentuh dua DB tenant.
+func (c *TenantRoutingConn) Begin(ctx context.Context) (*Tx, error) {
+	p, err := c.pool(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return p.Begin(ctx)
 }
 
 func (c *TenantRoutingConn) QueryRow(ctx context.Context, sql string, args ...any) port.Row {

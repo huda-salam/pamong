@@ -174,6 +174,23 @@ func (c *Context) RequirePermissionInUnit(perm string, unitID uuid.UUID) error {
 	return core.ErrPermissionDenied(perm)
 }
 
+// RequirePermissionInSubtree menegakkan wewenang atas unitID BESERTA KETURUNANNYA (ADR-021).
+// Default permisif bila evaluator belum di-wire — sama seperti RequirePermissionInUnit, dan dengan
+// konsekuensi yang sama: pemanggil di luar jalur HTTP wajib menyediakan konteks ber-evaluator.
+func (c *Context) RequirePermissionInSubtree(perm string, unitID uuid.UUID) error {
+	if c.scopedEval == nil {
+		return nil
+	}
+	ok, err := c.scopedEval.AllowsSubtree(c.Context, perm, unitID)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return nil
+	}
+	return core.ErrPermissionDenied(perm)
+}
+
 // roleList menggabungkan role tenant dan central yang dibawa context, masing-masing DENGAN
 // lapis asalnya (port.RoleRef). Hasil di-cache saat konstruksi via NewContextFromClaims;
 // jalur konstruksi lain (mis. FromRequest fallback) menghitung sekali secara lazy.

@@ -400,6 +400,18 @@ Index: `idx_audit_entity (entity, entity_id)`, `idx_audit_actor (actor_id)`,
 Penulisan diserialisasi per partisi lewat `pg_advisory_xact_lock` agar chain tidak putus oleh
 penulisan paralel.
 
+**Kapan tabelnya dibuat (PR-W3b).** Tak ada satu titik boot yang bisa membuat tabel ini untuk
+semua tenant — tenant baru ditemukan saat request (ADR-004) — jadi `AuditRepo` memastikannya pada
+**penulisan pertama per tenant** (`ensureFor`, memo per proses), DI LUAR transaksi chain agar DDL
+tak memperpanjang advisory lock. Memo dikunci dengan tenant **perutean** (`port.TenantFrom`) — yang
+menentukan DDL mendarat di DB mana — bukan dengan `tenant_id` entri auditnya; kedua nilai biasanya
+sama, tapi kunci yang salah akan menandai DB yang salah sebagai "sudah dipastikan". `EnsureSchema` eksplisit tetap ada untuk pemakaian satu-DB
+(`pamongctl`, audit sentral `id.audit_logs`).
+
+`AuditRepo` menerima `db.TxConn` (bukan `*db.Pool`): `Append` menuntut transaksi, sementara audit
+tenant harus mengikuti DB-per-tenant. Dengan seam itu satu perakitan saat boot melayani semua
+tenant lewat `TenantRoutingConn` — pool dipilih dari tenant di context tiap panggilan.
+
 ### 4.3 `gov.outbox_events` — outbox pattern *(C, `infra/eventbus/outbox.go`)*
 
 Event ditulis dalam **transaksi bisnis yang sama**; relay mengirimnya setelah commit. Ini yang

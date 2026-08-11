@@ -13,4 +13,9 @@ var (
 	ErrValidUntilWajib       = core.ErrValidation("valid_until", "delegasi wajib berbatas waktu")
 	ErrPeriodeTerbalik       = core.ErrValidation("valid_until", "harus setelah valid_from")
 	ErrPermNonDelegable      = core.ErrValidation("permissions", "memuat permission yang tak boleh didelegasikan")
+
+	// Alasan identik dengan padanannya di tenantrole: "seluruh tenant" dinyatakan nil, sebab
+	// AllowsInUnit(perm, uuid.Nil) dipakai sebagai pertanyaan "berwenang se-tenant?" (PR-W3b).
+	ErrUnitKerjaNol = core.ErrValidation("unit_kerja_id",
+		"unit kerja tidak boleh UUID nol — pakai null untuk menyatakan seluruh tenant")
 )

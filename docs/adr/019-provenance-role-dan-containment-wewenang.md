@@ -2,6 +2,9 @@
 
 ## Status
 Accepted (2026-08-11). Dikerjakan di PR-W3a. Menutup REVIEW_BACKLOG **B7** dan **B8**.
+**Amended by ADR-021** (PR-W3b): prinsip containment yang sama diperluas ke lapis TENANT —
+pemberian role tenant & delegasi wajib berada dalam JANGKAUAN UNIT pemberinya. Keputusan di bawah
+tetap berlaku utuh; ADR-021 menambah sumbu kedua (jangkauan data), bukan mengganti sumbu wewenang.
 
 Mengubah kontrak `port.PermissionEvaluator` (dari nama role telanjang ke `port.RoleRef`) dan
 bentuk `core/permission.CompositeCatalog` / `Authority` — karena itu ia ADR, bukan tambalan.
