@@ -5,12 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/huda-salam/pamong/core/audit"
-	"github.com/huda-salam/pamong/port"
 )
 
 // AuditRepo mengimplementasi audit.Store di atas Postgres. Audit log append-only,
@@ -23,32 +21,31 @@ import (
 // panggilan (TenantRoutingConn) — tanpa Append kehilangan atomisitasnya. `*Pool` tetap memenuhi
 // TxConn, jadi pemakaian satu-DB (pamongctl, audit sentral identity) tak berubah.
 type AuditRepo struct {
-	conn   TxConn
-	schema string
+	conn       TxConn
+	schemaName string
 
-	// ensured memo DB yang skemanya sudah dipastikan ada pada PROSES ini. Audit tenant hidup di
-	// tiap DB tenant, dan tak ada satu titik boot yang bisa membuat tabelnya untuk semua tenant
+	// schema memo "DDL sudah dipastikan" per DATABASE (SchemaMemo + DBKeyer). Audit tenant hidup
+	// di tiap DB tenant dan tak ada satu titik boot yang bisa membuat tabelnya untuk semua tenant
 	// (tenant ditemukan saat request, ADR-004) — jadi ia dipastikan saat penulisan PERTAMA ke DB
-	// itu, lalu tidak lagi. Tanpa memo, setiap baris audit membayar satu DDL; tanpa ensure sama
-	// sekali, mutasi pertama di tenant baru gagal di langkah audit.
+	// itu, lalu tidak lagi. Tanpa memo setiap baris audit membayar satu DDL; tanpa ensure sama
+	// sekali mutasi pertama di tenant baru gagal di langkah audit.
 	//
-	// Kuncinya adalah tenant PERUTEAN (port.TenantFrom), bukan e.TenantID: yang menentukan DDL ini
-	// mendarat di DB mana adalah tenant di context — itulah yang dibaca TenantRoutingConn. Kedua
-	// nilai itu biasanya sama, tapi bila pernah berbeda (mis. entry lintas-tenant, partisi konstan
-	// pada audit sentral) memo ber-kunci e.TenantID akan menandai DB yang salah sebagai "sudah
-	// dipastikan" — dan penulisan berikutnya ke DB yang belum bertabel gagal, satu kali, dengan
-	// pesan yang tak menyebut sebabnya. Kunci yang benar tak berbiaya, jadi tak ada alasan menawar.
-	ensuredMu sync.Mutex
-	ensured   map[string]bool
+	// Kunci datang dari KONEKSI, bukan dari `e.TenantID`. Bedanya menentukan untuk repo ber-pool
+	// tetap (audit sentral `id.audit_logs`): DB-nya satu, jadi `EnsureSchema` saat boot menandai
+	// memo sekali dan `Append` berikutnya tak menyentuh DDL lagi. Bila kuncinya `e.TenantID`,
+	// repo yang sama akan menjalankan ulang DDL sekali untuk SETIAP tenant yang menulis audit
+	// sentral — menyeret balapan bootstrap ke `/admin/identity/*` yang sebelumnya aman karena
+	// sudah dipastikan saat boot.
+	schema SchemaMemo
 }
 
 // NewAuditRepo membuat audit repo tenant di schema gov (chain per tenant_id).
-func NewAuditRepo(conn TxConn) *AuditRepo { return &AuditRepo{conn: conn, schema: "gov"} }
+func NewAuditRepo(conn TxConn) *AuditRepo { return &AuditRepo{conn: conn, schemaName: "gov"} }
 
 // NewSchemaAuditRepo membuat audit repo pada schema tertentu (mis. "id" untuk identity
 // sentral). Logika chain/verifikasi identik; hanya lokasi tabel yang berbeda.
 func NewSchemaAuditRepo(conn TxConn, schema string) *AuditRepo {
-	return &AuditRepo{conn: conn, schema: schema}
+	return &AuditRepo{conn: conn, schemaName: schema}
 }
 
 var (
@@ -58,7 +55,7 @@ var (
 
 var schemaIdentRe = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 
-func (r *AuditRepo) table() string { return r.schema + ".audit_logs" }
+func (r *AuditRepo) table() string { return r.schemaName + ".audit_logs" }
 
 // auditDDL menghasilkan DDL tabel audit untuk schema tertentu. schema berasal dari kode
 // (konstanta), bukan input pengguna; tetap divalidasi sebagai identifier untuk aman.
@@ -86,37 +83,14 @@ CREATE INDEX IF NOT EXISTS idx_audit_actor ON %[1]s.audit_logs (actor_id);
 CREATE INDEX IF NOT EXISTS idx_audit_tenant_seq ON %[1]s.audit_logs (tenant_id, seq);`, schema)
 }
 
-// EnsureSchema membuat schema & tabel audit bila belum ada. Dipanggil saat boot.
+// EnsureSchema membuat schema & tabel audit bila belum ada — saat boot (satu DB) maupun saat
+// penulisan pertama ke sebuah DB tenant. Idempoten & ter-memo per DB; DDL berjalan di bawah
+// advisory lock (EnsureSchemaLocked) karena `IF NOT EXISTS` tidak membuatnya atomik.
 func (r *AuditRepo) EnsureSchema(ctx context.Context) error {
-	if !schemaIdentRe.MatchString(r.schema) {
-		return fmt.Errorf("schema audit tidak valid: %q", r.schema)
+	if !schemaIdentRe.MatchString(r.schemaName) {
+		return fmt.Errorf("schema audit tidak valid: %q", r.schemaName)
 	}
-	_, err := r.conn.Exec(ctx, auditDDL(r.schema))
-	return err
-}
-
-// ensureFor memastikan tabel audit ada di DB yang dituju context ini, sekali per proses per DB.
-// Untuk schema gov, DB dipilih dari tenant di context oleh TenantRoutingConn — jadi DDL mendarat
-// di tempat yang benar tanpa parameter tenant, dan memonya dikunci dengan tenant yang sama
-// (kosong = koneksi satu-DB: pamongctl, audit sentral identity).
-func (r *AuditRepo) ensureFor(ctx context.Context) error {
-	key := port.TenantFrom(ctx)
-	r.ensuredMu.Lock()
-	done := r.ensured[key]
-	r.ensuredMu.Unlock()
-	if done {
-		return nil
-	}
-	if err := r.EnsureSchema(ctx); err != nil {
-		return err
-	}
-	r.ensuredMu.Lock()
-	if r.ensured == nil {
-		r.ensured = make(map[string]bool)
-	}
-	r.ensured[key] = true
-	r.ensuredMu.Unlock()
-	return nil
+	return r.schema.Ensure(ctx, r.conn, auditDDL(r.schemaName))
 }
 
 // Append menyisipkan satu entry, merantainya ke entry terakhir dalam partisi yang sama
@@ -125,7 +99,7 @@ func (r *AuditRepo) ensureFor(ctx context.Context) error {
 func (r *AuditRepo) Append(ctx context.Context, e audit.AuditEntry) error {
 	// DI LUAR transaksi: DDL di dalam tx yang memegang advisory lock akan memperpanjang lock
 	// selama pembuatan tabel, dan kegagalannya menggagalkan penulisan yang sebenarnya sah.
-	if err := r.ensureFor(ctx); err != nil {
+	if err := r.EnsureSchema(ctx); err != nil {
 		return err
 	}
 	tx, err := r.conn.Begin(ctx)

@@ -18,18 +18,19 @@ import (
 // Isolasi per-tenant bersifat STRUKTURAL: resolver hanya melihat gov.* milik tenant DB yang
 // dikoneksikan — tanpa parameter tenantID, sama seperti TenantRoleResolver.
 type TenantScopedGrantResolver struct {
-	conn db.Conn
-	now  func() time.Time
+	conn   db.TxConn
+	schema db.SchemaMemo
+	now    func() time.Time
 }
 
-func NewTenantScopedGrantResolver(conn db.Conn) *TenantScopedGrantResolver {
+func NewTenantScopedGrantResolver(conn db.TxConn) *TenantScopedGrantResolver {
 	return &TenantScopedGrantResolver{conn: conn, now: time.Now}
 }
 
 // Grants mengembalikan scoped-grant lapis tenant yang berlaku untuk user saat ini. JOIN dibatasi
 // schema gov (no-cross-schema-join). Assignment di luar masa berlaku diabaikan (AppliesTo).
 func (r *TenantScopedGrantResolver) Grants(ctx context.Context, userID uuid.UUID) ([]permission.Grant, error) {
-	if err := ensureTenantRoleSchema(ctx, r.conn); err != nil {
+	if err := ensureTenantRoleSchema(ctx, &r.schema, r.conn); err != nil {
 		return nil, err
 	}
 	const q = `SELECT trp.permission, ura.unit_kerja_id, ura.include_subtree, ura.valid_from, ura.valid_until

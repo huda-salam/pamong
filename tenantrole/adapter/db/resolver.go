@@ -18,11 +18,12 @@ import (
 // membaca Layer tiap nama dari CompositeCatalog (central + tenant). Saat auth flow (2.4) aktif,
 // effective-role inilah yang dibake ke token per tenant.
 type TenantRoleResolver struct {
-	conn db.Conn
-	now  func() time.Time
+	conn   db.TxConn
+	schema db.SchemaMemo
+	now    func() time.Time
 }
 
-func NewTenantRoleResolver(conn db.Conn) *TenantRoleResolver {
+func NewTenantRoleResolver(conn db.TxConn) *TenantRoleResolver {
 	return &TenantRoleResolver{conn: conn, now: time.Now}
 }
 
@@ -32,7 +33,7 @@ func NewTenantRoleResolver(conn db.Conn) *TenantRoleResolver {
 // di-resolve TERPISAH oleh TenantScopedGrantResolver — sengaja dipisah agar resolusi konflik
 // strict/global di Engine tetap berbasis nama role utuh.
 func (r *TenantRoleResolver) EffectiveRoles(ctx context.Context, userID uuid.UUID) ([]string, error) {
-	if err := ensureTenantRoleSchema(ctx, r.conn); err != nil {
+	if err := ensureTenantRoleSchema(ctx, &r.schema, r.conn); err != nil {
 		return nil, err
 	}
 	const q = `SELECT tr.name, ura.valid_from, ura.valid_until

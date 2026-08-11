@@ -23,7 +23,8 @@ var (
 // (pool tetap) dan oleh jalur request (TenantRoutingConn — pool dipilih dari klaim token
 // per-request).
 type TenantRoleRepo struct {
-	conn db.TxConn
+	conn   db.TxConn
+	schema db.SchemaMemo
 }
 
 func NewTenantRoleRepo(conn db.TxConn) *TenantRoleRepo { return &TenantRoleRepo{conn: conn} }
@@ -40,7 +41,7 @@ func (r *TenantRoleRepo) Save(ctx context.Context, role *domain.TenantRole) erro
 	if err := role.Validate(); err != nil {
 		return err
 	}
-	if err := ensureTenantRoleSchema(ctx, r.conn); err != nil {
+	if err := ensureTenantRoleSchema(ctx, &r.schema, r.conn); err != nil {
 		return err
 	}
 	tx, err := r.conn.Begin(ctx)
@@ -74,7 +75,7 @@ func (r *TenantRoleRepo) Save(ctx context.Context, role *domain.TenantRole) erro
 const tenantRoleCols = `id, name, label, description, created_at`
 
 func (r *TenantRoleRepo) FindByID(ctx context.Context, id uuid.UUID) (*domain.TenantRole, error) {
-	if err := ensureTenantRoleSchema(ctx, r.conn); err != nil {
+	if err := ensureTenantRoleSchema(ctx, &r.schema, r.conn); err != nil {
 		return nil, err
 	}
 	role, err := r.scanOne(r.conn.QueryRow(ctx,
@@ -89,7 +90,7 @@ func (r *TenantRoleRepo) FindByID(ctx context.Context, id uuid.UUID) (*domain.Te
 }
 
 func (r *TenantRoleRepo) FindByName(ctx context.Context, name string) (*domain.TenantRole, error) {
-	if err := ensureTenantRoleSchema(ctx, r.conn); err != nil {
+	if err := ensureTenantRoleSchema(ctx, &r.schema, r.conn); err != nil {
 		return nil, err
 	}
 	role, err := r.scanOne(r.conn.QueryRow(ctx,
@@ -106,7 +107,7 @@ func (r *TenantRoleRepo) FindByName(ctx context.Context, name string) (*domain.T
 // List mengembalikan seluruh role tenant dengan permission-nya terisi. Menghindari N+1:
 // satu query role + satu query permission, lalu di-stitch per role_id.
 func (r *TenantRoleRepo) List(ctx context.Context) ([]*domain.TenantRole, error) {
-	if err := ensureTenantRoleSchema(ctx, r.conn); err != nil {
+	if err := ensureTenantRoleSchema(ctx, &r.schema, r.conn); err != nil {
 		return nil, err
 	}
 	rows, err := r.conn.Query(ctx, `SELECT `+tenantRoleCols+` FROM gov.tenant_roles ORDER BY name ASC`)
@@ -186,17 +187,18 @@ func scanTenantRole(row interface{ Scan(...any) error }) (*domain.TenantRole, er
 
 // TenantRoleAssignmentRepo mengakses gov.user_role_assignments pada TENANT DB.
 type TenantRoleAssignmentRepo struct {
-	conn db.Conn
+	conn   db.TxConn
+	schema db.SchemaMemo
 }
 
-func NewTenantRoleAssignmentRepo(conn db.Conn) *TenantRoleAssignmentRepo {
+func NewTenantRoleAssignmentRepo(conn db.TxConn) *TenantRoleAssignmentRepo {
 	return &TenantRoleAssignmentRepo{conn: conn}
 }
 
 const tenantAssignmentCols = `id, user_id, role_id, unit_kerja_id, include_subtree, assigned_by, valid_from, valid_until, created_at`
 
 func (r *TenantRoleAssignmentRepo) Save(ctx context.Context, a *domain.TenantRoleAssignment) error {
-	if err := ensureTenantRoleSchema(ctx, r.conn); err != nil {
+	if err := ensureTenantRoleSchema(ctx, &r.schema, r.conn); err != nil {
 		return err
 	}
 	const q = `INSERT INTO gov.user_role_assignments
@@ -208,7 +210,7 @@ func (r *TenantRoleAssignmentRepo) Save(ctx context.Context, a *domain.TenantRol
 }
 
 func (r *TenantRoleAssignmentRepo) ListByUser(ctx context.Context, userID uuid.UUID) ([]*domain.TenantRoleAssignment, error) {
-	if err := ensureTenantRoleSchema(ctx, r.conn); err != nil {
+	if err := ensureTenantRoleSchema(ctx, &r.schema, r.conn); err != nil {
 		return nil, err
 	}
 	rows, err := r.conn.Query(ctx,

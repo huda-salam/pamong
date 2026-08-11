@@ -23,20 +23,20 @@ CREATE TABLE IF NOT EXISTS gov.org_units (
     name      VARCHAR(255) NOT NULL
 );`
 
-func ensureOrgUnitSchema(ctx context.Context, exec db.Conn) error {
-	_, err := exec.Exec(ctx, orgUnitDDL)
-	return err
+func ensureOrgUnitSchema(ctx context.Context, memo *db.SchemaMemo, conn db.TxConn) error {
+	return memo.Ensure(ctx, conn, orgUnitDDL)
 }
 
 // OrgUnitHierarchy mengimplementasi permission.Hierarchy terhadap gov.org_units pada TENANT DB
 // (isolasi per-tenant struktural: konek ke tenant DB-nya sendiri).
 type OrgUnitHierarchy struct {
-	conn db.Conn
+	conn   db.TxConn
+	schema db.SchemaMemo
 }
 
 var _ permission.Hierarchy = (*OrgUnitHierarchy)(nil)
 
-func NewOrgUnitHierarchy(conn db.Conn) *OrgUnitHierarchy { return &OrgUnitHierarchy{conn: conn} }
+func NewOrgUnitHierarchy(conn db.TxConn) *OrgUnitHierarchy { return &OrgUnitHierarchy{conn: conn} }
 
 // IsWithin melaporkan apakah unit == root atau keturunan root. Menelusuri ANCESTOR unit KE ATAS
 // (tree OPD dangkal) lalu memeriksa apakah root terlewati — recursive CTE, satu query. Arah
@@ -45,7 +45,7 @@ func (h *OrgUnitHierarchy) IsWithin(ctx context.Context, root, unit uuid.UUID) (
 	if root == unit {
 		return true, nil
 	}
-	if err := ensureOrgUnitSchema(ctx, h.conn); err != nil {
+	if err := ensureOrgUnitSchema(ctx, &h.schema, h.conn); err != nil {
 		return false, err
 	}
 	const q = `

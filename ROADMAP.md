@@ -1169,15 +1169,15 @@ tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
     multi-tenant sama sekali. `TenantRoutingConn` kini merutekan transaksi juga, dan
     `gov.audit_logs` mendapat penulis produksi pertamanya (ensure-on-write per tenant; lihat
     DB_CHANGELOG PR-W3b).
-  - **Ditemukan review (3 putaran), diperbaiki di PR yang sama — semuanya lolos seluruh test
-    sebelum ditemukan:** (a) `RefCatalog` diperoleh lewat type-assert atas katalog sentral, yang
+  - **Ditemukan review (2 putaran `/code-review`), diperbaiki di PR yang sama — semuanya lolos
+    seluruh test sebelum ditemukan:** (a) `RefCatalog` diperoleh lewat type-assert atas katalog sentral, yang
     SELALU gagal di produksi (`identitydb.CentralRoleCatalog` tanpa `LookupRef`) → grant sentral
     tak pernah terbit dan `super_admin` platform 403 di setiap unit; kini lewat `CompositeCatalog`
     + test ber-katalog "Lookup-saja"; (b) `include_subtree` tak diperiksa → pemegang satu unit bisa
     membagikan jangkauan seluruh keturunannya (eskalasi lewat BOOLEAN) → `AllowsSubtree` +
     `RequirePermissionInSubtree`; (c) `NewNonDelegableSet()` kosong di wiring padahal ADR menjadikan
     himpunan itu alasan menunda pemeriksaan per-permission → `DefaultNonDelegable` (`identity:*`,
-    `iam:*`, entri ber-namespace). Putaran KETIGA (atas perbaikan putaran kedua):
+    `iam:*`, entri ber-namespace). Putaran KEDUA:
     (d) `CreateTenantRole` tak memagari ISI role — containment menjaga DI MANA, bukan APA, sehingga
     pemegang `iam:tenant_role:buat`+`assign` bisa MENCETAK role berisi `iam:delegasi:buat` yang tak
     pernah diberikan kepadanya, menugaskannya ke dirinya sendiri di unitnya (lolos containment), dan
@@ -1190,15 +1190,23 @@ tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
     ber-tag `integration` — menghapusnya membuat seluruh suite non-integration tetap hijau (Context
     tanpa evaluator = PERMISIF, jadi tiap assertion "harus lolos" tetap lolos) → uji middleware yang
     membalik pertanyaannya (unit di LUAR jangkauan harus DITOLAK) + uji kegagalan factory harus
-    menolak request. Ketiganya mutation-verified.
+    menolak request. Ketiganya mutation-verified. Putaran KETIGA (atas `fc078ff`, temuan di
+    bootstrap skema yang baru diseret wiring ini ke jalur request — bukan di logika containment):
+    (g) DDL ensure-on-write berjalan TANPA advisory lock padahal `IF NOT EXISTS` tak atomik →
+    terukur 11/12 ensure serentak gagal 23505 di `pg_namespace_nspname_index`, dan yang kalah gagal
+    SESUDAH mutasinya commit (baris tersimpan tanpa audit) → satu helper `db.EnsureSchemaLocked`
+    untuk semua jalur; (h) tiap pemeriksaan ABAC menjalankan 2–3 blok DDL SETIAP request (instance
+    resolver baru tiap kali) → `db.SchemaMemo` per-instance + cache bahan per tenant di
+    `newScopedDepsBuilder`; (i) memo audit ber-kunci tenant salah untuk repo ber-pool tetap
+    (`id.audit_logs` sudah dipastikan saat boot) → kunci dari KONEKSI lewat `db.DBKeyer`.
   - **Residu yang disengaja:** delegasi belum memeriksa apakah PEMBUAT memegang tiap permission
     yang ia limpahkan (hanya jangkauan unit + `NonDelegableSet`); memegang `iam:tenant_role:buat`
     BERSAMA `iam:tenant_role:assign` setara dengan memegang seluruh permission BISNIS tenant di
     dalam jangkauan unit sendiri (sifat administrasi role — pagar berikutnya = flag `grantable_by`
     di manifest, bukan aturan prefiks); belum ada use case revoke;
-    `unit_kerja_id` belum ber-FK ke `gov.org_units`; dan pengecekan unit pertama sebuah request
-    masih memicu DDL ensure-on-write di jalur otorisasi (pola `gov.*` repo ini — solusinya runner
-    migrasi framework-gov yang sudah ter-DEFERRED, bukan tambalan per-adapter). Lihat "Keputusan
+    `unit_kerja_id` belum ber-FK ke `gov.org_units`; dan pengecekan unit PERTAMA per tenant per proses
+    masih memicu DDL ensure-on-write (kini ber-advisory-lock & ter-memo, jadi aman dan sekali saja —
+    runner migrasi framework-gov tetap solusi akhirnya, sudah ter-DEFERRED). Lihat "Keputusan
     tertunda" & §Konsekuensi ADR-021.
 
 - **PR-W4** Runtime workflow + notifikasi + scheduler ← W1, 3.2.x, 3.5.x, 3.6.x, N1–N3b

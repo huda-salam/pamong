@@ -13,15 +13,16 @@ var _ domain.DelegationRepository = (*DelegationRepo)(nil)
 
 // DelegationRepo mengakses gov.delegations pada TENANT DB.
 type DelegationRepo struct {
-	conn db.Conn
+	conn   db.TxConn
+	schema db.SchemaMemo
 }
 
-func NewDelegationRepo(conn db.Conn) *DelegationRepo { return &DelegationRepo{conn: conn} }
+func NewDelegationRepo(conn db.TxConn) *DelegationRepo { return &DelegationRepo{conn: conn} }
 
 const delegationCols = `id, from_user_id, to_user_id, permissions, unit_kerja_id, include_subtree, reason, valid_from, valid_until, assigned_by, created_at`
 
 func (r *DelegationRepo) Save(ctx context.Context, d *domain.Delegation) error {
-	if err := ensureDelegationSchema(ctx, r.conn); err != nil {
+	if err := ensureDelegationSchema(ctx, &r.schema, r.conn); err != nil {
 		return err
 	}
 	const q = `INSERT INTO gov.delegations
@@ -36,7 +37,7 @@ func (r *DelegationRepo) Save(ctx context.Context, d *domain.Delegation) error {
 // difilter di SQL (lazy): hanya delegasi dengan now ∈ [valid_from, valid_until) — delegasi lewat
 // masa berlaku tak pernah ikut ter-resolve (DoD PR-2.3.5b).
 func (r *DelegationRepo) ListActiveByDelegatee(ctx context.Context, toUserID uuid.UUID, now time.Time) ([]*domain.Delegation, error) {
-	if err := ensureDelegationSchema(ctx, r.conn); err != nil {
+	if err := ensureDelegationSchema(ctx, &r.schema, r.conn); err != nil {
 		return nil, err
 	}
 	const q = `SELECT ` + delegationCols + ` FROM gov.delegations

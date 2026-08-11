@@ -146,14 +146,22 @@ dicatat di Konsekuensi.
   sebelum jalur delegasi di use case pernah dievaluasi. Saat permukaan seperti itu lahir, gerbang
   handler-nya harus dipikir ulang (kandidat: gerbang berbasis scoped-evaluator sesudah body
   di-parse, karena unit sasaran baru diketahui dari body).
-- **Pemeriksaan wewenang memicu DDL ensure-on-write di jalur otorisasi.** Resolver grant & hierarki
-  memastikan skema `gov.*` pada setiap pemanggilan (pola ensure-on-write repo ini, karena tabel
-  framework `gov.*` belum punya runner migrasi). Konsekuensinya: pengecekan unit pertama sebuah
-  request membawa beberapa `CREATE ... IF NOT EXISTS`, dan pada tenant yang benar-benar baru dua
-  request bersamaan bisa berbenturan (DDL Postgres tak sepenuhnya atomik) → 500 sporadis di jalur
-  otorisasi. Ini sifat pola yang sudah dipakai seluruh `gov.*`, bukan yang lahir di sini; solusi
-  sesungguhnya adalah runner migrasi framework-gov yang sudah ter-DEFERRED di ROADMAP. Tidak
-  ditambal setempat karena tambalan per-adapter justru menyembunyikan pola yang perlu diganti.
+- **Pemeriksaan wewenang memicu DDL ensure-on-write di jalur otorisasi — dan karena itu pola
+  ensure-on-write harus dibereskan, bukan ditoleransi.** Resolver grant & hierarki memastikan skema
+  `gov.*` sebelum bekerja (tabel framework `gov.*` belum punya runner migrasi). Selama itu hanya
+  terjadi saat boot, `IF NOT EXISTS` terasa cukup; begitu ia ikut ke jalur request, dua request
+  bersamaan pada tenant baru berbenturan di katalog sistem — `IF NOT EXISTS` TIDAK membuat DDL
+  Postgres atomik (23505 di `pg_namespace_nspname_index`). Yang kalah gagal SESUDAH mutasinya
+  commit: baris tersimpan tanpa audit. Terukur 11/12 pada container test proyek.
+
+  Karena itu seluruh jalur ensure-on-write kini lewat SATU helper `db.EnsureSchemaLocked`
+  (transaksi + `pg_advisory_xact_lock`, idiom yang sudah dipakai `ApplyEmbeddedSchema`), dengan
+  memo `db.SchemaMemo` ber-kunci KONEKSI (`db.DBKeyer`) supaya DDL dibayar sekali per DB per proses.
+  Memo hidup di INSTANCE repo, bukan variabel paket — memo se-proses akan bertahan melewati test
+  yang menghapus tabelnya di antara kasus uji. Konsekuensinya di jalur request: bahan ABAC per-tenant
+  di-cache di `newScopedDepsBuilder`, sebab instance baru tiap request = memo selalu kosong.
+  Runner migrasi framework-gov tetap solusi akhirnya (DEFERRED di ROADMAP); yang berubah adalah pola
+  sementaranya kini AMAN, bukan sekadar dicatat sebagai residu.
 - **RESIDU YANG DITERIMA: `iam:tenant_role:buat` + `iam:tenant_role:assign` = wewenang setingkat
   admin tenant.** Siapa pun yang memegang pasangan itu dapat mencetak role berisi permission BISNIS
   apa pun (`keuangan:spm:terbitkan`, …) dan menugaskannya kepada dirinya sendiri dalam jangkauan

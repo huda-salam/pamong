@@ -44,10 +44,15 @@ CREATE TABLE IF NOT EXISTS gov.user_role_assignments (
 CREATE INDEX IF NOT EXISTS idx_user_role_assignments_user ON gov.user_role_assignments (user_id);
 CREATE INDEX IF NOT EXISTS idx_user_role_assignments_role ON gov.user_role_assignments (role_id);`
 
-// ensureTenantRoleSchema memastikan schema gov + tabel role tenant ada. Dipanggil di awal
-// setiap operasi baca/tulis (jalur ensure-on-write), karena tenant DB yang baru di-provision
-// belum tentu memuat tabel ini.
-func ensureTenantRoleSchema(ctx context.Context, exec db.Conn) error {
-	_, err := exec.Exec(ctx, tenantRoleDDL)
-	return err
+// ensureTenantRoleSchema memastikan schema gov + tabel role tenant ada. Dipanggil di awal setiap
+// operasi baca/tulis (jalur ensure-on-write), karena tenant DB yang baru di-provision belum tentu
+// memuat tabel ini.
+//
+// DDL berjalan di bawah advisory lock dan DI-MEMO per DB (db.SchemaMemo): `IF NOT EXISTS` tidak
+// membuat DDL Postgres atomik, dan sejak PR-W3b jalur ini ikut ke JALUR REQUEST (pemeriksaan
+// wewenang per-unit) — dua request bersamaan pada tenant baru akan berbenturan di katalog sistem,
+// bukan saling mengabaikan. Memo hidup di INSTANCE repo, jadi penghematan lintas-request menuntut
+// instance-nya ditahan hidup (cache per-tenant di cmd/server/scoped_evaluator.go).
+func ensureTenantRoleSchema(ctx context.Context, memo *db.SchemaMemo, conn db.TxConn) error {
+	return memo.Ensure(ctx, conn, tenantRoleDDL)
 }

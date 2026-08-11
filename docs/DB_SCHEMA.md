@@ -402,10 +402,18 @@ penulisan paralel.
 
 **Kapan tabelnya dibuat (PR-W3b).** Tak ada satu titik boot yang bisa membuat tabel ini untuk
 semua tenant — tenant baru ditemukan saat request (ADR-004) — jadi `AuditRepo` memastikannya pada
-**penulisan pertama per tenant** (`ensureFor`, memo per proses), DI LUAR transaksi chain agar DDL
-tak memperpanjang advisory lock. Memo dikunci dengan tenant **perutean** (`port.TenantFrom`) — yang
-menentukan DDL mendarat di DB mana — bukan dengan `tenant_id` entri auditnya; kedua nilai biasanya
-sama, tapi kunci yang salah akan menandai DB yang salah sebagai "sudah dipastikan". `EnsureSchema` eksplisit tetap ada untuk pemakaian satu-DB
+**penulisan pertama ke DB itu** (`EnsureSchema` + `db.SchemaMemo`), DI LUAR transaksi chain agar
+DDL tak memperpanjang advisory lock chain. Dua sifatnya menentukan:
+
+- **DDL berjalan di bawah `pg_advisory_xact_lock`** (`db.EnsureSchemaLocked`). `IF NOT EXISTS` tidak
+  membuat DDL Postgres atomik: dua sesi bisa sama-sama lolos pemeriksaan lalu satu kalah di
+  `pg_namespace_nspname_index`/`pg_type_typname_nsp_index` (SQLSTATE 23505). Saat ensure hanya jalan
+  ketika boot, itu jarang; sejak ia ikut ke jalur request, ia menjadi dua request bersamaan pada
+  tenant baru — dan yang kalah gagal SESUDAH mutasinya commit (baris tersimpan tanpa audit).
+- **Memo dikunci dari KONEKSI** (`db.DBKeyer`), bukan dari `tenant_id` entri auditnya: `*Pool` = satu
+  DB (kunci konstan, jadi `EnsureSchema` saat boot cukup selamanya), `*TenantRoutingConn` = satu DB
+  per tenant (kunci = tenant). Kunci per-tenant pada repo ber-pool akan menjalankan ulang DDL sekali
+  untuk setiap tenant yang menulis audit sentral. `EnsureSchema` eksplisit tetap ada untuk pemakaian satu-DB
 (`pamongctl`, audit sentral `id.audit_logs`).
 
 `AuditRepo` menerima `db.TxConn` (bukan `*db.Pool`): `Append` menuntut transaksi, sementara audit

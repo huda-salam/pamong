@@ -150,7 +150,28 @@ test, tooling, DB sentral) DAN `*TenantRoutingConn` (pool dipilih dari tenant di
 panggilan).
 
 - **Transaksi tak melintasi tenant:** ia lahir dari satu pool, dan pool itu dipilih dari context.
-- **`AuditRepo` memastikan `gov.audit_logs` per tenant saat penulisan PERTAMA** (`ensureFor`, memo
-  per proses), DI LUAR transaksi chain — DDL di dalam tx akan memperpanjang advisory lock dan
-  kegagalannya menggagalkan penulisan yang sah. `EnsureSchema` eksplisit tetap untuk pemakaian
-  satu-DB.
+- **`AuditRepo` memastikan `gov.audit_logs` saat penulisan PERTAMA ke sebuah DB** (`EnsureSchema` +
+  `db.SchemaMemo`), DI LUAR transaksi chain — DDL di dalam tx akan memperpanjang advisory lock chain
+  dan kegagalannya menggagalkan penulisan yang sah.
+
+## Bootstrap skema: `EnsureSchemaLocked` + `SchemaMemo` + `DBKeyer` (PR-W3b)
+
+Semua jalur ensure-on-write (`gov.audit_logs`, `gov.tenant_roles`, `gov.delegations`,
+`gov.org_units`) WAJIB lewat `db.EnsureSchemaLocked`, bukan `conn.Exec(ddl)` telanjang.
+
+- **`IF NOT EXISTS` TIDAK membuat DDL Postgres atomik.** Dua sesi bisa sama-sama lolos pemeriksaan
+  lalu satu kalah di `pg_namespace_nspname_index`/`pg_type_typname_nsp_index` (SQLSTATE 23505).
+  Terukur 11/12 gagal pada container test proyek — lihat `ensure_integration_test.go`. Selama ensure
+  hanya jalan saat boot, ini nyaris tak terlihat; sejak ia ikut jalur request (pemeriksaan wewenang
+  per-unit, PR-W3b) ia menjadi dua request bersamaan pada tenant baru, dan yang kalah gagal SESUDAH
+  mutasinya commit.
+- **Lock harus terikat TRANSAKSI** (`pg_advisory_xact_lock`). Varian sesi di atas pool salah kamar:
+  tiap `Exec` bisa memakai koneksi berbeda, jadi lock-nya bocor.
+- **`SchemaMemo` dikunci dari KONEKSI (`DBKeyer`), bukan dari tenant payload.** `*Pool` = satu DB
+  (kunci konstan), `*TenantRoutingConn` = satu DB per tenant. Salah kunci ke arah "selalu tenant"
+  membuat repo ber-pool menjalankan ulang DDL sekali per tenant; ke arah "selalu konstan" membuat
+  repo ber-routing hanya memastikan DB tenant PERTAMA.
+- **Memo hidup di INSTANCE repo, JANGAN dinaikkan jadi variabel paket.** Memo se-proses akan
+  bertahan melewati integration test yang MENGHAPUS tabelnya di antara kasus uji, sehingga kasus
+  berikutnya berjalan di atas tabel yang tak ada. Yang butuh penghematan lintas-request menahan
+  INSTANCE-nya hidup (lihat cache per-tenant di `cmd/server/scoped_evaluator.go`).

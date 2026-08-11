@@ -30,6 +30,7 @@ type TenantRoutingConn struct {
 var (
 	_ port.DBConn = (*TenantRoutingConn)(nil)
 	_ TxConn      = (*TenantRoutingConn)(nil)
+	_ DBKeyer     = (*TenantRoutingConn)(nil)
 )
 
 // NewTenantRoutingConn membungkus TenantConnManager sebagai DBConn ber-routing per-tenant.
@@ -59,6 +60,10 @@ func (c *TenantRoutingConn) Begin(ctx context.Context) (*Tx, error) {
 	}
 	return p.Begin(ctx)
 }
+
+// DBKey mengembalikan tenant di context: DB yang dituju koneksi ini berbeda per tenant, jadi memo
+// bootstrap skema pun harus dikunci per tenant (db.DBKeyer).
+func (c *TenantRoutingConn) DBKey(ctx context.Context) string { return port.TenantFrom(ctx) }
 
 func (c *TenantRoutingConn) QueryRow(ctx context.Context, sql string, args ...any) port.Row {
 	p, err := c.pool(ctx)

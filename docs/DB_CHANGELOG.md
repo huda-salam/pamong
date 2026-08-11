@@ -39,8 +39,11 @@ Tak ada tabel/kolom/index yang berubah bentuknya. Yang berubah adalah **cara ske
 dan itu masuk lingkup dokumen ini.
 
 - `~ gov.audit_logs` — kini dipastikan ada **saat penulisan audit pertama per tenant**
-  (`AuditRepo.ensureFor`, memo per proses ber-kunci tenant PERUTEAN `port.TenantFrom`), bukan
-  hanya lewat `EnsureSchema` saat boot. Alasannya
+  (`AuditRepo.EnsureSchema` + `db.SchemaMemo`, memo per proses ber-kunci KONEKSI lewat
+  `db.DBKeyer` — `*Pool` konstan, `*TenantRoutingConn` per tenant), bukan hanya lewat `EnsureSchema`
+  saat boot. Seluruh DDL ensure-on-write (`gov.audit_logs`, `gov.tenant_roles`, `gov.delegations`,
+  `gov.org_units`) kini berjalan di bawah `pg_advisory_xact_lock` lewat `db.EnsureSchemaLocked`,
+  karena `IF NOT EXISTS` TIDAK atomik dan jalur ini kini dipicu dari jalur request. Alasannya
   struktural: audit tenant baru punya penulis produksi di PR ini (mutasi `/admin/iam/*`), dan
   tenant ditemukan saat request sehingga boot tak bisa membuat tabelnya untuk semua tenant.
   DDL dijalankan DI LUAR transaksi chain agar tak memperpanjang `pg_advisory_xact_lock`.

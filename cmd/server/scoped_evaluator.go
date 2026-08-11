@@ -28,17 +28,40 @@ type scopedDepsBuilder func(ctx context.Context, tenantID string) (scopedDeps, e
 
 // newScopedDepsBuilder merakit builder produksi di atas pool tenant. Repo delegasi dipakai
 // TANPA dekorator audit: ini jalur BACA per-request, dan audit hanya mencatat mutasi (ADR-003).
+//
+// Bahan di-CACHE per tenant, dan itu bukan mikro-optimasi: tiap adapter memegang memo
+// "skema sudah dipastikan" di INSTANCE-nya (db.SchemaMemo — sengaja bukan variabel paket, agar
+// test yang menghapus tabelnya tetap jujur). Membangun instance baru tiap request berarti memo
+// selalu kosong, dan setiap pemeriksaan wewenang membayar ulang 3 blok DDL ensure-on-write —
+// tepat di jalur yang file ini dibuat untuk membuatnya murah. Menahan instance-nya hidup
+// memindahkan biaya itu ke pemeriksaan PERTAMA per tenant per proses.
+//
+// Isinya stateless selain memo (pool datang dari TenantConnManager yang punya cache sendiri),
+// jadi berbagi antar-request aman; besarnya terbatas jumlah tenant yang benar-benar dilayani.
 func newScopedDepsBuilder(connMgr *db.TenantConnManager) scopedDepsBuilder {
+	var mu sync.Mutex
+	cache := make(map[string]scopedDeps)
+
 	return func(ctx context.Context, tenantID string) (scopedDeps, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if deps, ok := cache[tenantID]; ok {
+			return deps, nil
+		}
+		// connMgr.Tenant di bawah lock: ia bisa membuka pool baru (lazy), tapi hanya sekali per
+		// tenant — menyerialisasi kejadian sekali-per-tenant lebih murah daripada menerima dua
+		// instance dengan dua memo terpisah, yang justru mengulang DDL yang mau dihindari.
 		pool, err := connMgr.Tenant(ctx, tenantID)
 		if err != nil {
 			return scopedDeps{}, err
 		}
-		return scopedDeps{
+		deps := scopedDeps{
 			roleGrants: tenantroledb.NewTenantScopedGrantResolver(pool),
 			delegated:  delegationdb.NewDelegationScopedGrantResolver(delegationdb.NewDelegationRepo(pool)),
 			tree:       tenantroledb.NewOrgUnitHierarchy(pool),
-		}, nil
+		}
+		cache[tenantID] = deps
+		return deps, nil
 	}
 }
 

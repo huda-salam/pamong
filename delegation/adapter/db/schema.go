@@ -27,7 +27,6 @@ CREATE TABLE IF NOT EXISTS gov.delegations (
 );
 CREATE INDEX IF NOT EXISTS idx_delegations_to_user ON gov.delegations (to_user_id);`
 
-func ensureDelegationSchema(ctx context.Context, exec db.Conn) error {
-	_, err := exec.Exec(ctx, delegationDDL)
-	return err
+func ensureDelegationSchema(ctx context.Context, memo *db.SchemaMemo, conn db.TxConn) error {
+	return memo.Ensure(ctx, conn, delegationDDL)
 }

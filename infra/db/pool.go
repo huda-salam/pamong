@@ -21,6 +21,12 @@ func NewPool(p *pgxpool.Pool) *Pool { return &Pool{pool: p} }
 
 var _ port.DBConn = (*Pool)(nil)
 
+var _ DBKeyer = (*Pool)(nil)
+
+// DBKey mengembalikan kunci KONSTAN: satu Pool = satu database, apa pun tenant di context.
+// Itulah yang membedakannya dari TenantRoutingConn — lihat db.DBKeyer.
+func (p *Pool) DBKey(context.Context) string { return "" }
+
 func (p *Pool) QueryRow(ctx context.Context, sql string, args ...any) port.Row {
 	return pgxRow{p.pool.QueryRow(ctx, sql, args...)}
 }
