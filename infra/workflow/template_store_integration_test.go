@@ -62,7 +62,7 @@ func testAuthCtx(t *testing.T) port.AuthContext {
 // agar tidak bergantung pada type di paket core/workflow (yang _test).
 type intDispatchRecord struct{ called []string }
 
-func (d *intDispatchRecord) Dispatch(_ port.AuthContext, action string, _ coreWf.WorkflowInstance) error {
+func (d *intDispatchRecord) Dispatch(_ port.AuthContext, action string, _ coreWf.WorkflowInstance, _ map[string]any) error {
 	d.called = append(d.called, action)
 	return nil
 }

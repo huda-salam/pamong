@@ -1210,20 +1210,57 @@ tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
     tertunda" & §Konsekuensi ADR-021.
 
 - **PR-W4** Runtime workflow + notifikasi + scheduler ← W1, 3.2.x, 3.5.x, 3.6.x, N1–N3b
-  - Blok dorman terbesar. Rakit: `DBStore` (definition) + `DBTemplateStore` + `Engine`
-    dengan `WithTemplates`/`WithDeadlines`/`WithNotifier`, `ActionDispatcher` nyata
-    menggantikan map `workflowActions`, `scheduler.Runner` + `DBLocker` dijalankan di
-    goroutine ber-shutdown, `SchedulerDeadlines` + `EscalationJob` + `NotifierEscalator` +
-    `NotifierTransition`, `ChannelRegistry` + `DBTemplateStore` notifikasi +
-    `DBRecipientDirectory` + messaging driver.
-  - **Kandidat dipecah W4a (engine + dispatch + definition/template store) dan W4b
-    (scheduler runner + SLA deadline + notifier)** bila diff > 600 baris inti.
-  - Yang akan ketahuan di sini (prediksi, bukan janji): `workflowActions` sebagai map
-    `any` tak punya kontrak dispatch — kemungkinan butuh seam baru di `domain.App` agar
-    action modul bisa dipanggil engine tanpa `core/workflow` mengimpor modul.
-  - DoD: `surat_masuk` disposisi lewat workflow dari template tenant → transisi memicu
-    notifikasi ke inbox pemegang role konkret → SLA lewat memicu eskalasi, seluruhnya
-    lewat server yang di-boot `run()`.
+  - Blok dorman terbesar. DIPECAH sejak awal jadi **W4a (engine + dispatch + store)** dan
+    **W4b (scheduler runner + SLA deadline + notifier)**. Alasan pecahnya bukan panjang diff:
+    W4b memasukkan goroutine berumur panjang ke `run()`, dan kelas cacat itu sudah dua kali
+    memukul repo ini (`Subscribe` tanpa Flush; `Drain` tak menunggu). Dicampur dengan perakitan
+    engine, dua sumber kegagalan sulit dipisah saat DoD gagal.
+  - **Prediksi seam TERBUKTI, dan lebih dalam dari dugaan** — lihat ADR-022. Bukan hanya
+    `workflowActions` yang tak punya kontrak dispatch; `DefinitionStore`/`TemplateStore` juga tak
+    membawa `ctx` maupun tenant sama sekali (jadi satu engine proses-lebar mustahil memilih DB
+    tenant yang benar), dan persistensi instance TIDAK ADA sama sekali — tak ada tabel, repo,
+    maupun implementasi `InstanceStateReader`.
+
+- **PR-W4a** Engine + dispatch + store per-tenant ✅ (ADR-022)
+  - `port.WorkflowAction` + `WorkflowActionInput` (dispatch bertipe menggantikan `any`);
+    `domain.WorkflowRegistry.RegisterAction` bertipe & ber-`error`;
+    `ActionDispatcher.Dispatch(+params)`; `Engine.ExecuteRequest`/`TransitionRequest` (Entity
+    untuk guard vs Params untuk action — dipisah tegas, ADR-022 Keputusan 2);
+    `workflow.ActionRegistry`; `WorkflowRef.FS` + `workflow.SeedFS` (seed dari FS ter-embed);
+    `gov.workflow_instances` + `InstanceStore` + `infra/workflow.DBInstanceStore`
+    (optimistic locking); `gateway/workflow` (`/workflow/instances*`);
+    `cmd/server/workflow.go` (`workflowFactory`: tumpukan per tenant, lazy + cache) ✅
+  - DoD: `surat_masuk` disposisi LEWAT WORKFLOW dari template tenant, transisi di request
+    TERPISAH dari start, seluruhnya lewat stack komposisi produksi (`buildServerHandler`) →
+    baris disposisi tersimpan di tenant DB ✅ (`cmd/server/workflow_e2e_integration_test.go`;
+    diverifikasi dua arah lewat mutasi pada dispatcher & seed)
+
+- **PR-W4b** Scheduler runner + SLA deadline + notifier ← W4a
+  - `scheduler.Runner` + `DBLocker` di goroutine ber-shutdown, `SchedulerDeadlines` +
+    `EscalationJob` + `NotifierEscalator` + `NotifierTransition`, `ChannelRegistry` +
+    `DBTemplateStore` notifikasi + `DBRecipientDirectory` + messaging driver, lalu pasang
+    `WithDeadlines`/`WithNotifier` pada engine per-tenant di `cmd/server/workflow.go`.
+  - **Keputusan yang HARUS diambil sebelum menulis kode:** `gov.scheduled_jobs` hidup di TENANT
+    DB, tapi `Runner.RunDue` memanggil satu `JobStore.DueSchedules` global — satu runner tak bisa
+    melihat jadwal semua tenant. Kandidat: (a) fasad JobStore yang meng-iterasi tenant dari
+    registry tiap tick (residensi DB tetap, N query per tick), (b) pindahkan tabel scheduler ke DB
+    sentral (satu pool & satu locker; job sudah membawa `tenant_id`, handler me-route lewat
+    `port.WithTenant`) — (b) mengubah residensi DB, jadi butuh migrasi + ADR.
+  - DoD: transisi memicu notifikasi ke inbox pemegang role KONKRET; SLA lewat memicu eskalasi;
+    keduanya lewat server yang di-boot `run()`, dan runner berhenti bersih saat shutdown
+    (dibuktikan dengan mutasi pada titik shutdown, bukan hanya test hijau).
+
+- **PR-W4c** Seam entitas: snapshot guard + otorisasi tingkat entitas ← W4a
+  - Dua kebutuhan, satu seam yang sama ("bolehkah aktor ini menyentuh entitas itu, dan seperti apa
+    isinya sekarang?"), jadi dikerjakan bersama:
+    (a) Guard ber-`entity.x` kini DITOLAK di jalur HTTP (fail-closed, ADR-022 Keputusan 7) karena
+    handler tak punya cara membaca entity modul; snapshot TIDAK boleh datang dari body request
+    (aktor akan menulis sendiri nilai yang menentukan apakah ia boleh lewat).
+    (b) `workflow:instance:*` masih berlaku SE-TENANT lintas modul: pemegang `:baca` bisa membaca
+    riwayat instance mana pun di tenantnya (komentar + id aktor), pemegang `:mulai` bisa memulai
+    alur atas entitas apa pun. Pagar sementara: keunikan instance per entitas + permission domain
+    yang tetap diperiksa use case di dalam action.
+  - Menutup `DEFERRED(PR-W4c)` di `gateway/workflow/handler.go`.
 
 - **PR-W5** Wiring customization write-path ← W1, 3.4.1, 3.4.2
   - Urutan WAJIB sudah tertulis lengkap di backlog "[Phase-5.1.1] Live wiring

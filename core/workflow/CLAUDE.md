@@ -32,18 +32,31 @@ Inti dari kemampuan "changeable workflow".
 - Pengiriman notifikasi (itu core/notification; workflow hanya memicu lewat TransitionNotifier/Escalator)
 
 ## File kunci
-- engine.go — state machine runner, transition executor, Start & StartFromTemplate
+- engine.go — state machine runner, transition executor, Start & StartFromTemplate,
+  ExecuteRequest (TransitionRequest: Entity untuk guard, Params untuk action — ADR-022)
+- dispatch.go — ActionRegistry: sisi DAFTAR (modul saat Bootstrap) + sisi PANGGIL (engine),
+  memenuhi domain.WorkflowRegistry & ActionDispatcher sekaligus (PR-W4a)
 - definition.go — struct definisi, definition store (DB)
 - loader.go — YAML seed loader + schema validation
 - guard.go — DSL compiler & evaluator (boolean only)
 - sla.go — deadline tracker, eskalasi (port Escalator, DeadlineScheduler, InstanceStateReader)
 - notify.go — port TransitionNotifier (notifikasi transisi, PR-N2)
 - history.go — transition history (immutable)
+- instance.go — WorkflowInstance + port InstanceStore (persistensi; adapter di infra/workflow)
 - template.go — template selection & parameter binding (RoleBindings, ApplyBindings)
 - template_choice.go — jalur TULIS ber-tata-kelola pilihan template (permission, validasi
   template_id + RoleBindings lewat seam RoleChecker)
 
 ## Konvensi khusus
+- **Action = port bertipe, bukan `any` (ADR-022).** Modul mendaftarkan port.WorkflowAction lewat
+  app.Workflow().RegisterAction(nama, action); adapter tipis di modul memetakan Params →
+  input use case bertipe. Nama ganda / action nil ditolak SAAT BOOT.
+- **Params ≠ Entity.** Params adalah niat aktor pada request ini (hanya untuk action); Entity
+  adalah snapshot keadaan tersimpan (hanya untuk guard). Menyatukannya = guard mengevaluasi nilai
+  yang ditulis aktor sendiri.
+- **Engine dirakit PER-TENANT** (ADR-022 Keputusan 3): DefinitionStore/TemplateStore tak membawa
+  ctx/tenant, jadi satu store proses-lebar mustahil memilih DB tenant yang benar. Lihat
+  cmd/server/workflow.go (workflowFactory) — isolasi struktural, bukan filter kolom.
 - Guard di-compile saat definisi di-load. Syntax error -> tolak di pintu masuk.
 - Action di YAML = nama use case. Engine memanggilnya lewat dispatcher, tidak inline.
 - Instance menyimpan versi definisi saat instance dimulai; perubahan definisi tidak
@@ -70,6 +83,16 @@ Inti dari kemampuan "changeable workflow".
   ter-binding -> Notify transisi & eskalasi SLA sampai ke role konkret (infra/workflow).
 - go test ./core/workflow/... -race
 
+## Status wiring (PR-W4a)
+TERPASANG di server hidup: registry action (nama di YAML → use case), engine per-tenant, seed
+definisi baseline dari FS ter-embed modul ke tenant DB, persistensi instance, permukaan HTTP
+`/workflow/instances*` (gateway/workflow).
+
+BELUM (PR-W4b): `WithDeadlines` & `WithNotifier` tidak dipasang di engine produksi — state
+ber-`sla_hours` belum menjadwalkan eskalasi dan `notify:` pada transisi belum mengirim apa pun.
+Keduanya no-op yang memang sudah jadi kontrak engine (scheduler/notifier nil), bukan cacat baru.
+
 ## Rujukan
 - PRD.md, port/workflow.go, CODING_PHILOSOPHY.md #5 (fleksibel di tepi)
-- ADR-011 (seam SLA/eskalasi), ADR-012 (bridge notifikasi + konsumsi RoleBindings, PR-N2)
+- ADR-011 (seam SLA/eskalasi), ADR-012 (bridge notifikasi + konsumsi RoleBindings, PR-N2),
+  ADR-022 (kontrak dispatch action + perakitan engine per-tenant, PR-W4a)

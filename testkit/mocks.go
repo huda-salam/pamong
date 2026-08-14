@@ -514,3 +514,107 @@ func IsPermissionDenied(err error) bool {
 	var fe *core.FrameworkError
 	return errors.As(err, &fe) && fe.Code == "PERMISSION_DENIED"
 }
+
+// --- MemoryInstanceStore ---
+
+// MemoryInstanceStore adalah workflow.InstanceStore in-memory untuk test (PR-W4a).
+// Ia meniru dua sifat yang penting dari adapter DB — SALINAN nilai (bukan pointer bersama) dan
+// optimistic locking terhadap Version — supaya test yang lulus di sini tidak menyembunyikan bug
+// yang muncul di Postgres.
+type MemoryInstanceStore struct {
+	mu     sync.Mutex
+	rows   map[uuid.UUID]workflow.WorkflowInstance
+	locked map[uuid.UUID]bool
+}
+
+var _ workflow.InstanceStore = (*MemoryInstanceStore)(nil)
+
+func NewMemoryInstanceStore() *MemoryInstanceStore {
+	return &MemoryInstanceStore{rows: make(map[uuid.UUID]workflow.WorkflowInstance)}
+}
+
+// Save menyimpan salinan instance bila Version-nya masih cocok dengan yang tersimpan.
+func (m *MemoryInstanceStore) Save(_ context.Context, inst *workflow.WorkflowInstance) error {
+	if inst == nil {
+		return core.ErrValidation("workflow_instance", "instance nil")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cur, sudahAda := m.rows[inst.ID]
+	if sudahAda && cur.Version != inst.Version {
+		return core.ErrConflict("instance workflow sudah diubah pihak lain")
+	}
+	if !sudahAda {
+		// Cermin uq_wfinst_entity_definition di adapter DB: satu alur per (definisi, entitas).
+		// Mock yang membolehkannya akan meloloskan test untuk perilaku yang ditolak Postgres.
+		for _, row := range m.rows {
+			if row.DefinitionID == inst.DefinitionID && row.EntityID == inst.EntityID {
+				return core.ErrConflict("entitas sudah punya instance untuk alur ini")
+			}
+		}
+	}
+	stored := *inst
+	stored.Version = inst.Version + 1
+	stored.History = append([]workflow.TransitionRecord(nil), inst.History...)
+	stored.RoleBindings = cloneBindings(inst.RoleBindings)
+	m.rows[inst.ID] = stored
+	inst.Version = stored.Version
+	return nil
+}
+
+// Get mengembalikan SALINAN instance tersimpan.
+func (m *MemoryInstanceStore) Get(_ context.Context, id uuid.UUID) (*workflow.WorkflowInstance, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	row, ok := m.rows[id]
+	if !ok {
+		return nil, workflow.ErrInstanceNotFound(id.String())
+	}
+	out := row
+	out.History = append([]workflow.TransitionRecord(nil), row.History...)
+	out.RoleBindings = cloneBindings(row.RoleBindings)
+	return &out, nil
+}
+
+// TryLockInstance menyerialisasi transisi per instance di dalam satu proses (padanan in-memory
+// dari advisory lock Postgres). Tak menunggu: instance yang sedang dipegang menjawab ok=false.
+func (m *MemoryInstanceStore) TryLockInstance(_ context.Context, id uuid.UUID) (func(), bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.locked == nil {
+		m.locked = make(map[uuid.UUID]bool)
+	}
+	if m.locked[id] {
+		return func() {}, false, nil
+	}
+	m.locked[id] = true
+	return func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		delete(m.locked, id)
+	}, true, nil
+}
+
+// cloneBindings menyalin map binding agar penyimpanan tak berbagi map dengan pemanggil — DB
+// store nyata tak pernah berbagi memori, dan mock yang berbagi bisa menyembunyikan mutasi liar.
+func cloneBindings(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// CurrentState memenuhi workflow.InstanceStateReader (jalur guard race eskalasi).
+func (m *MemoryInstanceStore) CurrentState(_ context.Context, id uuid.UUID) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	row, ok := m.rows[id]
+	if !ok {
+		return "", workflow.ErrInstanceNotFound(id.String())
+	}
+	return row.CurrentState, nil
+}

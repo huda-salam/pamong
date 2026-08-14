@@ -8,8 +8,11 @@ import "github.com/huda-salam/pamong/port"
 //
 // Action tidak dikenal → kembalikan ErrActionUnknown agar transisi dibatalkan.
 // Action gagal (use case return error) → kembalikan error aslinya agar transisi batal.
+//
+// params adalah argumen action dari REQUEST transisi (ExecuteRequest.Params, ADR-022) —
+// bukan snapshot entity yang dipakai guard. Boleh nil untuk action tanpa argumen.
 type ActionDispatcher interface {
-	Dispatch(ctx port.AuthContext, action string, instance WorkflowInstance) error
+	Dispatch(ctx port.AuthContext, action string, instance WorkflowInstance, params map[string]any) error
 }
 
 // GuardEvaluator mengevaluasi satu ekspresi guard menjadi boolean.

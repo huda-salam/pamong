@@ -16,8 +16,15 @@ type Module interface {
 // WorkflowRegistry memungkinkan modul mendaftarkan use case sebagai action workflow.
 // Action HANYA boleh memanggil use case — tidak ada business logic di dalam action
 // (linter: workflow-action-no-logic, CLAUDE.md #6.7).
+//
+// Parameternya bertipe port.WorkflowAction, bukan `any` (ADR-022): `any` tak punya kontrak
+// pemanggilan sama sekali, sehingga engine tak pernah bisa benar-benar memanggil apa yang
+// didaftarkan modul — dan itu persis mengapa registry lama hanya menampung tanpa dibaca.
+//
+// Error dikembalikan (nama ganda, action nil) agar salah-wiring menjatuhkan BOOT, bukan
+// muncul sebagai transisi yang gagal di produksi.
 type WorkflowRegistry interface {
-	RegisterAction(name string, useCase any)
+	RegisterAction(name string, action port.WorkflowAction) error
 }
 
 // App adalah DI container framework yang disuntik ke setiap Bootstrap().

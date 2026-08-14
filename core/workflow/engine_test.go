@@ -57,14 +57,17 @@ func (guardAlwaysFalse) Evaluate(expr string, _ port.AuthContext, _ map[string]a
 	return false, nil
 }
 
-// dispatchRecord dispatcher yang merekam panggilan dan kembalikan error yang disetting.
+// dispatchRecord dispatcher yang merekam panggilan (beserta params yang diterima) dan
+// kembalikan error yang disetting.
 type dispatchRecord struct {
-	called  []string
-	errNext error
+	called     []string
+	lastParams map[string]any
+	errNext    error
 }
 
-func (d *dispatchRecord) Dispatch(_ port.AuthContext, action string, _ workflow.WorkflowInstance) error {
+func (d *dispatchRecord) Dispatch(_ port.AuthContext, action string, _ workflow.WorkflowInstance, params map[string]any) error {
 	d.called = append(d.called, action)
+	d.lastParams = params
 	if d.errNext != nil {
 		err := d.errNext
 		d.errNext = nil // hanya sekali
@@ -76,7 +79,7 @@ func (d *dispatchRecord) Dispatch(_ port.AuthContext, action string, _ workflow.
 // unknownDispatcher dispatcher yang selalu kembalikan ErrActionUnknown.
 type unknownDispatcher struct{}
 
-func (unknownDispatcher) Dispatch(_ port.AuthContext, action string, _ workflow.WorkflowInstance) error {
+func (unknownDispatcher) Dispatch(_ port.AuthContext, action string, _ workflow.WorkflowInstance, _ map[string]any) error {
 	return workflow.ErrActionUnknown(action)
 }
 

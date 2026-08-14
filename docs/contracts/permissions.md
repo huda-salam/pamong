@@ -109,6 +109,24 @@ Konstanta di `core/workflow/permissions.go`; ditegakkan di `TemplateChoiceManage
 | Permission | Use case | Keterangan |
 |---|---|---|
 | `workflow:template:pilih` | TemplateChoiceManager.SetChoice | Pilih/ubah template workflow tenant untuk satu slot (PR-3.3.2b) |
+| `workflow:instance:mulai` | POST /workflow/instances | Memulai instance alur dari template tenant (PR-W4a) |
+| `workflow:instance:transisi` | POST /workflow/instances/{id}/transitions | Menjalankan satu transisi (PR-W4a) |
+| `workflow:instance:baca` | GET /workflow/instances/{id} | Membaca state & riwayat instance (PR-W4a) |
+
+Permission `workflow:instance:*` BUKAN pengganti guard di definisi. Ia menjawab "boleh memakai
+mesin workflow di tenant ini"; guard menjawab "boleh melakukan transisi INI pada alur ini" (mis.
+`actor.has_permission('surat_masuk:surat:disposisi')`), dan use case yang dipanggil action memeriksa
+permission domainnya sendiri untuk ketiga kalinya. Ketiganya berlaku berurutan — melepas salah
+satunya membuat lapis yang tersisa menjawab pertanyaan yang bukan tugasnya. Instance tenant lain
+dijawab 404 (bukan 403): 403 sudah membocorkan bahwa ID itu ada.
+
+Keterbatasan yang diketahui: ketiganya berlaku SE-TENANT lintas modul — pemegang
+`workflow:instance:baca` dapat membaca riwayat instance mana pun di tenantnya (termasuk komentar &
+id aktor), dan pemegang `workflow:instance:mulai` dapat memulai alur atas entitas apa pun.
+Mempersempitnya ke tingkat ENTITAS menuntut seam "bolehkah aktor ini menyentuh entitas itu?" yang
+belum ada — ditunda ke PR-W4c bersama snapshot entity untuk guard, bukan ditambal setengah di
+handler. Pagar yang berlaku sementara itu: keunikan instance per entitas, dan permission domain
+yang tetap diperiksa use case di dalam setiap action.
 
 Catatan: `tenant_id` selalu diambil dari AuthContext (token tersigning), bukan parameter —
 aktor tak bisa menulis pilihan template tenant lain. `template_id` divalidasi terdaftar DAN

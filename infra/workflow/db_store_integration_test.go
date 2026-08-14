@@ -5,6 +5,7 @@ package workflow_test
 import (
 	"context"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -269,5 +270,91 @@ func TestDBStore_Transition_NotifySpec(t *testing.T) {
 	}
 	if got.Transitions[0].Notify.Template != "disposisi_selesai" {
 		t.Errorf("Template: want %q, got %q", "disposisi_selesai", got.Transitions[0].Notify.Template)
+	}
+}
+
+// --- Regresi review PR-W4a: seed cold-start aman lintas pemanggil bersamaan ---
+
+// Seed berulang (cold-start tumpukan tenant tiap proses/replika) tak boleh menambah versi.
+func TestDBStore_SeedIfAbsentIdempoten(t *testing.T) {
+	store, _ := newTestStore(t)
+	def := sampleDef("uji.seed.standar")
+
+	for i := 0; i < 3; i++ {
+		if err := store.SeedIfAbsent(def); err != nil {
+			t.Fatalf("seed ke-%d: %v", i+1, err)
+		}
+	}
+
+	got, err := store.Get(def.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Version != 1 {
+		t.Fatalf("versi = %d setelah 3× seed, ingin tetap 1", got.Version)
+	}
+}
+
+// Definisi yang sudah dikustomisasi tenant (versi > 1) tak boleh tergantikan baseline developer.
+// Ini kerusakan yang paling mahal dari seed yang naif: alur yang sedang dipakai pemda diam-diam
+// kembali ke bentuk bawaan pada restart berikutnya.
+func TestDBStore_SeedIfAbsentTidakMenimpaKustomisasiTenant(t *testing.T) {
+	store, _ := newTestStore(t)
+	def := sampleDef("uji.seed.kustom")
+	if err := store.SeedIfAbsent(def); err != nil {
+		t.Fatalf("seed baseline: %v", err)
+	}
+
+	// Tenant mengubah definisinya → versi 2.
+	kustom := def
+	kustom.States = append(kustom.States, coreWf.State{Name: "ditolak", Label: "Ditolak", IsTerminal: true})
+	if err := store.Register(kustom); err != nil {
+		t.Fatalf("register versi tenant: %v", err)
+	}
+
+	if err := store.SeedIfAbsent(def); err != nil {
+		t.Fatalf("seed ulang: %v", err)
+	}
+
+	got, err := store.Get(def.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Version != 2 || len(got.States) != len(kustom.States) {
+		t.Fatalf("versi terbaru = %d (%d state), ingin versi 2 kustomisasi tenant",
+			got.Version, len(got.States))
+	}
+}
+
+// Dua pemanggil bersamaan (dua replika cold-start pada tenant yang sama) tak boleh membuat satu
+// pun gagal, dan tak boleh menghasilkan versi ganda.
+func TestDBStore_SeedIfAbsentBersamaan(t *testing.T) {
+	store, _ := newTestStore(t)
+	def := sampleDef("uji.seed.balapan")
+
+	const n = 8
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- store.SeedIfAbsent(def)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("seed bersamaan gagal: %v", err)
+		}
+	}
+
+	got, err := store.Get(def.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Version != 1 {
+		t.Fatalf("versi = %d setelah %d seed bersamaan, ingin 1", got.Version, n)
 	}
 }

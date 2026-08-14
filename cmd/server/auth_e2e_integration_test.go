@@ -36,6 +36,7 @@ import (
 
 	"github.com/huda-salam/pamong/core/config"
 	"github.com/huda-salam/pamong/core/domain"
+	coreWf "github.com/huda-salam/pamong/core/workflow"
 	"github.com/huda-salam/pamong/gateway"
 	identityauth "github.com/huda-salam/pamong/identity/adapter/auth"
 	identitydb "github.com/huda-salam/pamong/identity/adapter/db"
@@ -155,7 +156,7 @@ func TestE2E_Login_LaluAksesRuteBisnis(t *testing.T) {
 	app := domain.NewApp(
 		db.NewTenantRoutingConn(connMgr), db.NewCentralRoutingConn(connMgr), bus, bus,
 		sequence.NewDBGenerator(connMgr), observability.NewPrometheusMetrics(), store, userResolver,
-		newWorkflowActions(), router,
+		coreWf.NewActionRegistry(), router,
 	)
 	registry := domain.NewRegistry()
 	registry.Register(modules.All()...)

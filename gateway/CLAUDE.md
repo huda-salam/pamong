@@ -72,3 +72,26 @@ untuk request ber-token — sebelumnya default permisif.
   kosong) alih-alih nil — lihat `cmd/server/scoped_evaluator.go`.
 - **Request anonim tetap tanpa evaluator.** Penolakannya berasal dari pemisahan rute publik/internal
   saat registrasi router, bukan dari `RequirePermission*`.
+
+## Runtime workflow terpasang (PR-W4a · ADR-022)
+
+`gateway/workflow` adalah permukaan HTTP FRAMEWORK untuk runtime alur (bukan milik satu modul,
+sama seperti CRUD auto-generate Tier 1): `POST /workflow/instances`,
+`GET /workflow/instances/{id}`, `POST /workflow/instances/{id}/transitions` — semuanya di router
+BISNIS, di balik stack lengkap.
+
+- **Tumpukan per tenant lewat seam `RuntimeProvider`**, dirakit `cmd/server/workflow.go`. Handler
+  tak pernah menyentuh pool DB, jadi tak pernah bisa keliru melayani tenant lain.
+- **Tenant selalu dari klaim token**, tak pernah dari body/query.
+- **Instance tenant lain = 404, bukan 403.** 403 sudah membocorkan bahwa ID itu ada.
+- **Body transisi TIDAK punya field entity.** Guard hanya boleh membaca keadaan tersimpan; params
+  hanya untuk action (ADR-022 Keputusan 2). Snapshot entity untuk guard ber-`entity.x` belum ada,
+  dan `Program.Eval` MENOLAK guard semacam itu bila snapshot tak tersedia (ADR-022 Keputusan 7) —
+  transisinya gagal, tidak lolos diam-diam. DEFERRED(PR-W4c).
+- **Transisi dikunci per instance** (`TryLockInstance`) SEBELUM action dijalankan; yang bertabrakan
+  dijawab 409, tidak diantrekan. Optimistic locking pada Save saja tidak cukup — ia menolak
+  penulis yang kalah setelah efek bisnisnya terlanjur terjadi (ADR-022 Keputusan 5).
+- **Satu instance per (definisi, entitas)**, ditegakkan unique index. Tanpanya alur yang sudah
+  selesai bisa dimulai ulang dan action-nya dijalankan lagi.
+- **Otorisasi masih setingkat TENANT, belum entitas** — lihat docs/contracts/permissions.md
+  §workflow. DEFERRED(PR-W4c).

@@ -142,8 +142,23 @@ func (e *Engine) StartFromTemplate(ctx port.AuthContext, slot string, entityID u
 	return inst, nil
 }
 
-// Execute menjalankan satu transisi pada instance yang diberikan tanpa komentar.
-// Setara ExecuteWithComment(..., "").
+// TransitionRequest adalah satu permintaan transisi (ADR-022). Dua map di dalamnya sengaja
+// TERPISAH dan tidak boleh disatukan:
+//
+//   - Entity = snapshot keadaan bisnis yang SUDAH ADA, satu-satunya sumber untuk guard.
+//   - Params = argumen action, yaitu NIAT AKTOR pada request ini.
+//
+// Menyatukannya berarti guard mengevaluasi nilai yang dikirim aktor sendiri — aktor menulis
+// angka yang menentukan apakah ia boleh lewat.
+type TransitionRequest struct {
+	Action  string
+	Entity  map[string]any
+	Params  map[string]any
+	Comment string
+}
+
+// Execute menjalankan satu transisi pada instance yang diberikan tanpa komentar & tanpa
+// argumen action. Setara ExecuteWithComment(..., "").
 func (e *Engine) Execute(ctx port.AuthContext, instance *WorkflowInstance, action string, entity map[string]any) error {
 	return e.ExecuteWithComment(ctx, instance, action, entity, "")
 }
@@ -166,6 +181,15 @@ func (e *Engine) Execute(ctx port.AuthContext, instance *WorkflowInstance, actio
 // entity adalah snapshot data bisnis entity saat ini — dipakai guard evaluation
 // (mis. `entity.nilai > 100`). Boleh nil bila tidak ada guard yang mengakses entity.
 func (e *Engine) ExecuteWithComment(ctx port.AuthContext, instance *WorkflowInstance, action string, entity map[string]any, comment string) error {
+	return e.ExecuteRequest(ctx, instance, TransitionRequest{Action: action, Entity: entity, Comment: comment})
+}
+
+// ExecuteRequest menjalankan satu transisi dengan argumen action (req.Params) di samping
+// snapshot guard (req.Entity). Ini bentuk PENUH transisi; Execute & ExecuteWithComment adalah
+// pembungkusnya untuk action tanpa argumen. Semantik selebihnya identik — lihat doc
+// ExecuteWithComment di atas.
+func (e *Engine) ExecuteRequest(ctx port.AuthContext, instance *WorkflowInstance, req TransitionRequest) error {
+	action, entity, comment := req.Action, req.Entity, req.Comment
 	def, err := e.store.GetVersion(instance.DefinitionID, instance.DefinitionVersion)
 	if err != nil {
 		return err
@@ -213,7 +237,7 @@ func (e *Engine) ExecuteWithComment(ctx port.AuthContext, instance *WorkflowInst
 
 	// Dispatch use case (action). Kosong = tidak ada use case, transisi tetap valid.
 	if tr.Action != "" {
-		if err := e.dispatch.Dispatch(ctx, tr.Action, *instance); err != nil {
+		if err := e.dispatch.Dispatch(ctx, tr.Action, *instance, req.Params); err != nil {
 			// Use case gagal → transisi batal; state tidak berubah.
 			return err
 		}

@@ -32,6 +32,37 @@ Jalur A/B/C merujuk tiga cara pembuatan skema yang dijelaskan di `DB_SCHEMA.md` 
 
 ---
 
+### 2026-08-15 · PR-W4a (runtime workflow: dispatch, instance, engine per-tenant) · `HEAD`
+**DB:** tenant · **Jalur:** A (`core/workflow/migrations/004`) · **Down:** ada
+
+- `+ gov.workflow_instances` — satu baris per jalannya alur untuk satu entitas bisnis. Sebelumnya
+  engine sudah lengkap tapi tak punya tempat menyimpan instance sama sekali: transisi hanya mungkin
+  dalam satu request (instance hidup di memori pemanggil), dan guard race eskalasi SLA
+  (`InstanceStateReader`) tak punya sumber data. Kolom: `id` (PK), `tenant_id`, `definition_id`,
+  `definition_version` (versi DIKUNCI saat start — PRD F1/F7), `entity_id`, `current_state`,
+  `role_bindings JSONB DEFAULT '{}'` (salinan BEKU pilihan tenant saat StartFromTemplate, ADR-012),
+  `history JSONB DEFAULT '[]'` (append-only), `version INT DEFAULT 0` (optimistic locking),
+  `started_at`, `updated_at`. Index: `uq_wfinst_entity_definition UNIQUE (definition_id, entity_id)`
+  — pagar otorisasi (tanpanya alur yang sudah selesai bisa dimulai ulang lalu action-nya dijalankan
+  lagi), dan `idx_wfinst_state (definition_id, current_state)` untuk papan kerja per state.
+
+  Serialisasi transisi memakai `pg_try_advisory_xact_lock` ber-namespace pada baris instance
+  (ADR-022 Keputusan 5) — tak ada tabel lock tambahan; kunci lepas saat transaksi pemegangnya
+  berakhir, termasuk bila prosesnya mati.
+
+  Riwayat sengaja JSONB pada baris yang sama, bukan tabel terpisah: ia selalu dibaca UTUH bersama
+  instance-nya dan tak pernah di-query lintas instance. Immutabilitasnya dijaga jalur tulis (hanya
+  append) + `gov.audit_logs`, bukan constraint DDL.
+
+- `~ gov.workflow_definitions`, `gov.tenant_workflow_configs` — bentuk tabel TIDAK berubah, tapi
+  keduanya kini benar-benar diisi & dibaca di server hidup: `cmd/server` merakit satu tumpukan
+  workflow per tenant (`workflowFactory`) yang menjalankan `EnsureSchema` + seed definisi baseline
+  modul (dari FS ter-embed) ke DB tenant saat tenant itu pertama memakai workflow.
+
+**Kompatibilitas:** additive. Tabel baru belum pernah dipakai produksi, jadi tak ada backfill.
+
+---
+
 ### 2026-08-11 · PR-W3b (wiring Authority + permukaan IAM tenant) · `HEAD`
 **DB:** tenant · **Jalur:** C (ensure-on-write) · **Down:** tidak (jalur C)
 

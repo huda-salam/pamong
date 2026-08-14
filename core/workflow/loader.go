@@ -1,12 +1,16 @@
 package workflow
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"sort"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/huda-salam/pamong/core"
 )
 
 // ===== YAML intermediate structs =====
@@ -63,29 +67,76 @@ func ParseYAML(data []byte) (WorkflowDefinition, error) {
 	return convertAndValidate(raw)
 }
 
+// DefinitionSeeder adalah store yang bisa men-seed definisi baseline secara ATOMIK ("daftarkan
+// bila workflow_id ini belum punya versi apa pun"). Dipenuhi MemoryStore & infra/workflow.DBStore.
+//
+// Ia ada karena "Get lalu Register" adalah check-then-act yang tidak aman begitu seed pindah ke
+// JALUR REQUEST (cold-start tumpukan workflow per tenant, PR-W4a) dan berjalan di lebih dari satu
+// replika: dua pemanggil bisa sama-sama melihat "belum ada" lalu sama-sama menulis — yang satu
+// gagal di PRIMARY KEY (workflow_id, version), atau yang lebih buruk, keduanya lolos dan versi
+// baseline kedua menjadi versi TERBARU yang menggantikan definisi hasil kustomisasi tenant.
+type DefinitionSeeder interface {
+	SeedIfAbsent(def WorkflowDefinition) error
+}
+
 // SeedYAML mem-parsing bytes YAML dan mendaftarkannya ke store bila belum ada.
 // Bila ID sudah ada di store (DB aktif telah punya definisi ini), operasi di-skip
 // tanpa error — DB adalah sumber kebenaran aktif, YAML hanya baseline developer.
+//
+// Store yang memenuhi DefinitionSeeder memakai jalur atomiknya. Jalur cadangan (Get→Register)
+// membedakan "belum ada" dari "gagal membaca": kegagalan infra dikembalikan apa adanya, TIDAK
+// diperlakukan sebagai "belum ada" — kalau tidak, satu error koneksi sesaat akan mendaftarkan
+// ulang baseline developer di atas definisi tenant yang sudah dikustomisasi.
 func SeedYAML(data []byte, store DefinitionStore) error {
 	def, err := ParseYAML(data)
 	if err != nil {
 		return err
 	}
-	// Cek apakah sudah ada di store — jika ya, tidak timpa.
-	if _, err := store.Get(def.ID); err == nil {
-		return nil
+	if seeder, ok := store.(DefinitionSeeder); ok {
+		return seeder.SeedIfAbsent(def)
+	}
+	_, err = store.Get(def.ID)
+	switch {
+	case err == nil:
+		return nil // sudah ada — jangan timpa
+	case !isNotFound(err):
+		return err // gagal baca ≠ belum ada
 	}
 	return store.Register(def)
 }
 
-// LoadYAML membaca file YAML dari path dan memanggil SeedYAML.
-// Dipakai modul saat bootstrap untuk mendaftarkan seed workflow mereka.
+// isNotFound melaporkan apakah err adalah core.ErrNotFound (definisi memang belum ada).
+func isNotFound(err error) bool {
+	var fe *core.FrameworkError
+	return errors.As(err, &fe) && fe.Code == "NOT_FOUND"
+}
+
+// LoadYAML membaca file YAML dari path di DISK dan memanggil SeedYAML. Dipakai tooling
+// (pamongctl) dan test yang bekerja dari checkout repo.
 //
-//	app.Workflow().Load("modules/surat_masuk/workflows/disposisi.yaml")
+// Jalur PRODUKSI adalah SeedFS: binary yang ter-deploy tak punya direktori repo, jadi seed
+// modul dibaca dari FS ter-embed (domain.WorkflowRef.FS).
 func LoadYAML(path string, store DefinitionStore) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("baca file workflow %q: %w", path, err)
+	}
+	if err := SeedYAML(data, store); err != nil {
+		return fmt.Errorf("seed workflow dari %q: %w", path, err)
+	}
+	return nil
+}
+
+// SeedFS membaca satu definisi dari filesystem ter-embed modul lalu men-seed-nya ke store.
+// Ini jalur yang dipakai composition root saat menyiapkan tumpukan workflow sebuah tenant
+// (definisi hidup di tenant DB, jadi seed terjadi per tenant — idempoten lewat SeedYAML).
+func SeedFS(fsys fs.FS, path string, store DefinitionStore) error {
+	if fsys == nil {
+		return fmt.Errorf("seed workflow %q: filesystem ter-embed nil (isi WorkflowRef.FS)", path)
+	}
+	data, err := fs.ReadFile(fsys, path)
+	if err != nil {
+		return fmt.Errorf("baca workflow ter-embed %q: %w", path, err)
 	}
 	if err := SeedYAML(data, store); err != nil {
 		return fmt.Errorf("seed workflow dari %q: %w", path, err)

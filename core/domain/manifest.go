@@ -1,5 +1,7 @@
 package domain
 
+import "io/fs"
+
 // Manifest mendeklarasikan identitas, kemampuan, dan dependency sebuah modul bisnis.
 // Ini titik tunggal yang dibaca registry — tidak ada penemuan implisit.
 type Manifest struct {
@@ -77,6 +79,12 @@ type PermissionImport struct {
 }
 
 // WorkflowRef menunjuk ke file YAML definisi workflow baseline modul.
+//
+// FS adalah filesystem ter-embed milik modul (`//go:embed workflows/*.yaml`); Path adalah
+// jalur di dalamnya. FS wajib diisi: membaca dari disk saat runtime membuat binary yang
+// ter-deploy bergantung pada direktori kerja proses — seed workflow lalu gagal di produksi
+// dengan cara yang tak pernah muncul saat `go test` dijalankan dari root repo.
 type WorkflowRef struct {
+	FS   fs.FS
 	Path string
 }

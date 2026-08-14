@@ -81,3 +81,23 @@ func ErrEngineTemplatesNotWired() error {
 	return core.ErrValidation("workflow_engine",
 		"TemplateStore tidak terpasang (WithTemplates) — tidak bisa StartFromTemplate")
 }
+
+// ErrInvalidAction dipublikasikan saat pendaftaran action tak masuk akal (nama kosong,
+// action nil) — kesalahan WIRING saat bootstrap, bukan kesalahan data (ADR-022).
+func ErrInvalidAction(reason string) error {
+	return core.ErrValidation("workflow_action", reason)
+}
+
+// ErrActionDuplicate dipublikasikan saat dua modul mendaftarkan nama action yang sama.
+// Menolaknya di boot mencegah kegagalan yang jauh lebih sulit dilacak: pemenang ditentukan
+// urutan Bootstrap, dan transisi tenant memanggil use case modul yang salah tanpa gejala.
+func ErrActionDuplicate(name string) error {
+	return core.ErrValidation("workflow_action",
+		fmt.Sprintf("action %q sudah terdaftar oleh modul lain", name))
+}
+
+// ErrInstanceNotFound dipublikasikan saat WorkflowInstance dengan ID tertentu tidak ada
+// di store (HTTP 404).
+func ErrInstanceNotFound(id string) error {
+	return core.ErrNotFound("WorkflowInstance", id)
+}

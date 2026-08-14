@@ -15,7 +15,9 @@ import (
 
 	"github.com/huda-salam/pamong/core/config"
 	"github.com/huda-salam/pamong/core/domain"
+	coreWf "github.com/huda-salam/pamong/core/workflow"
 	"github.com/huda-salam/pamong/gateway"
+	gatewaywf "github.com/huda-salam/pamong/gateway/workflow"
 	identitydb "github.com/huda-salam/pamong/identity/adapter/db"
 	identitytoken "github.com/huda-salam/pamong/identity/adapter/token"
 	identitydomain "github.com/huda-salam/pamong/identity/domain"
@@ -195,20 +197,26 @@ func run() error {
 	// request karena top mux menang; hanya menjaga namespace /healthz tetap milik framework.
 	router.Get("/healthz", healthz)
 
-	// App container. Sequence & UserResolver kini ter-wire (PR-5.1.x live-path completion) —
-	// jalur request bisnis lengkap end-to-end. WorkflowRegistry masih minimal; dispatch penuh
-	// via engine menyusul di slice berikutnya.
+	// Registry action workflow (PR-W4a, ADR-022): SATU objek yang memenuhi dua kontrak — sisi
+	// DAFTAR (domain.WorkflowRegistry yang dipakai modul saat Bootstrap) dan sisi PANGGIL
+	// (workflow.ActionDispatcher yang dipakai setiap engine per-tenant). Sebelum ADR-022 kedua
+	// sisi itu tak pernah bertemu: registry lama menampung `any` yang tak pernah dibaca siapa pun.
+	workflowActions := coreWf.NewActionRegistry()
+
+	// App container. Sequence & UserResolver ter-wire (PR-5.1.x live-path completion); registry
+	// action workflow kini nyata & dipanggil engine (PR-W4a) — jalur request bisnis lengkap
+	// end-to-end.
 	app := domain.NewApp(
-		tenantDB,             // DBConn (routing per-tenant)
-		centralDB,            // CentralDB (routing ke DB sentral, ADR-005)
-		bus,                  // EventPublisher
-		bus,                  // EventSubscriber
-		sequenceGen,          // SequenceGenerator (gov.sequences per-tenant, atomik)
-		metrics,              // MetricsPort
-		store,                // StoragePort
-		userResolver,         // UserResolver (baca clone gov.user_profiles tenant DB)
-		newWorkflowActions(), // WorkflowRegistry (minimal; dispatch penuh via engine menyusul)
-		router,               // Router
+		tenantDB,        // DBConn (routing per-tenant)
+		centralDB,       // CentralDB (routing ke DB sentral, ADR-005)
+		bus,             // EventPublisher
+		bus,             // EventSubscriber
+		sequenceGen,     // SequenceGenerator (gov.sequences per-tenant, atomik)
+		metrics,         // MetricsPort
+		store,           // StoragePort
+		userResolver,    // UserResolver (baca clone gov.user_profiles tenant DB)
+		workflowActions, // WorkflowRegistry + ActionDispatcher (ADR-022)
+		router,          // Router
 	)
 
 	// Registry modul: daftar → validasi (DAG, entity, tabel unik) → bootstrap (wiring DI &
@@ -284,6 +292,22 @@ func run() error {
 		return fmt.Errorf("administrasi wewenang tenant (tenantrole/delegation): %w", err)
 	}
 	mountAdminIAMRoutes(router, adminIAM)
+
+	// Runtime workflow (PR-W4a): permukaan HTTP framework untuk memulai instance dari template
+	// tenant, menjalankan transisi, dan membaca riwayatnya. Dirakit SESUDAH Bootstrap modul —
+	// action yang dipanggil engine baru terdaftar di sana, dan seed definisi diambil dari manifest
+	// modul yang sudah tervalidasi.
+	//
+	// Inilah yang membuat `app.Workflow().RegisterAction` di modul berhenti menjadi seam dorman:
+	// nama action di disposisi.yaml kini benar-benar sampai ke use case (DoD 11).
+	workflowSeeds, err := collectWorkflowSeeds(registry)
+	if err != nil {
+		return fmt.Errorf("seed workflow modul: %w", err)
+	}
+	workflowRuntimes := newWorkflowFactory(connMgr, workflowActions, workflowSeeds, logger)
+	gatewaywf.MountRoutes(router, gatewaywf.NewHandler(workflowRuntimes))
+	logger.Info(ctx, "runtime workflow terpasang",
+		port.F("action", workflowActions.Names()), port.F("seed_definisi", len(workflowSeeds)))
 
 	// --- HTTP server + middleware stack + graceful shutdown ---
 	handler := buildServerHandler(serverDeps{
@@ -389,20 +413,4 @@ func effectiveTokenMaxBytes(tokenMaxBytes int) int {
 		return config.MaxTokenMaxBytes
 	}
 	return tokenMaxBytes
-}
-
-// workflowActions adalah WorkflowRegistry minimal: menyimpan pemetaan nama→use case yang
-// didaftarkan modul saat Bootstrap. Dispatch/eksekusi penuh oleh workflow engine (yang butuh
-// DefinitionStore DB + guard) di-wire pada slice berikutnya; di sini cukup memenuhi kontrak
-// domain.WorkflowRegistry agar Bootstrap modul (yang memanggil RegisterAction) berjalan.
-type workflowActions struct {
-	actions map[string]any
-}
-
-func newWorkflowActions() *workflowActions {
-	return &workflowActions{actions: make(map[string]any)}
-}
-
-func (w *workflowActions) RegisterAction(name string, useCase any) {
-	w.actions[name] = useCase
 }

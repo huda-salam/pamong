@@ -35,6 +35,7 @@ import (
 
 	"github.com/huda-salam/pamong/core/config"
 	"github.com/huda-salam/pamong/core/domain"
+	coreWf "github.com/huda-salam/pamong/core/workflow"
 	"github.com/huda-salam/pamong/gateway"
 	identitydb "github.com/huda-salam/pamong/identity/adapter/db"
 	identitytoken "github.com/huda-salam/pamong/identity/adapter/token"
@@ -175,7 +176,7 @@ func TestE2E_CreateSuratMasuk_201(t *testing.T) {
 	router.Get("/healthz", healthz)
 	app := domain.NewApp(
 		tenantDB, centralDB, bus, bus, sequenceGen, metrics, store, userResolver,
-		newWorkflowActions(), router,
+		coreWf.NewActionRegistry(), router,
 	)
 	registry := domain.NewRegistry()
 	registry.Register(modules.All()...)

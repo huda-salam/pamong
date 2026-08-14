@@ -70,7 +70,7 @@ func (m *Module) Manifest() domain.Manifest {
 		},
 
 		Workflows: []domain.WorkflowRef{
-			{Path: "workflows/disposisi.yaml"},
+			{FS: workflowsFS, Path: "workflows/disposisi.yaml"},
 		},
 	}
 }

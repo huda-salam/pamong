@@ -48,7 +48,7 @@ var n2Def = coreWf.WorkflowDefinition{
 // noopDispatcher: definisi test tak punya action use case (Action kosong di semua transisi).
 type noopDispatcher struct{}
 
-func (noopDispatcher) Dispatch(_ port.AuthContext, action string, _ coreWf.WorkflowInstance) error {
+func (noopDispatcher) Dispatch(_ port.AuthContext, action string, _ coreWf.WorkflowInstance, _ map[string]any) error {
 	return nil
 }
 

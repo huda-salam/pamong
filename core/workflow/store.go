@@ -22,7 +22,10 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{defs: make(map[string]map[int]WorkflowDefinition)}
 }
 
-var _ DefinitionStore = (*MemoryStore)(nil)
+var (
+	_ DefinitionStore  = (*MemoryStore)(nil)
+	_ DefinitionSeeder = (*MemoryStore)(nil)
+)
 
 // Register memvalidasi dan menyimpan definisi sebagai versi tersendiri. Validasi
 // dilakukan di sini (pintu masuk) agar error struktur ketahuan saat load, bukan saat
@@ -43,6 +46,25 @@ func (s *MemoryStore) Register(def WorkflowDefinition) error {
 		s.defs[def.ID] = versions
 	}
 	versions[def.Version] = def
+	return nil
+}
+
+// SeedIfAbsent mendaftarkan definisi HANYA bila workflow_id ini belum punya versi apa pun.
+// Pemeriksaan & penulisan terjadi di bawah SATU lock (bukan Get lalu Register terpisah), jadi dua
+// pemanggil bersamaan tak bisa sama-sama melihat "belum ada" lalu sama-sama menulis.
+func (s *MemoryStore) SeedIfAbsent(def WorkflowDefinition) error {
+	if err := Validate(def); err != nil {
+		return err
+	}
+	if def.Version <= 0 {
+		def.Version = 1
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if versions, ok := s.defs[def.ID]; ok && len(versions) > 0 {
+		return nil
+	}
+	s.defs[def.ID] = map[int]WorkflowDefinition{def.Version: def}
 	return nil
 }
 

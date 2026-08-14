@@ -608,6 +608,45 @@ Disimpan **utuh satu baris** (`template_id` + `role_bindings`), bukan dilebur ke
 skalar ber-scope. Tanpa FK ke `gov.workflow_definitions` karena template bisa selesai dibuat
 setelah config ditetapkan.
 
+### 4.11b `gov.workflow_instances` — instance alur berjalan *(A, `core/workflow/004`)*
+
+| Kolom | Tipe | Catatan |
+|---|---|---|
+| `id` | UUID PRIMARY KEY | |
+| `tenant_id` | TEXT NOT NULL | jejak pemilik; isolasi sesungguhnya STRUKTURAL (baris hidup di DB tenant) |
+| `definition_id` | TEXT NOT NULL | |
+| `definition_version` | INT NOT NULL | DIKUNCI saat start — perubahan definisi tak mengubah alur berjalan (PRD F1/F7) |
+| `entity_id` | UUID NOT NULL | entitas bisnis yang dikelola alur (mis. id surat) |
+| `current_state` | TEXT NOT NULL | |
+| `role_bindings` | JSONB NOT NULL DEFAULT '{}' | salinan BEKU pilihan tenant saat StartFromTemplate (ADR-012) |
+| `history` | JSONB NOT NULL DEFAULT '[]' | riwayat transisi, append-only |
+| `version` | INT NOT NULL DEFAULT 0 | optimistic locking (CLAUDE.md §Data integrity) |
+| `started_at` | TIMESTAMPTZ NOT NULL | |
+| `updated_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | |
+
+Index: `uq_wfinst_entity_definition UNIQUE (definition_id, entity_id)`,
+`idx_wfinst_state (definition_id, current_state)`.
+
+Keunikan `(definition_id, entity_id)` adalah pagar OTORISASI, bukan sekadar higiene data: tanpanya
+pemegang `workflow:instance:mulai` bisa membuat instance baru di `initial_state` untuk dokumen yang
+alurnya sudah selesai lalu menjalankan ulang seluruh action-nya. Konsekuensi yang disengaja: satu
+alur tak bisa dijalankan ULANG atas entitas yang sama — perulangan yang sah dimodelkan di dalam
+definisi (self-loop terkontrol).
+
+`version` bukan hiasan: tanpa guard `WHERE version = $n` pada penulisan, dua transisi bersamaan
+atas instance yang sama sama-sama membaca state lama, sama-sama lolos guard, dan keduanya memanggil
+use case — satu surat terdisposisi dua kali dengan hanya satu jejak di `history`.
+
+Guard versi itu **jaring kedua**, bukan yang utama: ia menolak penulis yang kalah SETELAH action-nya
+terlanjur berjalan, yaitu melindungi baris instance sambil membiarkan efek bisnisnya ganda. Yang
+menutup itu adalah kunci per-instance (`pg_try_advisory_xact_lock`, ADR-022 Keputusan 5) yang
+diambil driving adapter SEBELUM action dijalankan; transisi bersamaan atas satu instance dijawab
+409, tidak diantrekan.
+
+`history` disimpan JSONB pada baris yang sama, bukan tabel terpisah: ia selalu dibaca UTUH bersama
+instance-nya dan tak pernah di-query lintas instance. Immutabilitasnya dijaga jalur tulis (hanya
+append) + `gov.audit_logs`, bukan constraint DDL.
+
 ### 4.12 `gov.tenant_configs` — config ber-scope & ber-versi *(A, `core/config/001`+`002`)*
 
 | Kolom | Tipe | Catatan |
@@ -911,7 +950,6 @@ kode, agar tidak ada yang mencarinya sia-sia:
 
 | Tabel | Status |
 |---|---|
-| `gov.workflow_instances` | belum — instance workflow belum dipersistensi (store definisi & template selection sudah) |
 | `gov.rule_versions` | belum — sub-phase rules (ROADMAP) |
 | `gov.fiscal_periods` | belum — `core/fiscal` menyusul bersama modul keuangan |
 | `gov.tenants`, `gov.modules`, `gov.permissions` | belum — registry modul & permission hidup di kode (manifest), bukan DB |
@@ -945,6 +983,7 @@ user_profiles ──(user_id, tanpa FK)──< user_role_assignments >── ten
      ├──< delegations (from/to user, berbatas waktu)
      │
 workflow_definitions (workflow_id, version)   ◁── tenant_workflow_configs (slot → template_id)
+     └──(definition_id+version, tanpa FK)──< workflow_instances (entity_id, current_state, history)
 tenant_configs (scope: tenant/unit/resource, ber-versi)
 tenant_custom_fields · tenant_capability_overrides
 scheduled_jobs ─< job_runs · job_locks

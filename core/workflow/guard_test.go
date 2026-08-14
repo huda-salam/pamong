@@ -195,9 +195,15 @@ func TestEval_EntityMissingField(t *testing.T) {
 	if evalGuard(t, "entity.catatan == ''", actor, map[string]any{}) {
 		t.Fatal("field hilang == '' harusnya false")
 	}
-	// Entity nil map juga aman.
-	if !evalGuard(t, "entity.apa != ''", actor, nil) {
-		t.Fatal("entity nil, field != '' harusnya true")
+	// Entity nil = TIDAK ADA SNAPSHOT (beda dari "snapshot ada, fieldnya kosong" di atas) →
+	// guard yang membaca entity DITOLAK, tidak dievaluasi.
+	//
+	// Dulu ini bernilai true: nil memang tidak sama dengan '', jadi guard semacam
+	// `entity.status != 'dibatalkan'` LOLOS pada jalur yang tak menyediakan snapshot — dan hanya
+	// operator numerik yang gagal. Fail-open sebagian seperti itu justru yang paling berbahaya:
+	// ia terlihat aman di test yang kebetulan membandingkan angka.
+	if _, err := workflow.NewGuardEvaluator().Evaluate("entity.apa != ''", actor, nil); err == nil {
+		t.Fatal("guard membaca entity tanpa snapshot harusnya ditolak, bukan lolos")
 	}
 }
 

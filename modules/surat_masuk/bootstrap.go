@@ -7,6 +7,7 @@ import (
 	dbadapter "github.com/huda-salam/pamong/modules/surat_masuk/adapter/db"
 	eventadapter "github.com/huda-salam/pamong/modules/surat_masuk/adapter/event"
 	httpadapter "github.com/huda-salam/pamong/modules/surat_masuk/adapter/http"
+	workflowadapter "github.com/huda-salam/pamong/modules/surat_masuk/adapter/workflow"
 	"github.com/huda-salam/pamong/modules/surat_masuk/usecase"
 )
 
@@ -24,8 +25,13 @@ func bootstrap(ctx context.Context, app *domain.App) error {
 	createUC := usecase.NewCreateSuratMasuk(suratRepo, app.Sequence(), app.Publisher(), app.Metrics())
 	disposisiUC := usecase.NewDisposisiSurat(suratRepo, disposisiRepo, pegawai, app.Publisher())
 
-	// Daftarkan action workflow: nama "DisposisiSurat" di YAML -> use case ini.
-	app.Workflow().RegisterAction("DisposisiSurat", disposisiUC)
+	// Daftarkan action workflow: nama "DisposisiSurat" di YAML -> use case ini, lewat adapter
+	// tipis yang memetakan params engine ke input bertipe (ADR-022). Gagal daftar = gagal boot:
+	// action yang tak terdaftar membuat setiap transisi yang memakainya batal di produksi.
+	if err := app.Workflow().RegisterAction("DisposisiSurat",
+		workflowadapter.NewDisposisiAction(disposisiUC)); err != nil {
+		return err
+	}
 
 	// Driving adapter (HTTP) + registrasi rute.
 	h := httpadapter.NewHandler(createUC, disposisiUC)

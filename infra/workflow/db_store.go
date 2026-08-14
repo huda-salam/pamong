@@ -26,7 +26,10 @@ type DBStore struct {
 // NewDBStore membuat store baru. Panggil EnsureSchema sebelum dipakai pertama kali.
 func NewDBStore(pool *db.Pool) *DBStore { return &DBStore{pool: pool} }
 
-var _ coreWf.DefinitionStore = (*DBStore)(nil)
+var (
+	_ coreWf.DefinitionStore  = (*DBStore)(nil)
+	_ coreWf.DefinitionSeeder = (*DBStore)(nil)
+)
 
 // EnsureSchema membuat schema gov & seluruh tabel workflow bila belum ada, dari SQL migrasi
 // ter-embed (sumber tunggal) dengan pelacakan gov.migration_history di bawah advisory lock.
@@ -92,6 +95,58 @@ func (s *DBStore) registerVersion(ctx context.Context, def coreWf.WorkflowDefini
 		statesJSON, transitionsJSON, effectiveFrom, actorID, prevVersion,
 	)
 	return err
+}
+
+// SeedIfAbsent mendaftarkan definisi baseline HANYA bila workflow_id ini belum punya versi apa
+// pun (coreWf.DefinitionSeeder). Ia jalur seed cold-start tumpukan workflow per tenant.
+//
+// Satu PERNYATAAN, bukan "cek lalu tulis": seed kini berjalan di jalur REQUEST dan bisa dipicu
+// dua replika sekaligus. `WHERE NOT EXISTS` menutup kasus umum (sudah pernah di-seed, mungkin
+// sudah dikustomisasi tenant ke versi lebih tinggi → jangan sentuh), dan `ON CONFLICT DO NOTHING`
+// menutup balapan sempit tempat dua penulis sama-sama lolos NOT EXISTS: yang kalah no-op, bukan
+// gagal dengan 23505 di tengah request pertama tenant itu.
+//
+// Versi yang ditulis adalah versi yang DIDEKLARASIKAN baseline (default 1), bukan max+1. Menaikkan
+// ke max+1 justru bentuk kerusakan yang dicegah di sini — baseline developer akan menjadi versi
+// TERBARU yang menggantikan definisi hasil kustomisasi tenant.
+func (s *DBStore) SeedIfAbsent(def coreWf.WorkflowDefinition) error {
+	ctx := context.Background()
+	if err := coreWf.Validate(def); err != nil {
+		return err
+	}
+	if def.Version <= 0 {
+		def.Version = 1 // sama dengan normalisasi MemoryStore — dua seeder tak boleh menyimpang
+	}
+	statesJSON, err := json.Marshal(def.States)
+	if err != nil {
+		return fmt.Errorf("serialisasi states workflow %q: %w", def.ID, err)
+	}
+	transitionsJSON, err := json.Marshal(def.Transitions)
+	if err != nil {
+		return fmt.Errorf("serialisasi transitions workflow %q: %w", def.ID, err)
+	}
+	effectiveFrom := def.EffectiveFrom
+	if effectiveFrom.IsZero() {
+		effectiveFrom = time.Now()
+	}
+
+	// gov:raw-ok reason=atomic-seed-if-absent query=workflow-definition-seed-baseline
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO gov.workflow_definitions
+		    (workflow_id, version, entity, initial_state, authoring_source,
+		     states, transitions, effective_from, created_by, prev_version)
+		SELECT $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, NULL, NULL
+		WHERE NOT EXISTS (
+		    SELECT 1 FROM gov.workflow_definitions WHERE workflow_id = $1
+		)
+		ON CONFLICT (workflow_id, version) DO NOTHING`,
+		def.ID, def.Version, def.Entity, def.InitialState, def.AuthoringSource,
+		statesJSON, transitionsJSON, effectiveFrom,
+	)
+	if err != nil {
+		return fmt.Errorf("seed definisi workflow %q: %w", def.ID, err)
+	}
+	return nil
 }
 
 // Get mengembalikan versi terbaru (version tertinggi) dari definisi workflow.
