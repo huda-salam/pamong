@@ -56,8 +56,14 @@ Inti dari kemampuan "changeable workflow".
   yang ditulis aktor sendiri.
 - **Engine dirakit PER-TENANT** (ADR-022 Keputusan 3): DefinitionStore/TemplateStore tak membawa
   ctx/tenant, jadi satu store proses-lebar mustahil memilih DB tenant yang benar. Lihat
-  cmd/server/workflow.go (workflowFactory) — isolasi struktural, bukan filter kolom.
+  cmd/server/workflow.go (workflowFactory) — isolasi struktural, bukan filter kolom. Tumpukannya
+  DIRAKIT ULANG tiap permintaan (pool di-resolve ulang dari registry; tenant yang naik tier tak
+  boleh terus ditulisi ke DB lama); yang di-cache hanya penyiapan DB (ensure schema + seed).
 - Guard di-compile saat definisi di-load. Syntax error -> tolak di pintu masuk.
+- **Guard ber-`entity.x` FAIL-CLOSED tanpa snapshot** (ADR-022 Keputusan 7): pembacaannya error,
+  bukan bernilai nil. Penolakan ada di titik baca (entityField.eval), BUKAN di depan Program.Eval —
+  evaluator ber-short-circuit, jadi menolak di depan akan ikut mematikan cabang yang tak pernah
+  dibaca (`actor.has_role('x') || entity.status == 'aktif'` masih sah bagi pemegang role).
 - Action di YAML = nama use case. Engine memanggilnya lewat dispatcher, tidak inline.
 - Instance menyimpan versi definisi saat instance dimulai; perubahan definisi tidak
   mengubah instance berjalan.

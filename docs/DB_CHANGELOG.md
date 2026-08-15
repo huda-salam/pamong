@@ -33,7 +33,7 @@ Jalur A/B/C merujuk tiga cara pembuatan skema yang dijelaskan di `DB_SCHEMA.md` 
 ---
 
 ### 2026-08-15 · PR-W4a (runtime workflow: dispatch, instance, engine per-tenant) · `HEAD`
-**DB:** tenant · **Jalur:** A (`core/workflow/migrations/004`) · **Down:** ada
+**DB:** tenant · **Jalur:** A (`core/workflow/migrations/004`+`005`) · **Down:** ada
 
 - `+ gov.workflow_instances` — satu baris per jalannya alur untuk satu entitas bisnis. Sebelumnya
   engine sudah lengkap tapi tak punya tempat menyimpan instance sama sekali: transisi hanya mungkin
@@ -46,13 +46,22 @@ Jalur A/B/C merujuk tiga cara pembuatan skema yang dijelaskan di `DB_SCHEMA.md` 
   — pagar otorisasi (tanpanya alur yang sudah selesai bisa dimulai ulang lalu action-nya dijalankan
   lagi), dan `idx_wfinst_state (definition_id, current_state)` untuk papan kerja per state.
 
-  Serialisasi transisi memakai `pg_try_advisory_xact_lock` ber-namespace pada baris instance
-  (ADR-022 Keputusan 5) — tak ada tabel lock tambahan; kunci lepas saat transaksi pemegangnya
-  berakhir, termasuk bila prosesnya mati.
-
   Riwayat sengaja JSONB pada baris yang sama, bukan tabel terpisah: ia selalu dibaca UTUH bersama
   instance-nya dan tak pernah di-query lintas instance. Immutabilitasnya dijaga jalur tulis (hanya
   append) + `gov.audit_logs`, bukan constraint DDL.
+
+- `+ gov.workflow_instance_locks` — kunci transisi per instance, ber-SEWA (ADR-022 Keputusan 5):
+  `instance_id` (PK), `token UUID NOT NULL` (release hanya oleh pemegang), `locked_until TIMESTAMPTZ
+  NOT NULL` (jam DATABASE), index `idx_wfinst_lock_expiry (locked_until)`. Acquire atomik lewat
+  `INSERT .. ON CONFLICT DO UPDATE ... WHERE locked_until < now() RETURNING token` — bentuk yang
+  sama dengan `gov.job_locks`.
+
+  Bentuk pertama W4a memakai `pg_try_advisory_xact_lock` tanpa tabel tambahan, dan itu ditinggalkan
+  sebelum rilis: kunci tingkat sesi menuntut transaksinya tetap terbuka selama transisi, sementara
+  action di bawah kunci memakai POOL YANG SAMA — setiap transisi menyandera satu koneksi selama use
+  case bekerja, dan transisi bersamaan sebanyak ukuran pool menggantungkan seluruh request tenant
+  itu. Harga yang dibayar: kunci baris tak ikut mati bersama koneksinya, jadi ia butuh batas sewa
+  (5 menit) agar proses yang mati tak menyandera instance selamanya.
 
 - `~ gov.workflow_definitions`, `gov.tenant_workflow_configs` — bentuk tabel TIDAK berubah, tapi
   keduanya kini benar-benar diisi & dibaca di server hidup: `cmd/server` merakit satu tumpukan

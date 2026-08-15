@@ -86,11 +86,14 @@ BISNIS, di balik stack lengkap.
 - **Instance tenant lain = 404, bukan 403.** 403 sudah membocorkan bahwa ID itu ada.
 - **Body transisi TIDAK punya field entity.** Guard hanya boleh membaca keadaan tersimpan; params
   hanya untuk action (ADR-022 Keputusan 2). Snapshot entity untuk guard ber-`entity.x` belum ada,
-  dan `Program.Eval` MENOLAK guard semacam itu bila snapshot tak tersedia (ADR-022 Keputusan 7) —
-  transisinya gagal, tidak lolos diam-diam. DEFERRED(PR-W4c).
+  dan evaluator MENOLAK pembacaan `entity.x` bila snapshot tak tersedia (ADR-022 Keputusan 7) —
+  transisinya gagal, tidak lolos diam-diam. Penolakan terjadi di titik baca, jadi cabang yang
+  ter-short-circuit tetap sah. DEFERRED(PR-W4c).
 - **Transisi dikunci per instance** (`TryLockInstance`) SEBELUM action dijalankan; yang bertabrakan
   dijawab 409, tidak diantrekan. Optimistic locking pada Save saja tidak cukup — ia menolak
-  penulis yang kalah setelah efek bisnisnya terlanjur terjadi (ADR-022 Keputusan 5).
+  penulis yang kalah setelah efek bisnisnya terlanjur terjadi (ADR-022 Keputusan 5). Kuncinya
+  BARIS ber-sewa (`gov.workflow_instance_locks`), bukan lock sesi: lock sesi menahan koneksi
+  selama action berjalan, dan action memakai pool yang sama.
 - **Satu instance per (definisi, entitas)**, ditegakkan unique index. Tanpanya alur yang sudah
   selesai bisa dimulai ulang dan action-nya dijalankan lagi.
 - **Otorisasi masih setingkat TENANT, belum entitas** — lihat docs/contracts/permissions.md

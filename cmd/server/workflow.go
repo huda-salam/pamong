@@ -1,6 +1,6 @@
 // workflow.go merakit RUNTIME workflow di composition root (PR-W4a, ADR-022): satu tumpukan
-// per tenant (definition store + template store + instance store + engine), dibangun lazy saat
-// tenant pertama dipakai lalu di-cache selama umur proses.
+// per tenant (definition store + template store + instance store + engine), dirakit dari pool
+// tenant yang di-resolve ULANG pada setiap permintaan.
 //
 // Kenapa per-tenant dan bukan satu engine proses-lebar: definisi workflow hidup di TENANT DB
 // (gov.workflow_definitions), sementara port DefinitionStore/TemplateStore tak membawa ctx
@@ -26,20 +26,28 @@ import (
 	"github.com/huda-salam/pamong/port"
 )
 
-// workflowFactory membangun & meng-cache tumpukan workflow per tenant.
+// workflowFactory merakit tumpukan workflow untuk satu tenant.
 //
 // actions dan guard sengaja DIBAGI semua tenant: keduanya adalah KODE (pemetaan nama→use case,
 // dan compiler ekspresi guard), bukan data tenant. Menggandakannya per tenant hanya akan
 // menggandakan cache guard tanpa menambah isolasi apa pun.
+//
+// Yang TIDAK di-cache: tumpukan itu sendiri. Lihat RuntimeFor.
 type workflowFactory struct {
-	connMgr *db.TenantConnManager
+	pools   tenantPoolProvider
 	actions *coreWf.ActionRegistry
 	guard   coreWf.GuardEvaluator
 	seeds   []domain.WorkflowRef // definisi baseline seluruh modul terdaftar (FS ter-embed)
 	logger  port.Logger
 
-	mu    sync.RWMutex
-	cache map[string]gatewaywf.Runtime
+	mu       sync.Mutex
+	prepared map[*db.Pool]struct{} // DB yang skemanya sudah dipastikan & seed-nya sudah ditanam
+}
+
+// tenantPoolProvider adalah seam ke db.TenantConnManager. Ia interface agar test bisa
+// membuktikan sifat yang paling mudah hilang di sini: pool di-MINTA ULANG tiap permintaan.
+type tenantPoolProvider interface {
+	Tenant(ctx context.Context, tenantID string) (*db.Pool, error)
 }
 
 var _ gatewaywf.RuntimeProvider = (*workflowFactory)(nil)
@@ -47,72 +55,82 @@ var _ gatewaywf.RuntimeProvider = (*workflowFactory)(nil)
 // newWorkflowFactory merakit factory. seeds dikumpulkan dari manifest modul yang SUDAH
 // tervalidasi (lihat collectWorkflowSeeds) — modul yang gagal validasi tak boleh menyumbang
 // definisi ke DB tenant mana pun.
-func newWorkflowFactory(connMgr *db.TenantConnManager, actions *coreWf.ActionRegistry,
+func newWorkflowFactory(pools tenantPoolProvider, actions *coreWf.ActionRegistry,
 	seeds []domain.WorkflowRef, logger port.Logger) *workflowFactory {
 	return &workflowFactory{
-		connMgr: connMgr,
-		actions: actions,
-		guard:   coreWf.NewGuardEvaluator(),
-		seeds:   seeds,
-		logger:  logger,
-		cache:   make(map[string]gatewaywf.Runtime),
+		pools:    pools,
+		actions:  actions,
+		guard:    coreWf.NewGuardEvaluator(),
+		seeds:    seeds,
+		logger:   logger,
+		prepared: make(map[*db.Pool]struct{}),
 	}
 }
 
-// RuntimeFor mengembalikan (get-or-build) tumpukan workflow milik satu tenant.
+// RuntimeFor merakit tumpukan workflow milik satu tenant, dari pool yang di-resolve SAAT ITU.
 //
-// Build dilakukan DI LUAR lock agar cold-start satu tenant (yang menyentuh DB: ensure schema +
-// seed) tak memblokir tenant lain; double-check saat menyimpan menjaga satu entri per tenant.
-// Build ganda yang jarang untuk tenant yang sama tetap benar — ensure schema & seed keduanya
-// idempoten. Kegagalan TIDAK di-cache: percobaan berikutnya mencoba ulang.
+// Tumpukannya sengaja tidak di-cache per tenant. Cache seperti itu tampak jelas menguntungkan —
+// dan justru membekukan hal yang paling tidak boleh beku: db.TenantConnManager.Tenant() membaca
+// id.tenant_registry pada SETIAP panggilan dan mengunci pool-nya pada (host, nama DB). Saat tenant
+// dipindah ke server DB sendiri (Tier 2/3 — operasi yang memang dirancang tanpa perubahan kode,
+// CLAUDE.md §Tenant tier), seluruh konsumen lain otomatis mengikuti registry ke DB baru, sementara
+// tumpukan yang ter-cache akan terus menulis ke DB LAMA sampai proses di-restart: transisi
+// tercatat di tempat yang sudah ditinggalkan, tanpa satu pun error.
+//
+// Biaya merakit ulang mendekati nol — store-nya struct tipis di atas pool, dan engine hanya
+// memegang rujukan. Yang mahal (ensure schema + seed definisi) tetap dilakukan sekali per DB
+// lewat prepare.
 func (f *workflowFactory) RuntimeFor(ctx context.Context, tenantID string) (gatewaywf.Runtime, error) {
 	if tenantID == "" {
 		return gatewaywf.Runtime{}, fmt.Errorf("tenant kosong: tumpukan workflow selalu milik satu tenant")
 	}
-	f.mu.RLock()
-	rt, ok := f.cache[tenantID]
-	f.mu.RUnlock()
-	if ok {
-		return rt, nil
-	}
-
-	built, err := f.build(ctx, tenantID)
-	if err != nil {
-		return gatewaywf.Runtime{}, err
-	}
-
-	f.mu.Lock()
-	if existing, ok := f.cache[tenantID]; ok {
-		f.mu.Unlock()
-		return existing, nil
-	}
-	f.cache[tenantID] = built
-	f.mu.Unlock()
-	return built, nil
-}
-
-// build merakit tumpukan untuk satu tenant: pool tenant → schema → seed definisi → store →
-// engine.
-//
-// Engine di sini SENGAJA tanpa WithDeadlines & WithNotifier: penjadwalan SLA dan notifikasi
-// transisi menuntut scheduler.Runner (goroutine berumur panjang ber-shutdown) dan hub notifikasi
-// per-tenant — keduanya lingkup PR-W4b. Konsekuensinya nyata dan harus disebut: sampai W4b
-// mendarat, state ber-`sla_hours` tidak menjadwalkan eskalasi apa pun dan `notify:` pada transisi
-// tidak mengirim apa pun. Keduanya no-op yang sudah menjadi kontrak engine (deadlines/notifier
-// nil), bukan kegagalan diam-diam yang baru diperkenalkan di sini.
-// DEFERRED(PR-W4b): WithDeadlines(SchedulerDeadlines) + WithNotifier(NotifierTransition).
-func (f *workflowFactory) build(ctx context.Context, tenantID string) (gatewaywf.Runtime, error) {
-	pool, err := f.connMgr.Tenant(ctx, tenantID)
+	pool, err := f.pools.Tenant(ctx, tenantID)
 	if err != nil {
 		return gatewaywf.Runtime{}, fmt.Errorf("pool tenant %q: %w", tenantID, err)
 	}
 
 	defs := infrawf.NewDBStore(pool)
+	if err := f.prepare(ctx, tenantID, pool, defs); err != nil {
+		return gatewaywf.Runtime{}, err
+	}
+
+	templates := infrawf.NewDBTemplateStore(pool, defs)
+	instances := infrawf.NewDBInstanceStore(pool)
+	return gatewaywf.Runtime{
+		Engine:    coreWf.New(defs, f.actions, f.guard, coreWf.WithTemplates(templates)),
+		Instances: instances,
+	}, nil
+}
+
+// prepare memastikan skema workflow ada dan definisi baseline modul tertanam di DB ini —
+// sekali per DB, bukan sekali per request.
+//
+// Penandanya ber-kunci POOL, bukan tenant: pool identik dengan (host, nama DB) di
+// TenantConnManager, jadi tenant yang pindah DB otomatis dianggap belum disiapkan dan DB barunya
+// ikut di-seed. Kegagalan TIDAK ditandai — percobaan berikutnya mencoba ulang. Dua request
+// bersamaan bisa sama-sama menyiapkan; keduanya idempoten (ensure schema di bawah advisory lock,
+// seed lewat SeedIfAbsent).
+//
+// Engine yang dirakit di RuntimeFor SENGAJA tanpa WithDeadlines & WithNotifier: penjadwalan SLA
+// dan notifikasi transisi menuntut scheduler.Runner (goroutine berumur panjang ber-shutdown) dan
+// hub notifikasi per-tenant — keduanya lingkup PR-W4b. Konsekuensinya nyata dan harus disebut:
+// sampai W4b mendarat, state ber-`sla_hours` tidak menjadwalkan eskalasi apa pun dan `notify:`
+// pada transisi tidak mengirim apa pun. Keduanya no-op yang sudah menjadi kontrak engine
+// (deadlines/notifier nil), bukan kegagalan diam-diam yang baru diperkenalkan di sini.
+// DEFERRED(PR-W4b): WithDeadlines(SchedulerDeadlines) + WithNotifier(NotifierTransition).
+func (f *workflowFactory) prepare(ctx context.Context, tenantID string, pool *db.Pool,
+	defs *infrawf.DBStore) error {
+	f.mu.Lock()
+	_, sudah := f.prepared[pool]
+	f.mu.Unlock()
+	if sudah {
+		return nil
+	}
+
 	// Satu EnsureSchema cukup untuk SELURUH tabel workflow (definitions, tenant configs,
-	// instances) — semuanya berasal dari satu set migrasi ter-embed yang sama, diterapkan di
-	// bawah advisory lock & memo per-DB.
+	// instances, instance locks) — semuanya dari satu set migrasi ter-embed yang sama.
 	if err := defs.EnsureSchema(ctx); err != nil {
-		return gatewaywf.Runtime{}, fmt.Errorf("schema workflow tenant %q: %w", tenantID, err)
+		return fmt.Errorf("schema workflow tenant %q: %w", tenantID, err)
 	}
 
 	// Seed definisi baseline modul ke DB tenant ini. SeedYAML melewati ID yang sudah ada, jadi
@@ -120,19 +138,18 @@ func (f *workflowFactory) build(ctx context.Context, tenantID string) (gatewaywf
 	// DB adalah yang aktif (CLAUDE.md §Workflow as data).
 	for _, ref := range f.seeds {
 		if err := coreWf.SeedFS(ref.FS, ref.Path, defs); err != nil {
-			return gatewaywf.Runtime{}, fmt.Errorf("seed workflow tenant %q: %w", tenantID, err)
+			return fmt.Errorf("seed workflow tenant %q: %w", tenantID, err)
 		}
 	}
 
-	templates := infrawf.NewDBTemplateStore(pool, defs)
-	instances := infrawf.NewDBInstanceStore(pool)
-
-	engine := coreWf.New(defs, f.actions, f.guard, coreWf.WithTemplates(templates))
+	f.mu.Lock()
+	f.prepared[pool] = struct{}{}
+	f.mu.Unlock()
 	if f.logger != nil {
-		f.logger.Info(ctx, "tumpukan workflow tenant dirakit",
+		f.logger.Info(ctx, "skema & seed workflow tenant disiapkan",
 			port.F("tenant", tenantID), port.F("seed_definisi", len(f.seeds)))
 	}
-	return gatewaywf.Runtime{Engine: engine, Instances: instances}, nil
+	return nil
 }
 
 // collectWorkflowSeeds mengumpulkan definisi baseline dari manifest seluruh modul terdaftar.

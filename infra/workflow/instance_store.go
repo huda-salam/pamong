@@ -145,47 +145,68 @@ func (s *DBInstanceStore) CurrentState(ctx context.Context, id uuid.UUID) (strin
 	return state, nil
 }
 
-// instanceLockNS memisahkan ruang kunci transisi instance dari pemakai advisory lock lain di DB
-// tenant yang sama (mis. bootstrap skema). Advisory lock Postgres ber-dua-int: (namespace, key).
-const instanceLockNS = 0x77463141 // "wF1a"
+// instanceLockTTL adalah umur SEWA kunci transisi.
+//
+// Dipilih jauh di atas durasi request yang wajar, dan itu disengaja: sewa yang kedaluwarsa saat
+// action-nya MASIH berjalan akan membuka pintu bagi transisi kedua — persis kerusakan yang kunci
+// ini cegah (satu surat terdisposisi dua kali). Batas atasnya adalah berapa lama satu instance
+// boleh tersandera setelah proses pemegangnya mati; 5 menit adalah kompromi yang memberi ruang
+// besar pada sisi keamanan sambil tetap pulih tanpa campur tangan operator.
+const instanceLockTTL = 5 * time.Minute
 
-// TryLockInstance mengambil kunci eksklusif per instance lewat `pg_try_advisory_xact_lock`, tanpa
-// menunggu. Kunci dipegang oleh TRANSAKSI yang dibuka di sini dan lepas otomatis saat release
-// (rollback) — termasuk bila proses mati, karena koneksinya ikut tutup. Tak ada kunci yatim.
+// TryLockInstance mengambil kunci eksklusif per instance tanpa menunggu, sebagai BARIS ber-sewa
+// (gov.workflow_instance_locks) — bukan sebagai lock tingkat sesi.
 //
-// Transaksi ini sengaja TIDAK dipakai untuk menulis apa pun: action berjalan di koneksi lain
-// (pool yang sama), dan Save memakai koneksi lain lagi. Yang dibutuhkan di sini hanya SALING
-// MENIADAKAN, bukan atomicity — membungkus action ke dalam transaksi ini justru akan menahan satu
-// koneksi ekstra per transisi dan menyeret pekerjaan modul ke dalam masa hidup lock.
+// Bentuk ini dipilih setelah versi advisory-lock terbukti salah secara liveness: `pg_try_advisory_
+// xact_lock` menuntut transaksinya tetap terbuka selama kunci dipegang, sementara action yang
+// berjalan di bawah kunci memakai POOL YANG SAMA. Setiap transisi karenanya menahan satu koneksi
+// mati selama use case bekerja, dan tenant yang sibuk bisa menghabiskan pool-nya sendiri —
+// menggantungkan seluruh request tenant itu, bukan hanya workflow. Di sini nol koneksi ditahan:
+// acquire dan release masing-masing satu pernyataan singkat.
 //
-// Cakupan kunci = satu DATABASE, yaitu DB tenant ini. Itu cakupan yang benar: instance tenant lain
-// hidup di DB lain dan tak mungkin bertabrakan. Dua replika yang terhubung ke DB tenant yang sama
-// berbagi ruang kunci, jadi serialisasinya berlaku lintas proses — bukan hanya di dalam satu.
+// Atomik lewat INSERT .. ON CONFLICT ber-guard kedaluwarsa (bentuk yang sama dengan
+// infra/scheduler.DBLocker): tepat satu pemanggil yang menang saat balapan, yang kalah menerima
+// nol baris → ok=false, bukan antre.
 //
-// hashtext memampatkan UUID ke 32 bit, jadi dua instance BERBEDA bisa berbagi kunci (tabrakan
-// hash). Akibatnya hanya penolakan palsu yang sangat jarang (409 pada transisi yang sebenarnya
-// tak bersaing), tak pernah dua transisi yang lolos bersamaan — arah kegagalan yang benar.
+// Perbandingan & penetapan batas sewa memakai jam DATABASE (now()), bukan jam proses: dua replika
+// dengan jam yang meleset tak boleh berbeda pendapat tentang kapan sebuah sewa habis.
+//
+// Cakupan kunci = satu tenant DB. Itu cakupan yang benar: instance tenant lain hidup di DB lain.
+// Dua replika yang terhubung ke DB tenant yang sama berbagi tabel ini, jadi serialisasinya
+// berlaku lintas proses — bukan hanya di dalam satu.
+//
+// Sewa membuat kunci ini TIDAK KEKAL: bila proses mati, kunci lepas sendiri setelah TTL (tak ada
+// kunci yatim), tapi transisi yang berjalan lebih lama dari TTL kehilangan perlindungannya. Guard
+// versi pada Save tetap menjadi jaring kedua di jalur itu — ia menolak penulis yang kalah,
+// meski setelah action-nya terlanjur berjalan.
 func (s *DBInstanceStore) TryLockInstance(ctx context.Context, id uuid.UUID) (func(), bool, error) {
 	noop := func() {}
-	tx, err := s.pool.Begin(ctx)
+	var token uuid.UUID
+	// gov:raw-ok reason=atomic-lease-acquire query=workflow-instance-lock-acquire
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO gov.workflow_instance_locks (instance_id, token, locked_until)
+		VALUES ($1, $2, now() + make_interval(secs => $3))
+		ON CONFLICT (instance_id) DO UPDATE
+		    SET token = EXCLUDED.token, locked_until = EXCLUDED.locked_until
+		    WHERE gov.workflow_instance_locks.locked_until < now()
+		RETURNING token`,
+		id, uuid.New(), instanceLockTTL.Seconds()).Scan(&token)
+	if db.IsNoRows(err) {
+		return noop, false, nil // masih dipegang & belum kedaluwarsa
+	}
 	if err != nil {
-		return noop, false, fmt.Errorf("buka transaksi kunci instance: %w", err)
+		return noop, false, fmt.Errorf("ambil kunci instance %s: %w", id, err)
 	}
-	release := func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }
 
-	var locked bool
-	// gov:raw-ok reason=advisory-lock query=workflow-instance-try-lock
-	if err := tx.QueryRow(ctx,
-		`SELECT pg_try_advisory_xact_lock($1, hashtext($2))`,
-		instanceLockNS, id.String()).Scan(&locked); err != nil {
-		release()
-		return noop, false, fmt.Errorf("ambil kunci instance: %w", err)
-	}
-	if !locked {
-		release()
-		return noop, false, nil
-	}
-	return release, true, nil
+	// Release memakai context.WithoutCancel: kunci harus lepas meski request-nya sudah dibatalkan
+	// (klien menutup koneksi di tengah transisi). Bila DELETE tetap gagal, kunci lepas sendiri
+	// saat sewa habis — karena itu kegagalannya tak dipropagasi ke pemanggil.
+	return func() {
+		// gov:raw-ok reason=guarded-release query=workflow-instance-lock-release
+		_, _ = s.pool.Exec(context.WithoutCancel(ctx),
+			`DELETE FROM gov.workflow_instance_locks WHERE instance_id = $1 AND token = $2`,
+			id, token)
+	}, true, nil
 }
 
 // orEmptyMap & orEmptySlice menjaga kolom JSONB tetap berisi bentuk yang valid ('{}' / '[]')

@@ -169,8 +169,7 @@ func (h *Handler) Transition(w http.ResponseWriter, r *http.Request) {
 	// history. Guard versi tetap dipertahankan pada Save sebagai jaring kedua.
 	//
 	// Ditolak, bukan diantrekan: transisi bersamaan pada satu instance adalah tabrakan niat
-	// (dua orang mendisposisi surat yang sama), bukan beban yang perlu diserialisasi — dan
-	// mengantre akan menahan koneksi selama use case berjalan.
+	// (dua orang mendisposisi surat yang sama), bukan beban yang perlu diserialisasi.
 	release, locked, err := rt.Instances.TryLockInstance(ctx, id)
 	if err != nil {
 		gateway.WriteError(w, err)
@@ -192,10 +191,10 @@ func (h *Handler) Transition(w http.ResponseWriter, r *http.Request) {
 	// Entity snapshot untuk guard belum tersedia dari sini: membacanya menuntut seam
 	// "resolver snapshot entity" per tipe entity, yang belum ada dan BUKAN lingkup W4a.
 	//
-	// Nil di sini BUKAN "guard dievaluasi terhadap kekosongan": Program.Eval menolak ekspresi
-	// yang membaca `entity.x` bila snapshot tak disediakan sama sekali (ADR-022 Keputusan 7),
-	// jadi transisinya gagal alih-alih lolos. Itu perlu ditegakkan di evaluator, bukan diasumsikan
-	// di sini — sebelum ADR-022, `entity.status != 'dibatalkan'` bernilai TRUE terhadap nil.
+	// Nil di sini BUKAN "guard dievaluasi terhadap kekosongan": evaluator menolak PEMBACAAN
+	// `entity.x` bila snapshot tak disediakan sama sekali (ADR-022 Keputusan 7), jadi transisinya
+	// gagal alih-alih lolos. Itu perlu ditegakkan di evaluator, bukan diasumsikan di sini —
+	// sebelum ADR-022, `entity.status != 'dibatalkan'` bernilai TRUE terhadap nil.
 	// Guard ber-actor (yang dipakai definisi baseline repo ini) tak terpengaruh.
 	// DEFERRED(PR-W4c): resolver snapshot entity + otorisasi tingkat entitas.
 	stateSebelum, riwayatSebelum := inst.CurrentState, len(inst.History)

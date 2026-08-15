@@ -1227,9 +1227,10 @@ tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
     `ActionDispatcher.Dispatch(+params)`; `Engine.ExecuteRequest`/`TransitionRequest` (Entity
     untuk guard vs Params untuk action — dipisah tegas, ADR-022 Keputusan 2);
     `workflow.ActionRegistry`; `WorkflowRef.FS` + `workflow.SeedFS` (seed dari FS ter-embed);
-    `gov.workflow_instances` + `InstanceStore` + `infra/workflow.DBInstanceStore`
-    (optimistic locking); `gateway/workflow` (`/workflow/instances*`);
-    `cmd/server/workflow.go` (`workflowFactory`: tumpukan per tenant, lazy + cache) ✅
+    `gov.workflow_instances` + `InstanceStore` + `infra/workflow.DBInstanceStore` (optimistic
+    locking + kunci transisi ber-sewa `gov.workflow_instance_locks`); `gateway/workflow`
+    (`/workflow/instances*`); `cmd/server/workflow.go` (`workflowFactory`: tumpukan dirakit per
+    permintaan dari pool yang di-resolve ulang; yang di-cache hanya penyiapan DB) ✅
   - DoD: `surat_masuk` disposisi LEWAT WORKFLOW dari template tenant, transisi di request
     TERPISAH dari start, seluruhnya lewat stack komposisi produksi (`buildServerHandler`) →
     baris disposisi tersimpan di tenant DB ✅ (`cmd/server/workflow_e2e_integration_test.go`;

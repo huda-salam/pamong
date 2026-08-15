@@ -207,6 +207,35 @@ func TestEval_EntityMissingField(t *testing.T) {
 	}
 }
 
+// Penolakan "tanpa snapshot" tidak boleh mematikan SHORT-CIRCUIT: cabang entity yang tak pernah
+// dibaca tak boleh menggagalkan ekspresi. Guard campuran seperti
+// `actor.has_role('x') || entity.status == 'aktif'` adalah bentuk yang wajar ditulis tenant, dan
+// pada jalur tanpa snapshot ia masih punya jawaban yang benar untuk pemegang role.
+//
+// Ini yang hilang bila penolakan ditaruh di depan Program.Eval (berdasar "ekspresi ini menyentuh
+// entity di suatu tempat") alih-alih di titik bacanya.
+func TestEval_TanpaSnapshotTetapHormatiShortCircuit(t *testing.T) {
+	actor := testkit.Ctx(t, testkit.WithRole("verifikator"))
+	ev := workflow.NewGuardEvaluator()
+
+	// || : cabang kiri sudah true → cabang entity tak pernah dibaca.
+	ok, err := ev.Evaluate("actor.has_role('verifikator') || entity.status == 'aktif'", actor, nil)
+	if err != nil || !ok {
+		t.Fatalf("OR short-circuit tanpa snapshot = %v, %v; ingin true, nil", ok, err)
+	}
+
+	// && : cabang kiri sudah false → cabang entity tak pernah dibaca.
+	ok, err = ev.Evaluate("actor.has_role('bukan') && entity.status == 'aktif'", actor, nil)
+	if err != nil || ok {
+		t.Fatalf("AND short-circuit tanpa snapshot = %v, %v; ingin false, nil", ok, err)
+	}
+
+	// Cabang entity BENAR-BENAR dibaca → tetap ditolak (jaring fail-closed tak ikut longgar).
+	if _, err := ev.Evaluate("actor.has_role('bukan') || entity.status == 'aktif'", actor, nil); err == nil {
+		t.Fatal("cabang entity yang benar-benar dibaca harusnya ditolak tanpa snapshot")
+	}
+}
+
 // ===== Evaluate: error runtime =====
 
 func TestEval_NonBooleanEntityDitolakSaatRuntime(t *testing.T) {

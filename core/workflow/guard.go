@@ -142,9 +142,26 @@ func (n actorFunc) eval(s *evalScope) (any, error) {
 type entityField struct{ name string }
 
 func (n entityField) typ() valueType { return typeAny }
+
+// eval menolak evaluasi bila TIDAK ADA snapshot entity sama sekali (ADR-022 Keputusan 7).
+//
+// Tanpa penolakan ini guard gagal-TERBUKA pada sebagian operator: `entity.status != 'dibatalkan'`
+// bernilai true terhadap nil (nil memang tidak sama dengan string itu), sehingga transisi yang
+// seharusnya dijaga justru lolos pada dokumen yang dibatalkan. Yang error hanya operator numerik.
+// "Sebagian fail-closed" adalah bentuk terburuk: ia terlihat aman di test yang kebetulan memakai
+// perbandingan angka.
+//
+// Penolakan ditaruh DI SINI, bukan di depan Program.Eval, supaya hormat pada short-circuit
+// evaluator (lihat logicNode.eval): `actor.has_role('x') || entity.status == 'aktif'` tetap
+// bernilai true untuk pemegang role meski snapshot tak tersedia — ia memang tak perlu membaca
+// entity. Menolak di depan akan mematikan cabang yang sah itu.
+//
+// Peta KOSONG (bukan nil) tetap dievaluasi: itu pernyataan pemanggil "snapshot ada, fieldnya
+// memang tak terisi" — beda dengan "tak ada snapshot sama sekali".
 func (n entityField) eval(s *evalScope) (any, error) {
 	if s.entity == nil {
-		return nil, nil
+		return nil, fmt.Errorf(
+			"membaca entity.%s tapi snapshot entity tidak tersedia pada jalur ini", n.name)
 	}
 	return s.entity[n.name], nil
 }
@@ -245,33 +262,17 @@ func (n cmpNode) eval(s *evalScope) (any, error) {
 // Program adalah ekspresi guard yang sudah ter-compile. Eval bebas side-effect dan
 // aman dipanggil konkuren.
 type Program struct {
-	src         string
-	root        node
-	readsEntity bool
+	src  string
+	root node
 }
-
-// ReadsEntity melaporkan apakah ekspresi membaca snapshot entity (`entity.<field>`).
-// Dipakai pemanggil yang perlu tahu apakah sebuah guard menuntut snapshot.
-func (p *Program) ReadsEntity() bool { return p.readsEntity }
 
 // Eval mengevaluasi ekspresi terhadap actor + entity, menghasilkan boolean.
 // Nilai non-boolean (mis. `entity.jumlah` yang ternyata angka) → error, memenuhi
 // invariant "guard harus boolean" pada jalur yang tipenya tak diketahui saat compile.
+// Ekspresi yang MEMBACA entity sementara snapshot tak tersedia ditolak (fail-closed) — lihat
+// entityField.eval; penolakannya di sana agar cabang yang tak jadi dibaca (short-circuit) tetap
+// bisa bernilai benar.
 func (p *Program) Eval(actor port.AuthContext, entity map[string]any) (bool, error) {
-	// Snapshot entity TIDAK ADA sementara ekspresi membacanya → tolak, jangan evaluasi.
-	//
-	// Tanpa penolakan ini, guard yang membaca entity gagal-terbuka pada sebagian operator:
-	// `entity.status != 'dibatalkan'` bernilai TRUE terhadap nil (nil memang tidak sama dengan
-	// string itu), sehingga transisi yang seharusnya dijaga justru lolos pada dokumen yang
-	// dibatalkan. Yang error hanya operator numerik (`>`,`<`,…). "Sebagian fail-closed" adalah
-	// bentuk terburuk: ia terlihat aman di test yang kebetulan memakai perbandingan angka.
-	//
-	// Peta kosong (bukan nil) tetap dievaluasi: itu pernyataan pemanggil "snapshot ada, fieldnya
-	// memang tak terisi" — beda dengan "tak ada snapshot sama sekali".
-	if p.readsEntity && entity == nil {
-		return false, ErrInvalidGuard(p.src,
-			"guard membaca entity tapi snapshot entity tidak tersedia pada jalur ini")
-	}
 	v, err := p.root.eval(&evalScope{actor: actor, entity: entity})
 	if err != nil {
 		return false, ErrInvalidGuard(p.src, err.Error())
@@ -303,7 +304,7 @@ func Compile(expr string) (*Program, error) {
 	if t := root.typ(); t != typeBool && t != typeAny {
 		return nil, ErrInvalidGuard(expr, fmt.Sprintf("ekspresi guard harus menghasilkan boolean, bukan %s", t))
 	}
-	return &Program{src: expr, root: root, readsEntity: p.readsEntity}, nil
+	return &Program{src: expr, root: root}, nil
 }
 
 // ===== Lexer =====
@@ -465,10 +466,6 @@ func isIdentPart(c rune) bool {
 type parser struct {
 	toks []token
 	pos  int
-
-	// readsEntity ditandai saat ekspresi menyentuh `entity.<field>` — dipakai Program.Eval untuk
-	// menolak evaluasi tanpa snapshot (lihat Program.ReadsEntity).
-	readsEntity bool
 }
 
 func (p *parser) cur() token { return p.toks[p.pos] }
@@ -616,7 +613,6 @@ func (p *parser) parseIdent() (node, error) {
 		if root == "actor" {
 			return p.buildActorAccess(member)
 		}
-		p.readsEntity = true
 		return entityField{name: member}, nil
 	default:
 		return nil, fmt.Errorf("root tak dikenal %q (hanya 'actor' dan 'entity' yang diperbolehkan)", root)

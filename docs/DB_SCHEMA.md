@@ -639,13 +639,43 @@ use case — satu surat terdisposisi dua kali dengan hanya satu jejak di `histor
 
 Guard versi itu **jaring kedua**, bukan yang utama: ia menolak penulis yang kalah SETELAH action-nya
 terlanjur berjalan, yaitu melindungi baris instance sambil membiarkan efek bisnisnya ganda. Yang
-menutup itu adalah kunci per-instance (`pg_try_advisory_xact_lock`, ADR-022 Keputusan 5) yang
-diambil driving adapter SEBELUM action dijalankan; transisi bersamaan atas satu instance dijawab
-409, tidak diantrekan.
+menutup itu adalah kunci per-instance di `gov.workflow_instance_locks` (§4.11c, ADR-022 Keputusan 5)
+yang diambil driving adapter SEBELUM action dijalankan; transisi bersamaan atas satu instance
+dijawab 409, tidak diantrekan.
 
 `history` disimpan JSONB pada baris yang sama, bukan tabel terpisah: ia selalu dibaca UTUH bersama
 instance-nya dan tak pernah di-query lintas instance. Immutabilitasnya dijaga jalur tulis (hanya
 append) + `gov.audit_logs`, bukan constraint DDL.
+
+### 4.11c `gov.workflow_instance_locks` — kunci transisi ber-sewa *(A, `core/workflow/005`)*
+
+| Kolom | Tipe | Catatan |
+|---|---|---|
+| `instance_id` | UUID PRIMARY KEY | instance yang sedang bertransisi |
+| `token` | UUID NOT NULL | pemegang saat ini; release hanya oleh pemegang (`WHERE token = $n`) |
+| `locked_until` | TIMESTAMPTZ NOT NULL | batas sewa; ditetapkan & dibandingkan dengan jam DATABASE (`now()`) |
+
+Index: `idx_wfinst_lock_expiry (locked_until)` — sapuan kunci kedaluwarsa; jalur normal menghapus
+lewat primary key.
+
+Kunci ini **baris, bukan sesi**. Bentuk pertama PR-W4a memakai `pg_try_advisory_xact_lock` di
+transaksi yang ditahan selama transisi berjalan — benar secara saling-meniadakan, salah secara
+liveness: action yang berjalan di bawah kunci memakai POOL YANG SAMA (satu pool per tenant DB),
+jadi setiap transisi menyandera satu koneksi selama use case bekerja. Transisi bersamaan sebanyak
+ukuran pool sudah cukup untuk menggantungkan SELURUH request tenant itu, termasuk yang tak
+menyentuh workflow. Di bentuk sekarang nol koneksi ditahan: acquire dan release masing-masing satu
+pernyataan singkat.
+
+Acquire atomik lewat `INSERT .. ON CONFLICT (instance_id) DO UPDATE ... WHERE locked_until < now()
+RETURNING token` — bentuk yang sama dengan `gov.job_locks` (§4.19). Yang kalah balapan
+menerima nol baris (⇒ 409), bukan antrean.
+
+`locked_until` adalah pagar terhadap proses yang MATI memegang kunci: baris tak ikut mati bersama
+koneksinya seperti advisory lock, jadi tanpa batas sewa satu instance bisa tersandera selamanya.
+Konsekuensinya diterima sadar dan berarah dua: sewa yang habis SELAGI action masih berjalan membuka
+kembali celah transisi ganda, karena itu TTL-nya (`instanceLockTTL`, 5 menit) dipilih jauh di atas
+durasi request yang wajar, dan guard `version` pada `gov.workflow_instances` tetap menjadi jaring
+terakhir.
 
 ### 4.12 `gov.tenant_configs` — config ber-scope & ber-versi *(A, `core/config/001`+`002`)*
 
@@ -984,6 +1014,7 @@ user_profiles ──(user_id, tanpa FK)──< user_role_assignments >── ten
      │
 workflow_definitions (workflow_id, version)   ◁── tenant_workflow_configs (slot → template_id)
      └──(definition_id+version, tanpa FK)──< workflow_instances (entity_id, current_state, history)
+                                                   └──(instance_id, tanpa FK)── workflow_instance_locks (sewa)
 tenant_configs (scope: tenant/unit/resource, ber-versi)
 tenant_custom_fields · tenant_capability_overrides
 scheduled_jobs ─< job_runs · job_locks

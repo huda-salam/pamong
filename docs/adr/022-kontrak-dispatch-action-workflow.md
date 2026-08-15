@@ -106,9 +106,21 @@ adapter Postgres-nya.
 
 **5. Transisi DIKUNCI per instance, bukan sekadar ber-optimistic-lock.**
 
-`InstanceStore.TryLockInstance` (Postgres: `pg_try_advisory_xact_lock` di transaksi yang dipegang
-selama transisi) diambil SEBELUM instance dibaca dan action dijalankan. Tidak menunggu: instance
-yang sedang bertransisi menjawab `409`.
+`InstanceStore.TryLockInstance` diambil SEBELUM instance dibaca dan action dijalankan. Tidak
+menunggu: instance yang sedang bertransisi menjawab `409`.
+
+Kuncinya adalah **baris ber-sewa** (`gov.workflow_instance_locks`: INSERT .. ON CONFLICT ber-guard
+kedaluwarsa, bentuk yang sama dengan `gov.job_locks`), **bukan** lock tingkat sesi. Bentuk pertama
+memakai `pg_try_advisory_xact_lock` di transaksi yang ditahan selama transisi; itu benar secara
+saling-meniadakan tapi salah secara liveness, dan salahnya baru terlihat saat dirakit: action yang
+berjalan di bawah kunci memakai POOL YANG SAMA (satu pool per tenant DB), jadi setiap transisi
+menyandera satu koneksi selama use case bekerja — transisi bersamaan sebanyak ukuran pool sudah
+cukup untuk menggantungkan SELURUH request tenant itu, termasuk yang tak menyentuh workflow.
+
+Harga yang dibayar sewa: kunci tak lagi ikut mati bersama koneksinya, jadi ia butuh batas waktu
+(`instanceLockTTL`, 5 menit) supaya proses yang mati di tengah transisi tak menyandera instance
+selamanya. TTL dipilih jauh di atas durasi request yang wajar — sewa yang habis selagi action masih
+berjalan akan membuka kembali celah transisi ganda yang kunci ini cegah.
 
 Optimistic locking pada penulisan SAJA tidak menutup ini, dan itu kekeliruan yang mudah dibuat
 (termasuk sebagai perbaikan setengah jalan: "klaim" berupa write ber-guard versi sebelum action —
@@ -133,8 +145,11 @@ definisi (self-loop terkontrol), bukan dengan instance kedua.
 
 **7. Guard yang membaca entity FAIL-CLOSED tanpa snapshot.**
 
-`Program.Eval` menolak ekspresi ber-`entity.<field>` bila snapshot entity tidak disediakan sama
-sekali (nil map). Sebelumnya penolakan itu hanya terjadi pada operator numerik: `entity.status !=
+Pembacaan `entity.<field>` gagal bila snapshot entity tidak disediakan sama sekali (nil map).
+Penolakan itu ditegakkan di TITIK BACA (`entityField.eval`), bukan di depan `Program.Eval`
+berdasar "ekspresi ini menyentuh entity di suatu tempat": evaluator ber-short-circuit, jadi
+menolak di depan akan ikut mematikan cabang yang sah — `actor.has_role('x') || entity.status ==
+'aktif'` masih punya jawaban benar untuk pemegang role tanpa snapshot apa pun. Sebelumnya penolakan itu hanya terjadi pada operator numerik: `entity.status !=
 'dibatalkan'` bernilai TRUE terhadap nil, sehingga guard yang justru dimaksudkan menjaga dokumen
 dibatalkan malah meloloskan transisinya. "Fail-closed sebagian" adalah bentuk terburuk — ia
 terlihat aman di test yang kebetulan membandingkan angka. Peta KOSONG tetap dievaluasi: itu
@@ -156,9 +171,10 @@ diperlakukan sebagai "belum ada" — satu error koneksi sesaat tak boleh berarti
   `ActionDispatcher.Dispatch` (+`params`). Pemakai `Dispatch` di repo ini seluruhnya test/stub;
   pemakai `RegisterAction` hanya `modules/surat_masuk`. Biaya ditanggung sekarang, saat modul
   bisnis masih satu.
-- **Setiap transisi memegang satu koneksi tambahan** selama action berjalan (transaksi pemegang
-  advisory lock). Itu harga saling-meniadakan yang benar; `try` (bukan `lock`) menjaga lonjakan
-  request pada satu instance tidak berubah menjadi habisnya pool.
+- **Kunci transisi tak menahan koneksi** (baris ber-sewa, bukan transaksi), tapi ia menambah satu
+  tabel + dua pernyataan singkat per transisi, dan memperkenalkan kelas kegagalan yang tak dimiliki
+  advisory lock: sewa yang kedaluwarsa selagi action masih berjalan. Guard versi pada `Save`
+  menjadi jaring terakhir di jalur itu.
 - **Otorisasi tingkat ENTITAS belum ada.** `workflow:instance:*` berlaku se-tenant lintas modul:
   pemegangnya bisa memulai alur atas entitas apa pun dan membaca riwayat instance mana pun di
   tenantnya (termasuk komentar & id aktor). Menutupnya menuntut seam yang sama dengan snapshot
@@ -172,10 +188,14 @@ diperlakukan sebagai "belum ada" — satu error koneksi sesaat tak boleh berarti
   struct tipis di atas pool yang memang sudah per-tenant; yang mahal (pool) tak digandakan.
 - **Definisi workflow tetap di tenant DB**, jadi seed YAML modul di-load per tenant saat
   tumpukan tenant itu pertama dibangun (idempoten — `SeedYAML` melewati ID yang sudah ada).
-- **Cache tumpukan tak punya invalidasi.** Definisi & pilihan template dibaca dari DB pada setiap
-  Start/Execute (store tidak meng-cache isi), jadi yang di-cache hanya perakitan — perubahan
-  definisi/template tetap langsung terlihat. Yang TIDAK ikut adalah tenant yang DB-nya dipindah
-  saat proses hidup (naik tier); itu sudah menuntut restart pada jalur lain juga.
+- **Tumpukan dirakit ulang tiap permintaan, tidak di-cache.** `TenantConnManager.Tenant()` membaca
+  `id.tenant_registry` pada SETIAP panggilan dan mengunci pool pada (host, nama DB), jadi tenant
+  yang dipindah ke server DB sendiri (Tier 2/3 — operasi yang memang dirancang tanpa perubahan
+  kode) langsung diikuti seluruh konsumen. Tumpukan yang di-cache per tenant akan tertinggal:
+  ia terus menulis instance & transisi ke DB LAMA sampai proses di-restart, tanpa satu pun error.
+  Yang di-cache karenanya hanya penyiapan DB (ensure schema + seed), ber-kunci POOL — bukan
+  tenant — sehingga DB baru ikut disiapkan saat tenant pindah. Perakitannya sendiri mendekati
+  gratis: store adalah struct tipis di atas pool.
 
 ## Alternatif yang dipertimbangkan
 
