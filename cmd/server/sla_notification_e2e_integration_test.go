@@ -248,7 +248,7 @@ func TestE2E_SLAEskalasiDanNotifikasiTransisi(t *testing.T) {
 
 	notifRuntimes := newNotificationFactory(connMgr, cryptoSvc, testMessageSender(t), metrics, logger)
 	sched, err := wireScheduler(ctx, centralPool, connMgr, notifRuntimes,
-		20*time.Millisecond, time.Minute, logger)
+		20*time.Millisecond, time.Minute, metrics, logger)
 	if err != nil {
 		t.Fatalf("wireScheduler: %v", err)
 	}
@@ -267,6 +267,14 @@ func TestE2E_SLAEskalasiDanNotifikasiTransisi(t *testing.T) {
 	// tidak diseed: default globalnya ditanam seedFrameworkTemplates saat skema notifikasi tenant
 	// disiapkan, dan test ini ikut membuktikan seeder itu bekerja. Menyeednya di sini akan
 	// menutupi kegagalan seeder produksi — eskalasi tetap hijau di test, gagal di instalasi baru.
+	//
+	// EnsureSchema dipanggil eksplisit di sini karena tumpukan notifikasi kini dirakit TERTUNDA
+	// (baru saat ada transisi ber-`notify:`), jadi tabelnya belum ada pada titik ini. Sengaja tidak
+	// menandai pool sebagai "prepared" di factory: seedFrameworkTemplates tetap akan berjalan lewat
+	// jalur produksi saat eskalasi/notifikasi pertama, sehingga test ini tetap membuktikannya.
+	if err := infraNotif.EnsureSchema(ctx, tenantPool); err != nil {
+		t.Fatalf("ensure schema notifikasi: %v", err)
+	}
 	notifTemplates := infraNotif.NewDBTemplateStore(tenantPool)
 	if err := notifTemplates.Upsert(ctx, coreNotif.Template{
 		TenantID: tenantID, Key: "surat_selesai", Locale: "id",

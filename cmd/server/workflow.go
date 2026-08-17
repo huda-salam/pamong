@@ -115,6 +115,7 @@ func (f *workflowFactory) RuntimeFor(ctx context.Context, tenantID string) (gate
 	if f.deadlines != nil {
 		opts = append(opts, coreWf.WithDeadlines(f.deadlines))
 	}
+
 	if f.notifs != nil {
 		// Notifier per-tenant: transisi ber-`notify:` mengirim ke inbox tenant INI. Dirakit di
 		// sini (bukan sekali saat boot) karena inbox-nya hidup di tenant DB — alasan yang sama
@@ -123,11 +124,10 @@ func (f *workflowFactory) RuntimeFor(ctx context.Context, tenantID string) (gate
 		// `pool` diteruskan, bukan dibiarkan di-resolve ulang dari tenantID: TenantConnManager
 		// membaca id.tenant_registry tiap panggilan, jadi resolve kedua = satu query tambahan ke
 		// DB sentral pada SETIAP request workflow, termasuk transisi tanpa `notify:` sama sekali.
-		notifier, err := f.notifs.TransitionNotifierFor(ctx, tenantID, pool)
-		if err != nil {
-			return gatewaywf.Runtime{}, fmt.Errorf("notifier transisi tenant %q: %w", tenantID, err)
-		}
-		opts = append(opts, coreWf.WithNotifier(notifier))
+		// Perakitannya TERTUNDA sampai ada transisi ber-`notify:` (lihat TransitionNotifierFor):
+		// GET riwayat instance tak boleh ikut membayar ensure-schema notifikasi, dan DB notifikasi
+		// yang bermasalah tak boleh menjatuhkan seluruh endpoint workflow tenant ini.
+		opts = append(opts, coreWf.WithNotifier(f.notifs.TransitionNotifierFor(tenantID, pool)))
 	}
 
 	return gatewaywf.Runtime{

@@ -329,7 +329,7 @@ func run() error {
 		return fmt.Errorf("pool DB sentral untuk scheduler (ADR-023): %w", err)
 	}
 	sched, err := wireScheduler(ctx, centralPool, connMgr, notifRuntimes,
-		cfg.Scheduler.Interval(), cfg.Scheduler.LockTTL(), logger)
+		cfg.Scheduler.Interval(), cfg.Scheduler.LockTTL(), metrics, logger)
 	if err != nil {
 		return fmt.Errorf("scheduler: %w", err)
 	}

@@ -78,6 +78,29 @@ func (s *DBTemplateStore) Upsert(ctx context.Context, t coreNotif.Template) erro
 	return nil
 }
 
+// InsertIfAbsent menyisipkan template hanya bila (tenant, key, locale) BELUM ada, mengembalikan
+// true bila benar-benar menyisipkan. Dipakai jalur SEED (default framework), bukan jalur admin.
+//
+// Bedanya dengan Upsert bukan gaya: seeder berjalan di SETIAP boot proses. Upsert akan
+// mengembalikan template ke bunyi bawaan setiap kali server restart — menghapus suntingan
+// operator tanpa jejak dan tanpa cara menahannya. Ini pola yang sama dengan coreWf.SeedIfAbsent
+// untuk definisi workflow: file/kode adalah BASELINE, DB adalah yang aktif.
+func (s *DBTemplateStore) InsertIfAbsent(ctx context.Context, t coreNotif.Template) (bool, error) {
+	if t.Key == "" || t.Body == "" {
+		return false, coreNotif.ErrInvalidTemplate("key dan body template wajib diisi")
+	}
+	// gov:raw-ok reason=seed-template-if-absent query=notification-template-insert-if-absent
+	tag, err := s.pool.Exec(ctx, `
+		INSERT INTO gov.notification_templates (tenant_id, key, locale, subject, body, updated_at)
+		VALUES ($1, $2, $3, $4, $5, now())
+		ON CONFLICT ON CONSTRAINT uq_notif_template DO NOTHING`,
+		t.TenantID, t.Key, t.LocaleOrDefault(), t.Subject, t.Body)
+	if err != nil {
+		return false, fmt.Errorf("seed notification_template: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // --- DBInAppInbox ---
 
 // DBInAppInbox mengimplementasi coreNotif.InAppInbox di atas Postgres.

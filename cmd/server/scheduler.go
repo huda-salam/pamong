@@ -37,8 +37,10 @@ const EscalationTemplateKey = "workflow.sla.escalation"
 // schedulerStack adalah hasil perakitan scheduler yang dibutuhkan run(): runner untuk dijalankan
 // & ditunggu saat shutdown, dan deadlines untuk dipasang ke setiap engine workflow per tenant.
 type schedulerStack struct {
-	runner    *scheduler.Runner
-	deadlines *infrawf.SchedulerDeadlines
+	runner *scheduler.Runner
+	// deadlines dibungkus tolerantDeadlines — tipenya port, bukan adapter konkret, supaya
+	// pembungkus itu tak bisa dilewati tanpa mengubah tipe di sini.
+	deadlines coreWf.DeadlineScheduler
 }
 
 // wireScheduler merakit store+locker sentral, mendaftarkan handler job, dan mengembalikan runner
@@ -49,7 +51,8 @@ type schedulerStack struct {
 // (`pamongctl migrate --central`); memberi pool tenant di sini akan "berhasil" dan menghasilkan
 // scheduler yang hanya melihat jadwal satu tenant.
 func wireScheduler(ctx context.Context, centralPool *db.Pool, pools tenantPoolProvider,
-	notifs *notificationFactory, interval, lockTTL time.Duration, logger port.Logger) (*schedulerStack, error) {
+	notifs *notificationFactory, interval, lockTTL time.Duration,
+	metrics port.MetricsPort, logger port.Logger) (*schedulerStack, error) {
 
 	store := infrasched.NewDBJobStore(centralPool)
 	if err := store.EnsureSchema(ctx); err != nil {
@@ -73,9 +76,66 @@ func wireScheduler(ctx context.Context, centralPool *db.Pool, pools tenantPoolPr
 		port.F("job", registry.Keys()))
 
 	return &schedulerStack{
-		runner:    runner,
-		deadlines: infrawf.NewSchedulerDeadlines(runner, store),
+		runner: runner,
+		deadlines: &tolerantDeadlines{
+			inner:   infrawf.NewSchedulerDeadlines(runner, store),
+			metrics: metrics,
+			logger:  logger,
+		},
 	}, nil
+}
+
+// tolerantDeadlines mencatat kegagalan penjadwalan/pembatalan deadline SLA lalu MENGEMBALIKAN nil,
+// dengan alasan yang persis sama dengan tolerantTransitionNotifier — dan disatukan justru karena
+// keduanya mudah diperlakukan berbeda tanpa sengaja.
+//
+// Engine memanggil cancelSLA/scheduleSLA SESUDAH transisi otoritatif, dan handler menyimpan
+// instance sebelum mengembalikan error. Jadi error dari sini akan merespons 5xx atas transisi yang
+// BERHASIL, dan respons wajar klien — retry — berbahaya karena aksi bisnisnya sudah dijalankan.
+//
+// Penting untuk jujur soal apa yang HILANG, karena di sini taruhannya lebih besar daripada
+// notifikasi: deadline yang gagal dijadwalkan berarti SLA state itu tak akan pernah mengeskalasi.
+// Tapi 5xx tidak memulihkannya juga — deadline sama-sama hilang di kedua pilihan; yang membedakan
+// hanya apakah kliennya ikut dibohongi. Metrik di bawah adalah cara melihat kehilangan itu, dan
+// pemulihan yang sesungguhnya (rekonsiliasi deadline dari state instance) dicatat di backlog.
+//
+// CancelDeadline lebih ringan: kegagalannya sudah punya backstop di fire-time — EscalationCoordinator
+// meng-no-op-kan deadline yang instance-nya sudah pindah state.
+type tolerantDeadlines struct {
+	inner   coreWf.DeadlineScheduler
+	metrics port.MetricsPort
+	logger  port.Logger
+}
+
+var _ coreWf.DeadlineScheduler = (*tolerantDeadlines)(nil)
+
+func (d *tolerantDeadlines) ScheduleDeadline(ctx context.Context, dl coreWf.Deadline) error {
+	if err := d.inner.ScheduleDeadline(ctx, dl); err != nil {
+		d.laporkan(ctx, "schedule", dl.Escalation.TenantID, dl.Key, err,
+			"deadline SLA GAGAL dijadwalkan; transisi tetap tersimpan tapi state ini tak akan mengeskalasi")
+	}
+	return nil
+}
+
+func (d *tolerantDeadlines) CancelDeadline(ctx context.Context, key string) error {
+	if err := d.inner.CancelDeadline(ctx, key); err != nil {
+		d.laporkan(ctx, "cancel", "", key, err,
+			"pembatalan deadline SLA gagal; backstop guard race di fire-time yang menutupnya")
+	}
+	return nil
+}
+
+func (d *tolerantDeadlines) laporkan(ctx context.Context, op, tenantID, key string, err error, pesan string) {
+	if d.metrics != nil {
+		d.metrics.IncrCounter("workflow_sla_deadline_failed_total", map[string]string{
+			"op": op, "tenant": tenantID,
+		})
+	}
+	if d.logger != nil {
+		d.logger.Error(ctx, pesan,
+			port.F("op", op), port.F("tenant", tenantID),
+			port.F("deadline_key", key), port.F("err", err.Error()))
+	}
 }
 
 // escalationJob adalah handler EscalationJobKey pada server hidup. Ia me-resolve tumpukan tenant
@@ -97,7 +157,9 @@ func escalationJob(pools tenantPoolProvider, notifs *notificationFactory) schedu
 		if err != nil {
 			return fmt.Errorf("pool tenant %q: %w", tenantID, err)
 		}
-		notifier, err := notifs.ForTenant(ctx, tenantID)
+		// forPool, bukan ForTenant: pool tenant ini SUDAH di-resolve sebaris di atas, dan
+		// TenantConnManager.Tenant membaca id.tenant_registry pada setiap panggilan.
+		notifier, err := notifs.forPool(ctx, tenantID, pool)
 		if err != nil {
 			return fmt.Errorf("tumpukan notifikasi tenant %q: %w", tenantID, err)
 		}

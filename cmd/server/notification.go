@@ -135,20 +135,27 @@ func (f *notificationFactory) prepare(ctx context.Context, tenantID string, pool
 	return nil
 }
 
-// TransitionNotifierFor merakit notifier transisi untuk satu tenant, dari pool yang SUDAH
-// di-resolve pemanggil, dibungkus agar kegagalan notifikasi tidak menggagalkan request.
-func (f *notificationFactory) TransitionNotifierFor(ctx context.Context, tenantID string,
-	pool *db.Pool) (coreWf.TransitionNotifier, error) {
-
-	notifier, err := f.forPool(ctx, tenantID, pool)
-	if err != nil {
-		return nil, err
-	}
+// TransitionNotifierFor mengembalikan notifier transisi untuk satu tenant, di atas pool yang SUDAH
+// di-resolve pemanggil. Tak mengembalikan error, dan perakitannya TERTUNDA sampai ada transisi
+// yang benar-benar ber-`notify:`.
+//
+// Keduanya disengaja. Merakit di muka berarti ensure-schema + seed notifikasi ikut dijalankan
+// pada SETIAP pembangunan runtime workflow — termasuk untuk GET riwayat instance — dan
+// kegagalannya (DB notifikasi bermasalah) akan menjatuhkan SELURUH endpoint workflow tenant itu,
+// yang read-only sekalipun. Notifikasi adalah efek samping satu transisi; ia tak boleh menjadi
+// syarat hidup permukaan yang tak memakainya.
+func (f *notificationFactory) TransitionNotifierFor(tenantID string, pool *db.Pool) coreWf.TransitionNotifier {
 	return &tolerantTransitionNotifier{
-		inner:   infrawf.NewNotifierTransition(notifier, coreNotif.ChannelInApp),
+		build: func(ctx context.Context) (coreWf.TransitionNotifier, error) {
+			n, err := f.forPool(ctx, tenantID, pool)
+			if err != nil {
+				return nil, err
+			}
+			return infrawf.NewNotifierTransition(n, coreNotif.ChannelInApp), nil
+		},
 		metrics: f.metrics,
 		logger:  f.logger,
-	}, nil
+	}
 }
 
 // tolerantTransitionNotifier mencatat kegagalan notifikasi transisi lalu MENGEMBALIKAN nil.
@@ -172,7 +179,11 @@ func (f *notificationFactory) TransitionNotifierFor(ctx context.Context, tenantI
 // Ketika outbox punya penulis produksi, retry asinkron yang sesungguhnya menggantikan pembungkus
 // ini dan errornya kembali bermakna bagi pemanggil.
 type tolerantTransitionNotifier struct {
-	inner   coreWf.TransitionNotifier
+	// build merakit notifier sebenarnya saat pertama dibutuhkan. Kegagalan perakitan
+	// diperlakukan SAMA dengan kegagalan pengiriman — keduanya sama-sama tak boleh menjatuhkan
+	// transisi yang sudah tersimpan.
+	build   func(context.Context) (coreWf.TransitionNotifier, error)
+	inner   coreWf.TransitionNotifier // dipakai langsung bila diset (test); jika nil, dari build
 	metrics port.MetricsPort
 	logger  port.Logger
 }
@@ -182,10 +193,27 @@ var _ coreWf.TransitionNotifier = (*tolerantTransitionNotifier)(nil)
 func (n *tolerantTransitionNotifier) NotifyTransition(ctx context.Context, tenantID string,
 	spec coreWf.NotifySpec, inst coreWf.WorkflowInstance) error {
 
-	err := n.inner.NotifyTransition(ctx, tenantID, spec, inst)
+	inner := n.inner
+	if inner == nil {
+		var err error
+		if inner, err = n.build(ctx); err != nil {
+			n.laporkan(ctx, tenantID, spec, inst, err)
+			return nil
+		}
+	}
+	err := inner.NotifyTransition(ctx, tenantID, spec, inst)
 	if err == nil {
 		return nil
 	}
+	n.laporkan(ctx, tenantID, spec, inst, err)
+	return nil
+}
+
+// laporkan mencatat kegagalan notifikasi ke metrik & log — satu-satunya jejak yang tersisa, karena
+// error-nya sengaja tidak dikembalikan ke pemanggil.
+func (n *tolerantTransitionNotifier) laporkan(ctx context.Context, tenantID string,
+	spec coreWf.NotifySpec, inst coreWf.WorkflowInstance, err error) {
+
 	if n.metrics != nil {
 		n.metrics.IncrCounter("workflow_transition_notify_failed_total", map[string]string{
 			"tenant":   tenantID,
@@ -202,7 +230,6 @@ func (n *tolerantTransitionNotifier) NotifyTransition(ctx context.Context, tenan
 			port.F("role", spec.ToRole),
 			port.F("err", err.Error()))
 	}
-	return nil
 }
 
 // seedFrameworkTemplates menanam template notifikasi MILIK FRAMEWORK sebagai default GLOBAL
@@ -229,7 +256,10 @@ func seedFrameworkTemplates(ctx context.Context, pool *db.Pool) error {
 			"dan dieskalasikan kepada {{.role}}.",
 	}}
 	for _, t := range defaults {
-		if err := store.Upsert(ctx, t); err != nil {
+		// InsertIfAbsent, BUKAN Upsert: seeder ini jalan di setiap boot proses. Upsert akan
+		// mengembalikan template ke bunyi bawaan tiap restart — menghapus suntingan operator
+		// tanpa jejak. Pola yang sama dengan coreWf.SeedIfAbsent untuk definisi workflow.
+		if _, err := store.InsertIfAbsent(ctx, t); err != nil {
 			return err
 		}
 	}

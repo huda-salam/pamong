@@ -1281,6 +1281,18 @@ tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
     per request workflow (`TenantConnManager.Tenant` membaca registry tiap panggilan).
     Temuan (2) diverifikasi dua arah lewat mutasi; template eskalasi framework kini diseed
     (`seedFrameworkTemplates`) dan e2e membuktikannya dengan tidak menyeed sendiri.
+  - Perbaikan dari `/code-review` **putaran ke-2** (5 temuan) — pola yang sudah berulang di repo
+    ini: putaran pertama tak cukup, dan tiga dari lima adalah konsekuensi perbaikan putaran
+    pertama. (a) `tolerantDeadlines` — putaran-1 menoleransi kegagalan NOTIFIKASI tapi membiarkan
+    kegagalan penjadwalan SLA menjatuhkan transisi, padahal engine memanggil keduanya di titik yang
+    sama; (b) `seedFrameworkTemplates` memakai `InsertIfAbsent`, bukan `Upsert` — seeder jalan tiap
+    boot, jadi Upsert mengembalikan template ke bunyi bawaan setiap restart dan menghapus suntingan
+    operator (preseden repo: `coreWf.SeedIfAbsent`); (c) notifier dirakit TERTUNDA sampai ada
+    transisi ber-`notify:` — perakitan di muka membuat DB notifikasi yang bermasalah menjatuhkan
+    SELURUH endpoint workflow tenant itu, termasuk GET riwayat; (d) `escalationJob` tak lagi
+    me-resolve pool tenant dua kali; (e) komentar basi "kini dormant" di `gateway/workflow/handler.go`.
+    Dua temuan lain sengaja TIDAK ditambal di sini karena menuntut kebijakan retry/rekonsiliasi —
+    lihat backlog.
   - Menutup `DEFERRED(PR-W4b)` di `cmd/server/workflow.go`.
 
 - **PR-W4c** Seam entitas: snapshot guard + otorisasi tingkat entitas ← W4a
@@ -1652,6 +1664,26 @@ rule linter `markerref`).
     `tokens_valid_after` yang juga belum diambil. Dijadwalkan ulang eksplisit ke
     **Phase-5.0+ / bersama use case revoke** — lihat butir "[Phase-2.4] Revocation
     per-person" di bawah. Ini penjadwalan ulang sadar, bukan kelalaian yang diperpanjang.
+
+- **[Phase-5.x] Job yang GAGAL tak pernah dicoba ulang — eskalasi SLA bisa hilang permanen.**
+  Ditemukan `/code-review` putaran-2 PR-W4b. `Runner.runOnce` memanggil `advance` tanpa syarat, dan
+  `advance` menonaktifkan job one-shot terlepas dari statusnya. Jadi satu kegagalan SEMENTARA di
+  fire-time (tenant DB sedang tak terjangkau, template belum ada) menjatuhkan eskalasi SLA untuk
+  SELAMANYA; yang tersisa hanya baris gagal di `gov.job_runs`, dan `Replay` belum punya permukaan
+  ter-wire. Sengaja TIDAK diperbaiki di PR-W4b: perbaikan yang benar menuntut kebijakan retry
+  (backoff, batas percobaan — `JobRun.Attempt` sudah ada tapi selalu 1), dan "coba ulang tiap tick
+  selamanya" akan menghantam DB tiap 30 detik untuk job yang rusak permanen. Itu keputusan desain,
+  bukan tambalan wiring. Kerjakan bersama permukaan admin scheduler (retry/replay manual) atau saat
+  outbox punya penulis produksi — keduanya butuh kebijakan retry yang sama.
+
+- **[Phase-5.x] Deadline SLA yang gagal dijadwalkan tak punya jalur pemulihan.** Konsekuensi sadar
+  dari `tolerantDeadlines` (PR-W4b): kegagalan `ScheduleDeadline` dicatat metrik
+  `workflow_sla_deadline_failed_total` + log, tapi state itu tak akan pernah mengeskalasi.
+  Mempropagasi error tidak memulihkannya juga (deadline sama-sama hilang, hanya klien ikut
+  dibohongi) — pemulihan yang sesungguhnya adalah REKONSILIASI: job periodik yang membandingkan
+  instance ber-state SLA di tiap tenant terhadap `gov.scheduled_jobs` sentral lalu menjadwalkan
+  yang hilang. Itu job scheduler biasa; bisa ditulis begitu ada kebutuhan nyata (mis. setelah
+  metrik di atas benar-benar bergerak).
 
 - **[Phase-5.x] Template notifikasi MILIK MODUL tak punya jalur seeding.** Ditemukan saat
   merakit PR-W4b. `gov.notification_templates` kini diisi seeder framework untuk template milik

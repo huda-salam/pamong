@@ -208,8 +208,12 @@ func (h *Handler) Transition(w http.ResponseWriter, r *http.Request) {
 	// disimpan), TAPI langkah sesudah transisi otoritatif (penjadwalan SLA, notifikasi) sengaja
 	// mempropagasi error TANPA membatalkannya. Membuang instance di jalur itu berarti kehilangan
 	// transisi yang efek bisnisnya sudah terjadi, dan membiarkan action-nya dijalankan ulang.
-	// Kini dormant (deadlines & notifier belum dipasang, PR-W4b) — ditutup sekarang justru karena
-	// saat W4b memasangnya, tak ada yang akan gagal untuk mengingatkan.
+	// Sejak PR-W4b keduanya BENAR-BENAR terpasang, jadi cabang ini bukan lagi jaga-jaga. Yang
+	// tersisa dari mereka di composition root justru dibungkus agar tak mengembalikan error sama
+	// sekali (tolerantDeadlines / tolerantTransitionNotifier): merespons 5xx atas transisi yang
+	// sudah tersimpan adalah kebohongan yang retry-nya berbahaya. Cabang ini tetap penting untuk
+	// pembungkus yang KELAK memilih mempropagasi — dan untuk kegagalan Execute lain sesudah
+	// transisi otoritatif.
 	berubah := inst.CurrentState != stateSebelum || len(inst.History) != riwayatSebelum
 	if execErr != nil && !berubah {
 		gateway.WriteError(w, execErr)
