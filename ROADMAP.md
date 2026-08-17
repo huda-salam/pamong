@@ -1270,6 +1270,17 @@ tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
     `RunDue` → eskalasi ke inbox pemegang role KONKRET ✅ (dengan kontrol negatif: inbox aktor &
     agendaris tetap kosong); transisi `selesai` → notify agendaris ✅; runner berhenti bersih ✅.
     Sifat shutdown & tenant-ctx diverifikasi DUA ARAH lewat mutasi (`core/scheduler/runner_tenant_test.go`).
+  - Perbaikan dari `/code-review high` (4 temuan, semua ditindak): (1) kegagalan notifikasi
+    transisi tak lagi menjatuhkan request — pada titik itu transisi sudah tersimpan handler, jadi
+    5xx adalah kebohongan yang retry-nya berbahaya (`tolerantTransitionNotifier`); (2) `Start`
+    kini menjalankan siklus dengan `context.WithoutCancel` — meneruskan ctx shutdown apa adanya
+    ikut membatalkan PEMBUKUAN sesudah handler (RecordRun/advance/Release), sehingga job yang
+    efeknya sudah terjadi tampak tak pernah jalan lalu diulang setelah restart; (3) komentar yang
+    menunjuk `gov.notification_deliveries` diperbaiki — `Hub.Send` sengaja tak mencatat kegagalan
+    pra-dispatch, jejaknya di baris gagal `gov.job_runs`; (4) pool tenant tak di-resolve dua kali
+    per request workflow (`TenantConnManager.Tenant` membaca registry tiap panggilan).
+    Temuan (2) diverifikasi dua arah lewat mutasi; template eskalasi framework kini diseed
+    (`seedFrameworkTemplates`) dan e2e membuktikannya dengan tidak menyeed sendiri.
   - Menutup `DEFERRED(PR-W4b)` di `cmd/server/workflow.go`.
 
 - **PR-W4c** Seam entitas: snapshot guard + otorisasi tingkat entitas ← W4a
@@ -1641,6 +1652,19 @@ rule linter `markerref`).
     `tokens_valid_after` yang juga belum diambil. Dijadwalkan ulang eksplisit ke
     **Phase-5.0+ / bersama use case revoke** — lihat butir "[Phase-2.4] Revocation
     per-person" di bawah. Ini penjadwalan ulang sadar, bukan kelalaian yang diperpanjang.
+
+- **[Phase-5.x] Template notifikasi MILIK MODUL tak punya jalur seeding.** Ditemukan saat
+  merakit PR-W4b. `gov.notification_templates` kini diisi seeder framework untuk template milik
+  FRAMEWORK saja (`seedFrameworkTemplates` di `cmd/server/notification.go`, default global
+  `tenant_id=''`). Template yang dirujuk definisi workflow MODUL — mis. `surat_selesai` di
+  `modules/surat_masuk/workflows/disposisi.yaml` — tidak diseed siapa pun: `domain.Manifest` tak
+  mengenal notifikasi sama sekali. Akibatnya `notify:` modul selalu `ErrTemplateNotFound` pada
+  instalasi baru. Ditutup SEMENTARA oleh `tolerantTransitionNotifier` (kegagalan notifikasi dicatat
+  log+metrik, tidak menjatuhkan transisi yang sudah tersimpan) — jadi bukan kegagalan diam, tapi
+  juga belum berfungsi. Perbaikan yang benar: tambahkan `Notifications []NotificationTemplateRef`
+  ke manifest modul (pola sama dengan `Workflows []WorkflowRef` ter-embed) lalu seed bersama seed
+  definisi workflow di `workflowFactory.prepare`. Kerjakan bersama PR-W5 (yang juga menyentuh
+  jalur seed/customization) atau saat modul kedua butuh notifikasi.
 
 - **[infra/db] Flake langka `TestEnsureSchemaLocked_BootParalel_TakBalapan`** (teramati sekali,
   18 Agu 2026, saat run `./...` penuh): 1 dari 12 ensure paralel gagal dengan

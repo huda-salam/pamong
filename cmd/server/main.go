@@ -318,7 +318,7 @@ func run() error {
 	// Tumpukan notifikasi per-tenant (PR-W4b): dipakai DUA jalur — notifikasi transisi (dari
 	// engine, di dalam request) dan eskalasi SLA (dari scheduler, di luar request). Satu factory
 	// untuk keduanya agar keduanya mendarat di inbox yang sama.
-	notifRuntimes := newNotificationFactory(connMgr, cryptoSvc, messageSender, logger)
+	notifRuntimes := newNotificationFactory(connMgr, cryptoSvc, messageSender, metrics, logger)
 
 	// Scheduler (PR-W4b, ADR-023): tabel jadwal hidup di DB SENTRAL, jadi satu loop proses-lebar
 	// melayani seluruh tenant. Pool sentral diminta EKSPLISIT di sini — bukan lewat connMgr di

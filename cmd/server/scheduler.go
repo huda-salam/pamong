@@ -23,9 +23,15 @@ import (
 	"github.com/huda-salam/pamong/port"
 )
 
-// EscalationTemplateKey adalah key template notifikasi yang dipakai eskalasi SLA. Tenant yang
-// belum menyeed template ini akan gagal mengirim eskalasi — kegagalan yang tercatat di
-// gov.notification_deliveries, bukan yang diam.
+// EscalationTemplateKey adalah key template notifikasi yang dipakai eskalasi SLA. Default
+// GLOBAL-nya ditanam framework saat skema notifikasi tenant disiapkan (seedFrameworkTemplates),
+// jadi eskalasi bekerja pada instalasi baru tanpa tenant menyeed apa pun; tenant tetap bisa
+// meng-override dengan baris ber-tenant sendiri.
+//
+// Bila template tetap tak ada, jejaknya ada di baris GAGAL `gov.job_runs` — BUKAN di
+// gov.notification_deliveries. Hub.Send sengaja tak mencatat kegagalan pra-dispatch (template tak
+// ditemukan / gagal render) sebagai delivery: itu diklasifikasikan sebagai bug konfigurasi, bukan
+// kegagalan pengiriman. Perbedaan itu menentukan tabel mana yang dilihat ops saat menyelidiki.
 const EscalationTemplateKey = "workflow.sla.escalation"
 
 // schedulerStack adalah hasil perakitan scheduler yang dibutuhkan run(): runner untuk dijalankan

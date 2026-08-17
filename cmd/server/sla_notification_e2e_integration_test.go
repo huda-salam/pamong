@@ -246,7 +246,7 @@ func TestE2E_SLAEskalasiDanNotifikasiTransisi(t *testing.T) {
 		t.Fatalf("collectWorkflowSeeds: %v", err)
 	}
 
-	notifRuntimes := newNotificationFactory(connMgr, cryptoSvc, testMessageSender(t), logger)
+	notifRuntimes := newNotificationFactory(connMgr, cryptoSvc, testMessageSender(t), metrics, logger)
 	sched, err := wireScheduler(ctx, centralPool, connMgr, notifRuntimes,
 		20*time.Millisecond, time.Minute, logger)
 	if err != nil {
@@ -263,14 +263,16 @@ func TestE2E_SLAEskalasiDanNotifikasiTransisi(t *testing.T) {
 
 	// Template notifikasi tenant. Tanpa keduanya pengiriman gagal di render — dan kegagalannya
 	// tercatat di gov.notification_deliveries, bukan diam.
+	// HANYA template MODUL yang diseed di sini. Template eskalasi (milik framework) SENGAJA
+	// tidak diseed: default globalnya ditanam seedFrameworkTemplates saat skema notifikasi tenant
+	// disiapkan, dan test ini ikut membuktikan seeder itu bekerja. Menyeednya di sini akan
+	// menutupi kegagalan seeder produksi — eskalasi tetap hijau di test, gagal di instalasi baru.
 	notifTemplates := infraNotif.NewDBTemplateStore(tenantPool)
-	for _, key := range []string{"surat_selesai", EscalationTemplateKey} {
-		if err := notifTemplates.Upsert(ctx, coreNotif.Template{
-			TenantID: tenantID, Key: key, Locale: "id",
-			Subject: key, Body: "instance {{.instance_id}} state {{.state}}",
-		}); err != nil {
-			t.Fatalf("upsert template %q: %v", key, err)
-		}
+	if err := notifTemplates.Upsert(ctx, coreNotif.Template{
+		TenantID: tenantID, Key: "surat_selesai", Locale: "id",
+		Subject: "surat_selesai", Body: "instance {{.instance_id}} state {{.state}}",
+	}); err != nil {
+		t.Fatalf("upsert template modul: %v", err)
 	}
 
 	// Pilihan template tenant + binding peran GENERIK definisi → role KONKRET tenant.

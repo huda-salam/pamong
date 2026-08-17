@@ -19,7 +19,6 @@ import (
 	"sync"
 
 	"github.com/huda-salam/pamong/core/domain"
-	coreNotif "github.com/huda-salam/pamong/core/notification"
 	coreWf "github.com/huda-salam/pamong/core/workflow"
 	gatewaywf "github.com/huda-salam/pamong/gateway/workflow"
 	"github.com/huda-salam/pamong/infra/db"
@@ -120,11 +119,15 @@ func (f *workflowFactory) RuntimeFor(ctx context.Context, tenantID string) (gate
 		// Notifier per-tenant: transisi ber-`notify:` mengirim ke inbox tenant INI. Dirakit di
 		// sini (bukan sekali saat boot) karena inbox-nya hidup di tenant DB — alasan yang sama
 		// dengan tumpukan workflow di atasnya, termasuk soal tenant yang pindah DB.
-		notifier, err := f.notifs.ForTenant(ctx, tenantID)
+		//
+		// `pool` diteruskan, bukan dibiarkan di-resolve ulang dari tenantID: TenantConnManager
+		// membaca id.tenant_registry tiap panggilan, jadi resolve kedua = satu query tambahan ke
+		// DB sentral pada SETIAP request workflow, termasuk transisi tanpa `notify:` sama sekali.
+		notifier, err := f.notifs.TransitionNotifierFor(ctx, tenantID, pool)
 		if err != nil {
 			return gatewaywf.Runtime{}, fmt.Errorf("notifier transisi tenant %q: %w", tenantID, err)
 		}
-		opts = append(opts, coreWf.WithNotifier(infrawf.NewNotifierTransition(notifier, coreNotif.ChannelInApp)))
+		opts = append(opts, coreWf.WithNotifier(notifier))
 	}
 
 	return gatewaywf.Runtime{

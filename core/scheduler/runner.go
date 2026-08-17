@@ -282,21 +282,28 @@ func (r *Runner) Replay(ctx context.Context, runID uuid.UUID) (JobRun, error) {
 // job yang sedang berjalan — riwayat hilang, dan lock-nya baru bebas saat sewa kedaluwarsa.
 // Kelas cacat yang persis sama sudah pernah terjadi di repo ini pada Subscribe tanpa Flush
 // (PR-3.1.3); yang membedakan hanya komponennya.
+//
+// ctx SIKLUS dilepas dari pembatalan (context.WithoutCancel): ctx pemanggil mengendalikan KAPAN
+// loop berhenti menjemput pekerjaan baru, bukan apakah pekerjaan yang sudah dijemput boleh
+// selesai. Meneruskan ctx yang sama apa adanya terlihat benar — "batalkan berarti batalkan" —
+// tapi yang ikut dibatalkan justru pembukuan SESUDAH handler: RecordRun tak menulis baris
+// gov.job_runs, advance tak memajukan next_run_at, dan Release tak melepas sewa lock. Hasilnya
+// job yang efeknya SUDAH terjadi (notifikasi terkirim) tampak tak pernah jalan, terkunci sampai
+// sewa habis, lalu dijalankan ULANG setelah restart. Menunggu di `done` jadi satu-satunya rem,
+// dan pemanggil yang membatasinya (lihat cmd/server) yang menentukan berapa lama sabar.
 func (r *Runner) Start(ctx context.Context) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		ticker := time.NewTicker(r.interval)
 		defer ticker.Stop()
+		work := context.WithoutCancel(ctx)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				// RunDue sengaja memakai ctx yang SAMA: pembatalan harus sampai ke query yang
-				// sedang menggantung, bukan hanya ke loop. Job yang sudah masuk handler
-				// menyelesaikan dirinya sendiri — itulah yang ditunggu `done`.
-				if _, err := r.RunDue(ctx); err != nil {
+				if _, err := r.RunDue(work); err != nil {
 					slog.Error("siklus scheduler gagal", "err", err)
 				}
 			}

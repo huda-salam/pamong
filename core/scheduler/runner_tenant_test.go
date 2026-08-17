@@ -125,3 +125,78 @@ func TestStart_DoneMenungguSiklusYangSedangBerjalan(t *testing.T) {
 		t.Fatal("done tertutup tanpa handler menyelesaikan pekerjaannya")
 	}
 }
+
+// TestStart_PembatalanTakMenjalarKeJobYangSedangBerjalan menutup sisi yang tak terlihat oleh
+// TestStart_DoneMenungguSiklusYangSedangBerjalan: di sana handler-nya mengabaikan ctx, jadi test
+// itu tetap hijau meski pembatalan menjalar ke dalam job.
+//
+// Yang dijaga di sini: ctx yang diterima handler TIDAK ikut dibatalkan saat shutdown. Bila ia
+// dibatalkan, pembukuan SESUDAH handler-lah yang jadi korban — RecordRun tak menulis riwayat,
+// advance tak memajukan next_run_at, Release tak melepas sewa. Job yang efeknya sudah terjadi
+// akan tampak tak pernah jalan lalu dijalankan ulang setelah restart.
+func TestStart_PembatalanTakMenjalarKeJobYangSedangBerjalan(t *testing.T) {
+	clk := &fixedClock{t: time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC)}
+
+	masuk := make(chan struct{})
+	var mu sync.Mutex
+	var ctxDibatalkan bool
+
+	reg := scheduler.NewRegistry()
+	_ = reg.Register("periksa-ctx", func(ctx context.Context, _ []byte) error {
+		close(masuk)
+		// Beri kesempatan pembatalan menjalar bila memang menjalar.
+		time.Sleep(150 * time.Millisecond)
+		mu.Lock()
+		ctxDibatalkan = ctx.Err() != nil
+		mu.Unlock()
+		return nil
+	})
+	store := scheduler.NewMemoryJobStore()
+	r := scheduler.NewRunner(reg, store, 5*time.Millisecond).WithClock(clk.now)
+
+	job, err := r.Schedule(context.Background(), scheduler.ScheduledJob{
+		TenantID: "t1", Name: "periksa-ctx", JobKey: "periksa-ctx", Enabled: true, NextRunAt: clk.t,
+	})
+	if err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := r.Start(ctx)
+	select {
+	case <-masuk:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler tak pernah dipanggil")
+	}
+	cancel() // shutdown SELAGI job berjalan
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("runner tak berhenti")
+	}
+
+	mu.Lock()
+	dibatalkan := ctxDibatalkan
+	mu.Unlock()
+	if dibatalkan {
+		t.Fatal("ctx handler ikut dibatalkan saat shutdown — RecordRun/advance/Release akan gagal " +
+			"dan job yang efeknya sudah terjadi akan dijalankan ulang setelah restart")
+	}
+
+	// Pembukuan benar-benar tuntas: riwayat tertulis dan jadwal one-shot dinonaktifkan.
+	runs, err := store.Runs(context.Background(), job.ID, 10)
+	if err != nil {
+		t.Fatalf("Runs: %v", err)
+	}
+	if len(runs) != 1 || runs[0].Status != scheduler.StatusSuccess {
+		t.Fatalf("riwayat job = %+v, mau tepat satu run sukses", runs)
+	}
+	fresh, err := store.GetSchedule(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("GetSchedule: %v", err)
+	}
+	if fresh.Enabled {
+		t.Fatal("job one-shot masih enabled — advance tak berjalan, job akan diulang")
+	}
+}
