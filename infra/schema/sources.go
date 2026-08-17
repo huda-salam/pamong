@@ -24,22 +24,47 @@ type coreComponent struct {
 	fs     fs.FS
 }
 
-// coreComponents adalah komponen framework yang migrasinya di-embed. Identity SENGAJA belum
-// di sini — dimasukkan pada PR terpisah (perubahan identity butuh review ekstra, CLAUDE.md).
-var coreComponents = []coreComponent{
+// tenantComponents adalah komponen framework yang tabelnya hidup di DB TIAP TENANT. Identity
+// SENGAJA belum di sini — dimasukkan pada PR terpisah (perubahan identity butuh review ekstra,
+// CLAUDE.md).
+var tenantComponents = []coreComponent{
 	{coreCfg.MigrationModule, coreCfg.MigrationsFS},
 	{coreIdem.MigrationModule, coreIdem.MigrationsFS},
 	{coreNotif.MigrationModule, coreNotif.MigrationsFS},
-	{coreSched.MigrationModule, coreSched.MigrationsFS},
 	{coreSeq.MigrationModule, coreSeq.MigrationsFS},
 	{coreWf.MigrationModule, coreWf.MigrationsFS},
 }
 
-// CoreMigrations mengumpulkan migrasi seluruh komponen core ter-embed. Migrator akan mengurut
-// ulang secara global (module:version), jadi urutan di sini tidak signifikan.
+// centralComponents adalah komponen framework yang tabelnya hidup di DB SENTRAL (ADR-023).
+//
+// Scheduler ada di sini karena PEMBACA-nya tak punya tenant: Runner.RunDue adalah loop
+// proses-lebar yang bertanya "apa yang jatuh tempo, di mana saja?" — pertanyaan yang tak bisa
+// dijawab satu pool tenant. Residensi mengikuti pembaca, bukan penulis (ADR-023 Keputusan 1).
+//
+// Nama schema-nya tetap `gov` (ADR-023 Keputusan 7): `gov` menandai "tabel framework", bukan
+// "tabel tenant". Yang memisahkan tenant dari sentral adalah DAFTAR INI — bukan nama schema —
+// jadi menambahkan komponen ke daftar yang keliru akan menempatkan tabelnya di DB yang keliru
+// tanpa satu pun error.
+var centralComponents = []coreComponent{
+	{coreSched.MigrationModule, coreSched.MigrationsFS},
+}
+
+// CoreMigrations mengumpulkan migrasi komponen core yang ber-residensi TENANT. Migrator akan
+// mengurut ulang secara global (module:version), jadi urutan di sini tidak signifikan.
 func CoreMigrations() ([]db.Migration, error) {
+	return collect(tenantComponents)
+}
+
+// CentralMigrations mengumpulkan migrasi komponen core yang ber-residensi SENTRAL (ADR-023).
+// Diterapkan ke DB sentral (`AppConfig.CentralDBResolved()`), bukan ke DB tenant mana pun —
+// lihat `pamongctl migrate --central`.
+func CentralMigrations() ([]db.Migration, error) {
+	return collect(centralComponents)
+}
+
+func collect(comps []coreComponent) ([]db.Migration, error) {
 	var out []db.Migration
-	for _, c := range coreComponents {
+	for _, c := range comps {
 		migs, err := db.LoadEmbedded(c.module, c.fs)
 		if err != nil {
 			return nil, fmt.Errorf("muat migrasi core %s: %w", c.module, err)

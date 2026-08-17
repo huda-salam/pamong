@@ -26,6 +26,7 @@ import (
 	"github.com/huda-salam/pamong/infra/db"
 	"github.com/huda-salam/pamong/infra/eventbus"
 	"github.com/huda-salam/pamong/infra/idempotency"
+	"github.com/huda-salam/pamong/infra/messaging"
 	"github.com/huda-salam/pamong/infra/observability"
 	"github.com/huda-salam/pamong/infra/ratelimit"
 	"github.com/huda-salam/pamong/infra/sequence"
@@ -101,6 +102,16 @@ func run() error {
 		return fmt.Errorf("storage: %w", err)
 	}
 	metrics := observability.NewPrometheusMetrics()
+
+	// Transport pesan keluar: SATU driver untuk seluruh proses, dipakai OTP login (wireAuth)
+	// DAN channel email notifikasi (notificationFactory). Driver dari config — `log` untuk dev
+	// (DITOLAK di staging/production oleh config.Validate karena body OTP mendarat di log),
+	// `smtp` untuk email nyata. Dirakit di sini, bukan di dalam masing-masing wiring: dua
+	// driver SMTP paralel berarti dua kolam koneksi dan dua tempat untuk salah konfigurasi.
+	messageSender, err := messaging.NewFromConfig(cfg.Messaging)
+	if err != nil {
+		return fmt.Errorf("driver messaging: %w", err)
+	}
 
 	// --- Auth stack (PR-5.1.2) ---
 	// Token verifier internal (HS256, ADR-007): verifikasi tanda tangan + jti-revocation
@@ -260,7 +271,7 @@ func run() error {
 	verifyGate := identityusecase.NewVerifyGate(0, 0) // 0,0 = GOMAXPROCS slot, tunggu 2s
 
 	authHandler, err := wireAuth(identityPool, connMgr, cryptoSvc, verifier, rateLimiter, logger,
-		cfg.Messaging, verifyGate)
+		messageSender, verifyGate)
 	if err != nil {
 		return fmt.Errorf("alur auth (identity): %w", err)
 	}
@@ -304,10 +315,53 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("seed workflow modul: %w", err)
 	}
-	workflowRuntimes := newWorkflowFactory(connMgr, workflowActions, workflowSeeds, logger)
+	// Tumpukan notifikasi per-tenant (PR-W4b): dipakai DUA jalur — notifikasi transisi (dari
+	// engine, di dalam request) dan eskalasi SLA (dari scheduler, di luar request). Satu factory
+	// untuk keduanya agar keduanya mendarat di inbox yang sama.
+	notifRuntimes := newNotificationFactory(connMgr, cryptoSvc, messageSender, logger)
+
+	// Scheduler (PR-W4b, ADR-023): tabel jadwal hidup di DB SENTRAL, jadi satu loop proses-lebar
+	// melayani seluruh tenant. Pool sentral diminta EKSPLISIT di sini — bukan lewat connMgr di
+	// dalam wireScheduler — supaya "scheduler membaca DB sentral" terbaca di composition root,
+	// tempat keputusan residensi memang seharusnya terlihat.
+	centralPool, err := connMgr.Central(ctx)
+	if err != nil {
+		return fmt.Errorf("pool DB sentral untuk scheduler (ADR-023): %w", err)
+	}
+	sched, err := wireScheduler(ctx, centralPool, connMgr, notifRuntimes,
+		cfg.Scheduler.Interval(), cfg.Scheduler.LockTTL(), logger)
+	if err != nil {
+		return fmt.Errorf("scheduler: %w", err)
+	}
+
+	workflowRuntimes := newWorkflowFactory(connMgr, workflowActions, workflowSeeds, logger,
+		sched.deadlines, notifRuntimes)
 	gatewaywf.MountRoutes(router, gatewaywf.NewHandler(workflowRuntimes))
 	logger.Info(ctx, "runtime workflow terpasang",
 		port.F("action", workflowActions.Names()), port.F("seed_definisi", len(workflowSeeds)))
+
+	// Loop scheduler dijalankan SESUDAH seluruh perakitan selesai: sejak baris ini ada goroutine
+	// yang mengeksekusi job nyata terhadap DB tenant, dan ia tak boleh mendahului dependensinya.
+	//
+	// Penghentiannya sengaja defer, bukan panggilan di ujung alur sukses — run() bisa kembali
+	// lewat banyak jalur (serve gagal, Shutdown timeout), dan justru pada jalur gagal itulah job
+	// paling mungkin masih berjalan. Terdaftar SESUDAH defer pengurasan bus, jadi LIFO
+	// menjalankannya SEBELUM bus dikuras dan (jauh) sebelum pool ditutup. Terbalik = pool
+	// tertutup di bawah kaki job yang masih menulis riwayat.
+	schedCtx, stopScheduler := context.WithCancel(context.Background())
+	schedulerDone := sched.runner.Start(schedCtx)
+	defer func() {
+		stopScheduler()
+		select {
+		case <-schedulerDone:
+			logger.Info(ctx, "scheduler berhenti; tak ada job yang tertinggal berjalan")
+		case <-time.After(15 * time.Second):
+			// Melewati batas berarti sebuah job menggantung. Yang benar adalah MENGATAKANNYA,
+			// bukan menunggu selamanya (proses tak pernah mati) dan bukan diam (riwayat job
+			// yang hilang akan terbaca sebagai job yang tak pernah jalan).
+			logger.Error(ctx, "scheduler tak berhenti dalam 15s; ada job yang masih berjalan saat pool ditutup")
+		}
+	}()
 
 	// --- HTTP server + middleware stack + graceful shutdown ---
 	handler := buildServerHandler(serverDeps{

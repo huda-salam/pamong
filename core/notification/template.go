@@ -67,7 +67,7 @@ func (e *TemplateEngine) Render(ctx context.Context, tenantID, key, locale strin
 	if err != nil {
 		return RenderedMessage{}, err
 	}
-	return RenderedMessage{Subject: subject, Body: body}, nil
+	return RenderedMessage{Subject: subject, Body: body, TemplateKey: key}, nil
 }
 
 // pickTemplate memilih kandidat paling cocok. Hanya kandidat yang applicable (global atau

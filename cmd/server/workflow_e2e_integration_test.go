@@ -207,7 +207,10 @@ func TestE2E_DisposisiLewatWorkflow(t *testing.T) {
 	if len(workflowSeeds) == 0 {
 		t.Fatal("tak ada seed workflow dari manifest modul — DoD tak mungkin terpenuhi")
 	}
-	runtimes := newWorkflowFactory(connMgr, workflowActions, workflowSeeds, logger)
+	// deadlines & notifier sengaja nil di sini: test ini menguji jalur DISPATCH ACTION (PR-W4a).
+	// Jalur SLA + notifikasi dirakit penuh dan dibuktikan di sla_notification_e2e_integration_test.go
+	// (PR-W4b), yang butuh pool DB SENTRAL untuk tabel scheduler (ADR-023).
+	runtimes := newWorkflowFactory(connMgr, workflowActions, workflowSeeds, logger, nil, nil)
 	gatewaywf.MountRoutes(router, gatewaywf.NewHandler(runtimes))
 
 	// Bangun tumpukan tenant sekali di muka supaya skema workflow ada & definisi baseline

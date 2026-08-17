@@ -32,6 +32,32 @@ Jalur A/B/C merujuk tiga cara pembuatan skema yang dijelaskan di `DB_SCHEMA.md` 
 
 ---
 
+### 2026-08-18 · PR-W4b (scheduler runner + SLA + notifier hidup) · `HEAD`
+**DB:** sentral (pindah dari tenant) · **Jalur:** A′ (`core/scheduler/001`+`002`, kini lewat
+`pamongctl migrate --central`) · **Down:** ada (file migrasi tak berubah)
+
+- `~ RESIDENSI` — `gov.scheduled_jobs`, `gov.job_runs`, `gov.job_locks` **pindah dari tenant DB ke
+  DB sentral** (ADR-023). **DDL-nya sendiri TIDAK berubah satu karakter pun** — yang berubah adalah
+  DB tempat migrasi yang sama diterapkan, dan itu tetap dihitung sebagai perubahan struktur DB
+  (lihat "yang wajib dicatat" di atas: *perubahan cara skema diterapkan*).
+  Sebabnya: pembaca tabel ini (`scheduler.Runner.RunDue`) adalah loop proses-lebar tanpa tenant —
+  satu pool tenant tak bisa menjawab "apa yang jatuh tempo di mana saja", dan meng-iterasi seluruh
+  tenant tiap tick akan mengubah pool tenant yang hari ini dibuka malas menjadi pool permanen untuk
+  setiap tenant (tembok `max_connections` pada ~20 tenant). Konsekuensinya `tenant_id` pada ketiga
+  tabel berubah dari kolom redundan menjadi kolom yang **me-route eksekusi** kembali ke tenant DB.
+- `~ infra/schema` — `coreComponents` dipecah `tenantComponents` / `centralComponents`;
+  `CentralMigrations()` baru. Ini satu-satunya yang memisahkan kedua residensi: nama schema kedua
+  jalur sama-sama `gov`, jadi salah daftar menempatkan tabel di DB yang keliru tanpa error.
+- `+ pamongctl migrate --central` — menerapkan `CentralMigrations()` ke `CentralDBResolved()`.
+  `migrate up` (tanpa flag) kini TIDAK lagi membuat tabel scheduler di tenant DB.
+
+**Kompatibilitas:** **breaking untuk deployment yang sudah menjalankan scheduler** — tak ada, karena
+scheduler belum pernah ter-wire di `cmd/server` (PR ini yang pertama merakitnya), jadi ketiga tabel
+kosong di mana pun. Tenant DB yang terlanjur punya ketiga tabel (dari `migrate up` versi lama)
+membiarkannya kosong tanpa efek; penghapusannya opsional dan tidak dijadwalkan. Baris
+`gov.migration_history` untuk modul `scheduler` di tenant DB menjadi yatim — juga tanpa efek, karena
+jalur tenant tak lagi menawarkan migrasi modul itu.
+
 ### 2026-08-15 · PR-W4a (runtime workflow: dispatch, instance, engine per-tenant) · `HEAD`
 **DB:** tenant · **Jalur:** A (`core/workflow/migrations/004`+`005`) · **Down:** ada
 

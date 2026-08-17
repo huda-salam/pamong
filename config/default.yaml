@@ -137,3 +137,9 @@ http:
 # (berlaku lewat masa token / revocation). 0 = default 300s; negatif = tak pernah kedaluwarsa.
 permission:
   catalog_ttl: 300
+
+# scheduler: loop eksekusi job terjadwal. Tabelnya di DB SENTRAL (ADR-023) — satu loop per proses
+# melayani semua tenant; lock ber-sewa mencegah jalan ganda di multi-instance.
+scheduler:
+  interval: 30   # detik; periode polling jadwal jatuh tempo
+  lock_ttl: 300  # detik; masa sewa lock per job, harus > durasi job terpanjang yang wajar

@@ -38,6 +38,40 @@ type AppConfig struct {
 	HTTP        HTTPConfig          `yaml:"http"`
 	CORS        CORSConfig          `yaml:"cors"`
 	Permission  PermissionConfig    `yaml:"permission"`
+	Scheduler   SchedulerConfig     `yaml:"scheduler"`
+}
+
+// SchedulerConfig — loop eksekusi job terjadwal (core/scheduler). Tabelnya hidup di DB SENTRAL
+// (ADR-023), jadi SATU loop per proses melayani seluruh tenant; di multi-instance, lock ber-sewa
+// (gov.job_locks) yang mencegah satu job jalan ganda.
+//
+// SENGAJA tanpa flag enabled: scheduler adalah jalur eksekusi SLA workflow, dan komponen yang
+// bisa dimatikan lewat config adalah komponen yang akan ditemukan mati di produksi (DoD 11).
+// Menjalankan lebih dari satu instance aman justru karena lock-nya.
+type SchedulerConfig struct {
+	// IntervalSeconds = periode polling jadwal jatuh tempo. 0 = default 30s. Ketelitian
+	// penjadwalan berorde nilai ini: deadline SLA berorde jam, jadi puluhan detik memadai.
+	IntervalSeconds int `yaml:"interval" env:"GOV_SCHEDULER_INTERVAL"`
+	// LockTTLSeconds = masa sewa lock per job. HARUS lebih lama dari durasi terpanjang yang
+	// wajar untuk sebuah job: sewa yang kedaluwarsa selagi job masih berjalan mengizinkan
+	// instance lain mengambil alih dan menjalankannya kedua kali. 0 = default 300s.
+	LockTTLSeconds int `yaml:"lock_ttl" env:"GOV_SCHEDULER_LOCK_TTL"`
+}
+
+// Interval mengembalikan periode polling sebagai Duration (default 30 detik).
+func (s SchedulerConfig) Interval() time.Duration {
+	if s.IntervalSeconds <= 0 {
+		return 30 * time.Second
+	}
+	return time.Duration(s.IntervalSeconds) * time.Second
+}
+
+// LockTTL mengembalikan masa sewa lock job sebagai Duration (default 5 menit).
+func (s SchedulerConfig) LockTTL() time.Duration {
+	if s.LockTTLSeconds <= 0 {
+		return 5 * time.Minute
+	}
+	return time.Duration(s.LockTTLSeconds) * time.Second
 }
 
 // PermissionConfig — perilaku penegakan RBAC di gateway. CatalogTTLSeconds mengatur umur

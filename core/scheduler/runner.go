@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/huda-salam/pamong/port"
 )
 
 // Runner mengeksekusi job terjadwal: memilih jadwal yang jatuh tempo, menjalankan handler
@@ -171,7 +173,17 @@ func (r *Runner) execute(ctx context.Context, job ScheduledJob) {
 
 // invoke memanggil handler dan mengisi status/error/FinishedAt pada run. Panic handler
 // ditangkap menjadi kegagalan agar satu job buruk tak menjatuhkan runner.
+//
+// Tenant job disisipkan ke ctx lebih dulu (ADR-023 Keputusan 5). Sejak tabel scheduler hidup di
+// DB SENTRAL, ctx yang tiba di sini adalah ctx loop proses-lebar — tanpa tenant apa pun. Handler
+// yang menyentuh DB tenant (mis. eskalasi SLA yang membaca state instance) karenanya WAJIB
+// memperoleh tenant dari baris job, lewat jalur yang sama persis dengan handler HTTP.
+//
+// Disisipkan TANPA SYARAT, termasuk saat TenantID kosong: job level-platform tak boleh mewarisi
+// tenant yang kebetulan menempel di ctx pemanggil (Trigger/Replay bisa dipanggil dari dalam
+// request). Baris job adalah otoritas tunggal soal tenant mana yang dilayani — fail-closed.
 func (r *Runner) invoke(ctx context.Context, run *JobRun) {
+	ctx = port.WithTenant(ctx, run.TenantID)
 	defer func() {
 		if rec := recover(); rec != nil {
 			run.Status = StatusFailed
@@ -258,9 +270,22 @@ func (r *Runner) Replay(ctx context.Context, runID uuid.UUID) (JobRun, error) {
 	return replay, nil
 }
 
-// Start menjalankan loop polling di goroutine sampai ctx dibatalkan. Non-blocking (pola OutboxRelay).
-func (r *Runner) Start(ctx context.Context) {
+// Start menjalankan loop polling di goroutine sampai ctx dibatalkan. Non-blocking.
+//
+// Mengembalikan channel yang DITUTUP setelah loop benar-benar berhenti — yaitu sesudah siklus
+// RunDue yang sedang berjalan selesai, bukan sesudah ctx dibatalkan. Pemanggil yang hendak
+// shutdown bersih WAJIB menunggu channel ini sebelum menutup pool DB atau keluar dari proses.
+//
+// Kenapa ini bukan detail: membatalkan ctx hanya memberi tahu loop untuk berhenti pada iterasi
+// BERIKUTNYA. Job yang sedang dieksekusi tetap berjalan, masih memegang lock ber-sewa, dan masih
+// hendak menulis riwayat lewat store. Keluar tanpa menunggu berarti menutup pool di bawah kaki
+// job yang sedang berjalan — riwayat hilang, dan lock-nya baru bebas saat sewa kedaluwarsa.
+// Kelas cacat yang persis sama sudah pernah terjadi di repo ini pada Subscribe tanpa Flush
+// (PR-3.1.3); yang membedakan hanya komponennya.
+func (r *Runner) Start(ctx context.Context) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(r.interval)
 		defer ticker.Stop()
 		for {
@@ -268,10 +293,14 @@ func (r *Runner) Start(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				// RunDue sengaja memakai ctx yang SAMA: pembatalan harus sampai ke query yang
+				// sedang menggantung, bukan hanya ke loop. Job yang sudah masuk handler
+				// menyelesaikan dirinya sendiri — itulah yang ditunggu `done`.
 				if _, err := r.RunDue(ctx); err != nil {
 					slog.Error("siklus scheduler gagal", "err", err)
 				}
 			}
 		}
 	}()
+	return done
 }

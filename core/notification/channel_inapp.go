@@ -21,13 +21,15 @@ var _ Channel = (*InAppChannel)(nil)
 // Name mengembalikan ChannelInApp.
 func (c *InAppChannel) Name() string { return ChannelInApp }
 
-// Send menyimpan pesan sebagai item inbox milik penerima. Subject → judul, Body → isi.
+// Send menyimpan pesan sebagai item inbox milik penerima. Subject → judul, Body → isi,
+// TemplateKey → asal-usul item (dipakai UI untuk mengelompokkan/menyaring inbox).
 func (c *InAppChannel) Send(ctx context.Context, tenantID string, r Recipient, msg RenderedMessage) error {
 	_, err := c.inbox.Append(ctx, InAppItem{
-		TenantID: tenantID,
-		PersonID: r.PersonID,
-		Subject:  msg.Subject,
-		Body:     msg.Body,
+		TenantID:    tenantID,
+		PersonID:    r.PersonID,
+		TemplateKey: msg.TemplateKey,
+		Subject:     msg.Subject,
+		Body:        msg.Body,
 	})
 	return err
 }

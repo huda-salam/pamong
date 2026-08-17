@@ -12,6 +12,7 @@ import (
 	"github.com/huda-salam/pamong/core/notification"
 	"github.com/huda-salam/pamong/core/scheduler"
 	coreWf "github.com/huda-salam/pamong/core/workflow"
+	"github.com/huda-salam/pamong/port"
 )
 
 // Driven adapter SLA workflow (PR-3.2.6): menjembatani port core/workflow ke core/scheduler
@@ -85,11 +86,31 @@ func (s *SchedulerDeadlines) CancelDeadline(ctx context.Context, key string) err
 // EscalationJob membungkus EscalationCoordinator sebagai scheduler.JobFunc: decode payload
 // Escalation lalu Deliver (yang menjalankan guard race + eskalasi). Daftarkan ke registry
 // dengan EscalationJobKey saat bootstrap.
+//
+// Tenant di ctx (disisipkan Runner dari kolom tenant_id baris job) WAJIB cocok dengan tenant di
+// payload. Keduanya berasal dari satu penulisan — ScheduleDeadline mengisi keduanya dari
+// Escalation.TenantID yang sama — jadi ketidakcocokan tak mungkin terjadi pada jalur normal, dan
+// itulah alasan pemeriksaannya murah.
+//
+// Kenapa tetap diperiksa: sejak ADR-023 baris job hidup di DB SENTRAL bersama seluruh tenant.
+// Dua nilai tenant yang menyimpang di sana berarti tumpukan notifikasi tenant A dipakai
+// mengeskalasi instance tenant B — kebocoran lintas-tenant yang justru DIAM, karena setiap
+// komponen di jalurnya bekerja persis seperti yang diminta. Ini permukaan risiko yang baru
+// diperkenalkan residensi sentral, jadi pagarnya dipasang di titik yang sama.
 func EscalationJob(coord *coreWf.EscalationCoordinator) scheduler.JobFunc {
 	return func(ctx context.Context, payload []byte) error {
 		var e coreWf.Escalation
 		if err := json.Unmarshal(payload, &e); err != nil {
 			return fmt.Errorf("decode escalation payload: %w", err)
+		}
+		ctxTenant := port.TenantFrom(ctx)
+		if ctxTenant == "" {
+			return fmt.Errorf("eskalasi instance %s: tenant tak ada di context — job tak bisa dirutekan ke DB tenant mana pun",
+				e.InstanceID)
+		}
+		if ctxTenant != e.TenantID {
+			return fmt.Errorf("eskalasi instance %s ditolak: tenant job %q ≠ tenant payload %q",
+				e.InstanceID, ctxTenant, e.TenantID)
 		}
 		return coord.Deliver(ctx, e)
 	}

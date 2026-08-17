@@ -1236,20 +1236,41 @@ tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
     baris disposisi tersimpan di tenant DB ✅ (`cmd/server/workflow_e2e_integration_test.go`;
     diverifikasi dua arah lewat mutasi pada dispatcher & seed)
 
-- **PR-W4b** Scheduler runner + SLA deadline + notifier ← W4a
-  - `scheduler.Runner` + `DBLocker` di goroutine ber-shutdown, `SchedulerDeadlines` +
-    `EscalationJob` + `NotifierEscalator` + `NotifierTransition`, `ChannelRegistry` +
-    `DBTemplateStore` notifikasi + `DBRecipientDirectory` + messaging driver, lalu pasang
-    `WithDeadlines`/`WithNotifier` pada engine per-tenant di `cmd/server/workflow.go`.
-  - **Keputusan yang HARUS diambil sebelum menulis kode:** `gov.scheduled_jobs` hidup di TENANT
-    DB, tapi `Runner.RunDue` memanggil satu `JobStore.DueSchedules` global — satu runner tak bisa
-    melihat jadwal semua tenant. Kandidat: (a) fasad JobStore yang meng-iterasi tenant dari
-    registry tiap tick (residensi DB tetap, N query per tick), (b) pindahkan tabel scheduler ke DB
-    sentral (satu pool & satu locker; job sudah membawa `tenant_id`, handler me-route lewat
-    `port.WithTenant`) — (b) mengubah residensi DB, jadi butuh migrasi + ADR.
-  - DoD: transisi memicu notifikasi ke inbox pemegang role KONKRET; SLA lewat memicu eskalasi;
-    keduanya lewat server yang di-boot `run()`, dan runner berhenti bersih saat shutdown
-    (dibuktikan dengan mutasi pada titik shutdown, bukan hanya test hijau).
+- **PR-W4b** ✅ Scheduler runner + SLA deadline + notifier ← W4a — **SELESAI** (ADR-023)
+  - **Keputusan residensi diambil: opsi (b)** — `gov.scheduled_jobs`/`job_runs`/`job_locks` pindah
+    ke **DB sentral**. Prinsip yang ditetapkan ADR-023 dan bisa dipakai ulang: *residensi mengikuti
+    PEMBACA, bukan penulis*. Penulisnya ber-tenant (dipanggil di tengah transisi), tapi pembacanya
+    (`Runner.RunDue`) adalah loop proses-lebar tanpa tenant. Tiga alasan konkret: (1) prinsip itu;
+    (2) `ScheduledJob.TenantID`/`JobRun.TenantID` sudah ada sejak PR-3.5.1 dan `tenant_id = ''`
+    ("job level-platform") hanya koheren di tabel sentral — tipe datanya memang ditulis untuk itu,
+    kebalikan dari ADR-022 yang memilih per-tenant justru karena port-nya tak membawa tenant sama
+    sekali; (3) opsi (a) mengubah pool tenant yang hari ini dibuka MALAS menjadi pool permanen
+    untuk setiap tenant tiap tick — `pool_idle` 5 × 20 tenant sudah menabrak `max_connections`
+    default, jauh sebelum jumlah query jadi soal.
+  - Terpasang: `DBJobStore`+`DBLocker` di atas pool sentral, `Runner` ber-locker tanpa syarat,
+    `escalationJob` yang me-resolve tumpukan tenant SAAT BERJALAN dari `port.TenantFrom(ctx)`,
+    `notificationFactory` per-tenant (in-app + email, dipakai DUA jalur), dan
+    `WithDeadlines`/`WithNotifier` pada engine per-tenant. Driver messaging kini SATU untuk seluruh
+    proses (dibagi OTP login & channel email) — `wireAuth` menerima `port.MessagingPort`.
+  - Tiga perubahan yang lahir DARI perakitan, bukan direncanakan sebelumnya:
+    (a) `Runner.Start` kini mengembalikan channel yang tertutup **sesudah siklus berjalan tuntas** —
+    sebelumnya membatalkan ctx hanya menghentikan iterasi berikutnya sementara job yang sedang jalan
+    tetap memegang lock & hendak menulis riwayat (kelas cacat Subscribe-tanpa-Flush, PR-3.1.3);
+    (b) `Runner.invoke` menyisipkan `port.WithTenant` TANPA SYARAT termasuk saat kosong, agar job
+    level-platform tak mewarisi tenant ambient dari `Trigger`/`Replay` yang dipanggil dari request;
+    (c) `RenderedMessage.TemplateKey` — kolom `gov.notification_inapp.template_key` ada sejak
+    PR-3.6.1 tapi tak pernah terisi di jalur produksi mana pun karena `Channel.Send` tak menerima
+    key-nya.
+  - Gerbang residensi: `infra/schema` dipecah tenant/central + `pamongctl migrate --central`.
+    Nama schema kedua jalur sama-sama `gov`, jadi yang memisahkan hanyalah keanggotaan daftar —
+    dikunci `TestResidensi_*`.
+  - DoD terpenuhi ✅: `sla_notification_e2e_integration_test.go` — definisi NYATA modul referensi
+    (`sla_hours: 72` → `sekretaris_daerah`; transisi selesai → notify `agendaris`) lewat
+    `buildServerHandler`; deadline mendarat di `gov.scheduled_jobs` sentral ber-`tenant_id` ✅;
+    `RunDue` → eskalasi ke inbox pemegang role KONKRET ✅ (dengan kontrol negatif: inbox aktor &
+    agendaris tetap kosong); transisi `selesai` → notify agendaris ✅; runner berhenti bersih ✅.
+    Sifat shutdown & tenant-ctx diverifikasi DUA ARAH lewat mutasi (`core/scheduler/runner_tenant_test.go`).
+  - Menutup `DEFERRED(PR-W4b)` di `cmd/server/workflow.go`.
 
 - **PR-W4c** Seam entitas: snapshot guard + otorisasi tingkat entitas ← W4a
   - Dua kebutuhan, satu seam yang sama ("bolehkah aktor ini menyentuh entitas itu, dan seperti apa
@@ -1620,6 +1641,18 @@ rule linter `markerref`).
     `tokens_valid_after` yang juga belum diambil. Dijadwalkan ulang eksplisit ke
     **Phase-5.0+ / bersama use case revoke** — lihat butir "[Phase-2.4] Revocation
     per-person" di bawah. Ini penjadwalan ulang sadar, bukan kelalaian yang diperpanjang.
+
+- **[infra/db] Flake langka `TestEnsureSchemaLocked_BootParalel_TakBalapan`** (teramati sekali,
+  18 Agu 2026, saat run `./...` penuh): 1 dari 12 ensure paralel gagal dengan
+  `duplicate key ... pg_namespace_nspname_index` (SQLSTATE 23505) — persis kegagalan yang advisory
+  lock di `EnsureSchemaLocked` seharusnya cegah. TIDAK tereproduksi dalam 11 percobaan berikutnya
+  (3 run `./...` penuh dengan perubahan PR-W4b, 3 tanpa, 8 iterasi terfokus `-count=8`), dan kode
+  yang terlibat tak disentuh PR-W4b. Bukan diabaikan: bila lock benar-benar bocor sesekali, gejala
+  produksinya adalah ensure-on-write yang gagal SESUDAH mutasi commit (baris tersimpan tanpa audit)
+  — alasan asli lock itu ada (PR-W3b). Hipotesis yang perlu diuji lebih dulu: visibilitas katalog
+  `CREATE SCHEMA IF NOT EXISTS` bagi transaksi yang MULAI sebelum pemegang lock commit. Cara
+  menagihnya: jalankan test itu ber-`-count` tinggi di CI dan catat frekuensinya sebelum menduga
+  penyebab.
 
 - **[BELUM PUNYA RENCANA — perlu keputusan] Permukaan desain CLAUDE.md tanpa satu pun
   baris di ROADMAP.** Ditemukan saat audit yang sama, dengan membandingkan konsep di

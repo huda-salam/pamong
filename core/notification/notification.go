@@ -67,4 +67,9 @@ type Notification struct {
 type RenderedMessage struct {
 	Subject string
 	Body    string
+	// TemplateKey adalah kunci template yang menghasilkan pesan ini. Dibawa agar channel yang
+	// MENYIMPAN notifikasi (in-app) bisa mencatat asal-usulnya — tanpa ini kolom
+	// gov.notification_inapp.template_key tak pernah terisi di jalur produksi mana pun, dan UI
+	// tak punya cara mengelompokkan atau menyaring inbox per jenis kejadian.
+	TemplateKey string
 }

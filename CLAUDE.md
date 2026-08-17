@@ -370,6 +370,14 @@ GOV_AUTH_TOKEN_TTL=3600              # umur token internal (detik); 0 = default 
 # diabaikan loader secara sengaja, jadi periksa log itu bila setelan terasa tak berpengaruh.
 GOV_AUTH_TOKEN_MAX_BYTES=0
 
+# Scheduler (ADR-023) — loop eksekusi job terjadwal. Tabel gov.scheduled_jobs/job_runs/job_locks
+# hidup di DB SENTRAL, bukan tenant DB: pembacanya (Runner.RunDue) adalah loop proses-lebar tanpa
+# tenant. Migrasinya karena itu lewat jalur terpisah: `pamongctl migrate --central`.
+# SENGAJA tanpa flag enabled — menjalankan lebih dari satu instance aman karena lock ber-sewa.
+GOV_SCHEDULER_INTERVAL=30            # detik; periode polling jadwal jatuh tempo (0 = default 30)
+GOV_SCHEDULER_LOCK_TTL=300           # detik; masa sewa lock per job, HARUS > durasi job terpanjang
+                                     # yang wajar (sewa habis saat job jalan = job bisa jalan ganda)
+
 # Rate limiting
 GOV_RATELIMIT_ENABLED=true
 GOV_RATELIMIT_RPS=100
@@ -460,6 +468,12 @@ gov.tenant_configs
 gov.tenant_customizations
 gov.fiscal_periods
 gov.migration_history
+
+# Tabel platform ber-residensi SENTRAL (ADR-023) — schema `gov` di DB sentral, BUKAN tenant DB.
+# Pembacanya adalah loop scheduler proses-lebar yang tak berada di dalam tenant mana pun.
+gov.scheduled_jobs
+gov.job_runs
+gov.job_locks
 
 # Tabel identity sentral (DB terpisah: gov_identity)
 id.persons

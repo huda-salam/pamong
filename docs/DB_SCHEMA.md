@@ -19,10 +19,11 @@ memperbarui file ini dan menambah entri di `DB_CHANGELOG.md`, di PR yang sama.**
 2. Tiga jalur pembuatan skema (dan mengapa ada tiga)
 3. Identity DB — schema `id`
 4. Tenant DB — schema `gov` (tabel framework)
-5. Tenant DB — schema modul (contoh: `surat_masuk`)
-6. Konvensi kolom yang berlaku lintas tabel
-7. Tabel yang disebut konvensi tapi BELUM ada
-8. Peta relasi
+5. DB Sentral — schema `gov` (tabel platform, ADR-023)
+6. Tenant DB — schema modul (contoh: `surat_masuk`)
+7. Konvensi kolom yang berlaku lintas tabel
+8. Tabel yang disebut konvensi tapi BELUM ada
+9. Peta relasi
 
 ---
 
@@ -32,14 +33,16 @@ memperbarui file ini dan menambah entri di `DB_CHANGELOG.md`, di PR yang sama.**
 Postgres (satu atau banyak instance — tergantung tier tenant)
 │
 ├── db: gov_identity                        ← SENTRAL, satu-satunya yang shared
-│   └── schema: id                          persons, employments, credentials,
-│                                           tenant_registry, tenant_assignments,
-│                                           central_roles*, revoked_tokens, otps,
-│                                           data_keys, audit_logs
+│   ├── schema: id                          persons, employments, credentials,
+│   │                                       tenant_registry, tenant_assignments,
+│   │                                       central_roles*, revoked_tokens, otps,
+│   │                                       data_keys, audit_logs
+│   └── schema: gov                         tabel PLATFORM ber-residensi sentral (§5):
+│                                           scheduled_jobs, job_runs, job_locks (ADR-023)
 │
 ├── db: gov_pemkot_surabaya                 ← TENANT, isolasi penuh (ADR-004)
 │   ├── schema: gov                         tabel framework (audit, workflow, config,
-│   │                                       notification, scheduler, dst)
+│   │                                       notification, dst)
 │   └── schema: surat_masuk                 tabel modul bisnis
 │
 └── db: gov_pemkot_malang                   ← tenant lain, DB terpisah total
@@ -58,6 +61,11 @@ Konsekuensi bentuk ini yang harus selalu diingat saat membaca skema di bawah:
 - **Tidak ada JOIN lintas schema modul.** Butuh data modul lain → lewat port (CLAUDE.md).
 - Lokasi fisik DB tiap tenant dibaca runtime dari `id.tenant_registry`, sehingga kenaikan
   tier (shared → dedicated server) tidak menyentuh kode.
+- **Schema `gov` hidup di DUA tempat, dan itu disengaja.** `gov` berarti "tabel framework",
+  bukan "tabel tenant". Mayoritas tabel `gov.*` ber-residensi tenant (§4); satu kelompok —
+  scheduler — ber-residensi sentral (§5) karena pembacanya adalah loop platform tanpa tenant
+  (ADR-023). Yang menentukan residensi adalah daftar di `infra/schema/sources.go`, bukan nama
+  schema; DB sentral saat ini masih menumpang `gov_identity` (`CentralDBResolved`).
 
 ---
 
@@ -69,7 +77,8 @@ masuk `DB_CHANGELOG.md`.
 
 | # | Jalur | Sumber | Dijalankan oleh | Tracking |
 |---|---|---|---|---|
-| A | Migrasi ber-file, tenant DB | `core/{komponen}/migrations/*.sql`, `modules/{modul}/migrations/*.sql` (di-`go:embed`) | `pamongctl migrate` (via `infra/schema.CoreMigrations`) **dan** `db.ApplyEmbeddedSchema` saat store pertama dipakai | `gov.migration_history` |
+| A | Migrasi ber-file, tenant DB | `core/{komponen}/migrations/*.sql`, `modules/{modul}/migrations/*.sql` (di-`go:embed`) | `pamongctl migrate up` (via `infra/schema.CoreMigrations`) **dan** `db.ApplyEmbeddedSchema` saat store pertama dipakai | `gov.migration_history` (tenant DB) |
+| A′ | Migrasi ber-file, **DB sentral** (ADR-023) | `core/scheduler/migrations/*.sql` (di-`go:embed`) | `pamongctl migrate --central` (via `infra/schema.CentralMigrations`) **dan** `DBJobStore.EnsureSchema` saat scheduler dirakit | `gov.migration_history` (DB sentral) |
 | B | Migrasi ber-file, identity DB | `identity/migrations/*.sql` | **belum di-wire ke runner** — dijalankan manual/ops; e2e test menerapkannya dari direktori. Sengaja: perubahan identity butuh review ekstra (lihat ROADMAP) | belum |
 | C | Ensure-schema-on-write (DDL di Go) | konstanta DDL di file Go, mis. `tenantrole/adapter/db/schema.go` | dieksekusi idempoten (`IF NOT EXISTS`) di awal operasi baca/tulis atau saat boot | tidak ada |
 
@@ -667,7 +676,7 @@ menyentuh workflow. Di bentuk sekarang nol koneksi ditahan: acquire dan release 
 pernyataan singkat.
 
 Acquire atomik lewat `INSERT .. ON CONFLICT (instance_id) DO UPDATE ... WHERE locked_until < now()
-RETURNING token` — bentuk yang sama dengan `gov.job_locks` (§4.19). Yang kalah balapan
+RETURNING token` — bentuk yang sama dengan `gov.job_locks` (§5.3). Yang kalah balapan
 menerima nol baris (⇒ 409), bukan antrean.
 
 `locked_until` adalah pagar terhadap proses yang MATI memegang kunci: baris tak ikut mati bersama
@@ -784,7 +793,88 @@ yang berubah isinya.
 
 PK `(name, tahun)`. **Tanpa `tenant_id`** — isolasi sudah dari DB-per-tenant.
 
-### 4.17 `gov.scheduled_jobs` — jadwal job *(A, `core/scheduler/001`)*
+### 4.17 `gov.notification_templates` *(A, `core/notification/001`)*
+
+| Kolom | Tipe | Catatan |
+|---|---|---|
+| `tenant_id` | TEXT NOT NULL DEFAULT '' | **'' = template global** (default framework/modul) |
+| `key` | TEXT NOT NULL | `{modul}.{kejadian}` |
+| `locale` | TEXT NOT NULL DEFAULT 'id' | |
+| `subject` | TEXT NOT NULL DEFAULT '' | |
+| `body` | TEXT NOT NULL | konten, bukan logika |
+| `updated_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | |
+
+Constraint: `uq_notif_template UNIQUE (tenant_id, key, locale)`.
+Index: `idx_notif_template_lookup (tenant_id, key)`.
+
+Pemilihan "paling cocok" (tenant > global, locale sama > default) dilakukan di TemplateEngine —
+tabel hanya menyimpan kandidat.
+
+### 4.18 `gov.notification_inapp` — kotak masuk *(A, `core/notification/001`)*
+
+| Kolom | Tipe | Catatan |
+|---|---|---|
+| `id` | UUID PK DEFAULT gen_random_uuid() | |
+| `tenant_id` | TEXT NOT NULL DEFAULT '' | |
+| `person_id` | UUID NOT NULL | |
+| `template_key` | TEXT NOT NULL DEFAULT '' | |
+| `subject` | TEXT NOT NULL DEFAULT '' | |
+| `body` | TEXT NOT NULL | |
+| `is_read` | BOOLEAN NOT NULL DEFAULT false | |
+| `created_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | |
+
+Index: `idx_notif_inapp_recipient (tenant_id, person_id, created_at DESC)`.
+
+### 4.19 `gov.notification_deliveries` — jejak pengiriman *(A, `core/notification/001`)*
+
+| Kolom | Tipe | Catatan |
+|---|---|---|
+| `id` | UUID PK DEFAULT gen_random_uuid() | |
+| `tenant_id` | TEXT NOT NULL DEFAULT '' | |
+| `person_id` | UUID NOT NULL | |
+| `channel` | TEXT NOT NULL | |
+| `template_key` | TEXT NOT NULL DEFAULT '' | |
+| `status` | TEXT NOT NULL | `delivered` \| `failed` \| `read` |
+| `error` | TEXT NOT NULL DEFAULT '' | |
+| `delivered_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | |
+
+Index: `idx_notif_delivery_recipient (tenant_id, person_id, delivered_at DESC)`.
+
+Satu baris per upaya kirim per channel — menjawab pertanyaan audit "kenapa notif tidak sampai".
+
+---
+
+## 5. DB Sentral — schema `gov` (tabel platform, ADR-023)
+
+Satu-satunya kelompok tabel `gov.*` yang **TIDAK** hidup di tenant DB. Nama schema-nya tetap
+`gov` karena `gov` menandai "tabel framework", bukan "tabel tenant" — yang membedakan residensi
+adalah **DB mana**, bukan nama schema (ADR-023 Keputusan 7).
+
+**Kenapa sentral.** Residensi mengikuti PEMBACA, bukan penulis. Penulisnya memang ber-tenant
+(`SchedulerDeadlines.ScheduleDeadline` dipanggil di tengah transisi, dari dalam request), tapi
+pembacanya — `scheduler.Runner.RunDue`, satu goroutine proses-lebar — tidak berada di dalam tenant
+mana pun; ia bertanya *"apa yang jatuh tempo, di mana saja?"*. Satu `JobStore` di atas satu pool
+tenant tak bisa menjawabnya, dan memaksanya meng-iterasi seluruh tenant tiap tick akan mengubah
+pool tenant yang hari ini dibuka MALAS menjadi pool permanen untuk setiap tenant (`pool_idle` = 5
+per tenant → tembok `max_connections` pada ~20 tenant). Pertimbangan lengkap + alternatif yang
+ditolak ada di ADR-023.
+
+`tenant_id` pada tabel-tabel ini karena itu **bermakna dan wajib**, berbeda dari kebanyakan tabel
+tenant DB yang isolasinya struktural: ia yang me-route eksekusi handler kembali ke tenant DB yang
+benar, lewat `port.WithTenant` yang disisipkan `Runner` sebelum memanggil `JobFunc`. Nilai kosong
+menandai job level-platform — bentuk yang hanya koheren justru karena tabelnya sentral.
+
+**Jalur migrasinya terpisah:** `pamongctl migrate --central` (`infra/schema.CentralMigrations`),
+bukan `pamongctl migrate up` yang menyasar tenant DB. Pemisahnya adalah keanggotaan daftar di
+`infra/schema/sources.go` — bukan nama schema — sehingga salah daftar menempatkan tabel di DB yang
+keliru **tanpa satu pun error**. Gerbangnya: `TestResidensi_*` di `infra/schema/sources_test.go`.
+
+**Batas isi payload.** Karena baris-baris ini hidup di DB bersama seluruh tenant, `payload` hanya
+boleh memuat **rujukan** — UUID instance, nama state, nama role, tenant_id — tidak pernah isi
+dokumen, nama orang, atau field ber-`DataClass` `personal_id`/`specific` (ADR-009). Job yang butuh
+konteks lebih kaya membacanya dari tenant DB saat handler berjalan.
+
+### 5.1 `gov.scheduled_jobs` — jadwal job *(A, `core/scheduler/001`)*
 
 | Kolom | Tipe | Catatan |
 |---|---|---|
@@ -805,7 +895,7 @@ Index parsial: `idx_scheduled_jobs_due (next_run_at) WHERE enabled`.
 Bentuk one-shot (`cron_expr` kosong) inilah yang dipakai deadline SLA workflow — tak perlu
 mekanisme penjadwalan terpisah.
 
-### 4.18 `gov.job_runs` — riwayat eksekusi *(A, `core/scheduler/001`)*
+### 5.2 `gov.job_runs` — riwayat eksekusi *(A, `core/scheduler/001`)*
 
 | Kolom | Tipe | Catatan |
 |---|---|---|
@@ -821,7 +911,7 @@ mekanisme penjadwalan terpisah.
 
 Index: `idx_job_runs_schedule (schedule_id, started_at DESC)`.
 
-### 4.19 `gov.job_locks` — lock terdistribusi ber-sewa *(A, `core/scheduler/002`)*
+### 5.3 `gov.job_locks` — lock terdistribusi ber-sewa *(A, `core/scheduler/002`)*
 
 | Kolom | Tipe | Catatan |
 |---|---|---|
@@ -831,62 +921,11 @@ Index: `idx_job_runs_schedule (schedule_id, started_at DESC)`.
 
 Lease (bukan lock permanen) mencegah deadlock abadi bila instance pemegang mati.
 
-### 4.20 `gov.notification_templates` *(A, `core/notification/001`)*
-
-| Kolom | Tipe | Catatan |
-|---|---|---|
-| `tenant_id` | TEXT NOT NULL DEFAULT '' | **'' = template global** (default framework/modul) |
-| `key` | TEXT NOT NULL | `{modul}.{kejadian}` |
-| `locale` | TEXT NOT NULL DEFAULT 'id' | |
-| `subject` | TEXT NOT NULL DEFAULT '' | |
-| `body` | TEXT NOT NULL | konten, bukan logika |
-| `updated_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | |
-
-Constraint: `uq_notif_template UNIQUE (tenant_id, key, locale)`.
-Index: `idx_notif_template_lookup (tenant_id, key)`.
-
-Pemilihan "paling cocok" (tenant > global, locale sama > default) dilakukan di TemplateEngine —
-tabel hanya menyimpan kandidat.
-
-### 4.21 `gov.notification_inapp` — kotak masuk *(A, `core/notification/001`)*
-
-| Kolom | Tipe | Catatan |
-|---|---|---|
-| `id` | UUID PK DEFAULT gen_random_uuid() | |
-| `tenant_id` | TEXT NOT NULL DEFAULT '' | |
-| `person_id` | UUID NOT NULL | |
-| `template_key` | TEXT NOT NULL DEFAULT '' | |
-| `subject` | TEXT NOT NULL DEFAULT '' | |
-| `body` | TEXT NOT NULL | |
-| `is_read` | BOOLEAN NOT NULL DEFAULT false | |
-| `created_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | |
-
-Index: `idx_notif_inapp_recipient (tenant_id, person_id, created_at DESC)`.
-
-### 4.22 `gov.notification_deliveries` — jejak pengiriman *(A, `core/notification/001`)*
-
-| Kolom | Tipe | Catatan |
-|---|---|---|
-| `id` | UUID PK DEFAULT gen_random_uuid() | |
-| `tenant_id` | TEXT NOT NULL DEFAULT '' | |
-| `person_id` | UUID NOT NULL | |
-| `channel` | TEXT NOT NULL | |
-| `template_key` | TEXT NOT NULL DEFAULT '' | |
-| `status` | TEXT NOT NULL | `delivered` \| `failed` \| `read` |
-| `error` | TEXT NOT NULL DEFAULT '' | |
-| `delivered_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | |
-
-Index: `idx_notif_delivery_recipient (tenant_id, person_id, delivered_at DESC)`.
-
-Satu baris per upaya kirim per channel — menjawab pertanyaan audit "kenapa notif tidak sampai".
-
----
-
-## 5. Tenant DB — schema modul
+## 6. Tenant DB — schema modul
 
 Satu schema Postgres per modul, namanya = nama modul. Nama tabel: `{schema}.{entity_plural}`.
 
-### 5.1 `surat_masuk.surat_masuks` *(A, `modules/surat_masuk/001`)*
+### 6.1 `surat_masuk.surat_masuks` *(A, `modules/surat_masuk/001`)*
 
 | Kolom | Tipe | Catatan |
 |---|---|---|
@@ -905,7 +944,7 @@ Satu schema Postgres per modul, namanya = nama modul. Nama tabel: `{schema}.{ent
 
 Index: `idx_surat_perihal (perihal)`, `idx_surat_tanggal_agenda (tanggal_agenda)`.
 
-### 5.2 `surat_masuk.disposisis` *(A, `modules/surat_masuk/001`)*
+### 6.2 `surat_masuk.disposisis` *(A, `modules/surat_masuk/001`)*
 
 | Kolom | Tipe | Catatan |
 |---|---|---|
@@ -922,7 +961,7 @@ Index: `idx_disposisi_surat (surat_id)`.
 
 ---
 
-## 6. Konvensi kolom yang berlaku lintas tabel
+## 7. Konvensi kolom yang berlaku lintas tabel
 
 **Kolom sistem entity modul** (di-generate `infra/db.GenerateMigration` dari `EntityDef`, jadi
 seragam di semua modul):
@@ -973,7 +1012,7 @@ membuat mekanisme sendiri (titik ekstensi #7).
 
 ---
 
-## 7. Tabel yang disebut konvensi tapi BELUM ada
+## 8. Tabel yang disebut konvensi tapi BELUM ada
 
 CLAUDE.md menyebut beberapa tabel sebagai bagian dari rancangan. Berikut yang **belum** ada di
 kode, agar tidak ada yang mencarinya sia-sia:
@@ -988,7 +1027,7 @@ kode, agar tidak ada yang mencarinya sia-sia:
 
 ---
 
-## 8. Peta relasi
+## 9. Peta relasi
 
 ```
 IDENTITY DB (gov_identity, schema id)

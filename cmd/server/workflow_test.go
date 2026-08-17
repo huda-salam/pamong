@@ -93,7 +93,7 @@ func TestCollectWorkflowSeeds_ModulTanpaWorkflow(t *testing.T) {
 // Tenant kosong ditolak: tumpukan workflow SELALU milik satu tenant, dan membangunnya untuk
 // tenant "" akan meminta pool yang tak pernah bisa di-resolve.
 func TestWorkflowFactory_TenantKosongDitolak(t *testing.T) {
-	f := newWorkflowFactory(nil, nil, nil, nil)
+	f := newWorkflowFactory(nil, nil, nil, nil, nil, nil)
 
 	if _, err := f.RuntimeFor(context.Background(), ""); err == nil {
 		t.Fatal("tenant kosong diterima; ingin ditolak")
@@ -126,7 +126,7 @@ func (p *poolProviderPalsu) Tenant(context.Context, string) (*db.Pool, error) {
 func TestWorkflowFactory_PoolDimintaUlangTiapPermintaan(t *testing.T) {
 	lama, baru := db.NewPool(nil), db.NewPool(nil)
 	prov := &poolProviderPalsu{urutan: []*db.Pool{lama, baru}}
-	f := newWorkflowFactory(prov, coreWf.NewActionRegistry(), nil, nil)
+	f := newWorkflowFactory(prov, coreWf.NewActionRegistry(), nil, nil, nil, nil)
 	// Tandai kedua DB "sudah disiapkan" supaya test ini murni soal perakitan, tanpa menyentuh DB.
 	f.prepared[lama] = struct{}{}
 	f.prepared[baru] = struct{}{}

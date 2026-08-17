@@ -5,13 +5,11 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/huda-salam/pamong/core/config"
 	identityauth "github.com/huda-salam/pamong/identity/adapter/auth"
 	identitydb "github.com/huda-salam/pamong/identity/adapter/db"
 	identityhttp "github.com/huda-salam/pamong/identity/adapter/http"
 	"github.com/huda-salam/pamong/identity/usecase"
 	"github.com/huda-salam/pamong/infra/db"
-	"github.com/huda-salam/pamong/infra/messaging"
 	"github.com/huda-salam/pamong/port"
 	tenantroledb "github.com/huda-salam/pamong/tenantrole/adapter/db"
 )
@@ -45,7 +43,7 @@ func wireAuth(
 	issuer port.TokenIssuer,
 	limiter port.RateLimiter,
 	logger port.Logger,
-	msgCfg config.MessagingConfig,
+	sender port.MessagingPort,
 	verifyGate *usecase.VerifyGate,
 ) (*identityhttp.Handler, error) {
 	creds, err := identitydb.NewCredentialRepo(identityPool, cryptoSvc)
@@ -65,13 +63,6 @@ func wireAuth(
 	passwords := identityauth.NewBcryptVerifier()
 	central := identitydb.NewCentralRoleResolver(identityPool)
 	tenantRoles := tenantRoleResolver{connMgr: connMgr}
-
-	// Transport OTP: driver dari config (log untuk dev — DITOLAK di staging/production oleh
-	// config.Validate karena body OTP mendarat di log; smtp untuk email nyata).
-	sender, err := messaging.NewFromConfig(msgCfg)
-	if err != nil {
-		return nil, err
-	}
 
 	loginPolicy := usecase.DefaultLoginPolicy()
 	otpPolicy := usecase.DefaultOTPPolicy()

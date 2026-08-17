@@ -19,6 +19,7 @@ import (
 	"sync"
 
 	"github.com/huda-salam/pamong/core/domain"
+	coreNotif "github.com/huda-salam/pamong/core/notification"
 	coreWf "github.com/huda-salam/pamong/core/workflow"
 	gatewaywf "github.com/huda-salam/pamong/gateway/workflow"
 	"github.com/huda-salam/pamong/infra/db"
@@ -40,6 +41,13 @@ type workflowFactory struct {
 	seeds   []domain.WorkflowRef // definisi baseline seluruh modul terdaftar (FS ter-embed)
 	logger  port.Logger
 
+	// deadlines DIBAGI semua tenant: jadwal hidup di DB sentral (ADR-023), jadi satu adapter
+	// di atas satu Runner melayani seluruh tenant. Tenant dibawa di baris job, bukan di objek.
+	deadlines coreWf.DeadlineScheduler
+	// notifs per-tenant: inbox & template notifikasi hidup di tenant DB. nil = notifikasi
+	// transisi tak dipasang (dipakai unit test yang hanya menguji resolusi pool).
+	notifs *notificationFactory
+
 	mu       sync.Mutex
 	prepared map[*db.Pool]struct{} // DB yang skemanya sudah dipastikan & seed-nya sudah ditanam
 }
@@ -55,15 +63,22 @@ var _ gatewaywf.RuntimeProvider = (*workflowFactory)(nil)
 // newWorkflowFactory merakit factory. seeds dikumpulkan dari manifest modul yang SUDAH
 // tervalidasi (lihat collectWorkflowSeeds) — modul yang gagal validasi tak boleh menyumbang
 // definisi ke DB tenant mana pun.
+// deadlines & notifs sengaja PARAMETER, bukan setter opsional ber-chain: keduanya adalah
+// perbedaan antara engine yang menjadwalkan SLA + mengirim notifikasi dan engine yang diam-diam
+// tidak melakukan keduanya. Parameter memaksa setiap call site menyatakan pilihannya secara
+// terlihat — setter yang boleh dilupakan adalah bentuk yang melahirkan komponen dorman (DoD 11).
 func newWorkflowFactory(pools tenantPoolProvider, actions *coreWf.ActionRegistry,
-	seeds []domain.WorkflowRef, logger port.Logger) *workflowFactory {
+	seeds []domain.WorkflowRef, logger port.Logger,
+	deadlines coreWf.DeadlineScheduler, notifs *notificationFactory) *workflowFactory {
 	return &workflowFactory{
-		pools:    pools,
-		actions:  actions,
-		guard:    coreWf.NewGuardEvaluator(),
-		seeds:    seeds,
-		logger:   logger,
-		prepared: make(map[*db.Pool]struct{}),
+		pools:     pools,
+		actions:   actions,
+		guard:     coreWf.NewGuardEvaluator(),
+		seeds:     seeds,
+		logger:    logger,
+		deadlines: deadlines,
+		notifs:    notifs,
+		prepared:  make(map[*db.Pool]struct{}),
 	}
 }
 
@@ -96,8 +111,24 @@ func (f *workflowFactory) RuntimeFor(ctx context.Context, tenantID string) (gate
 
 	templates := infrawf.NewDBTemplateStore(pool, defs)
 	instances := infrawf.NewDBInstanceStore(pool)
+
+	opts := []coreWf.Option{coreWf.WithTemplates(templates)}
+	if f.deadlines != nil {
+		opts = append(opts, coreWf.WithDeadlines(f.deadlines))
+	}
+	if f.notifs != nil {
+		// Notifier per-tenant: transisi ber-`notify:` mengirim ke inbox tenant INI. Dirakit di
+		// sini (bukan sekali saat boot) karena inbox-nya hidup di tenant DB — alasan yang sama
+		// dengan tumpukan workflow di atasnya, termasuk soal tenant yang pindah DB.
+		notifier, err := f.notifs.ForTenant(ctx, tenantID)
+		if err != nil {
+			return gatewaywf.Runtime{}, fmt.Errorf("notifier transisi tenant %q: %w", tenantID, err)
+		}
+		opts = append(opts, coreWf.WithNotifier(infrawf.NewNotifierTransition(notifier, coreNotif.ChannelInApp)))
+	}
+
 	return gatewaywf.Runtime{
-		Engine:    coreWf.New(defs, f.actions, f.guard, coreWf.WithTemplates(templates)),
+		Engine:    coreWf.New(defs, f.actions, f.guard, opts...),
 		Instances: instances,
 	}, nil
 }
@@ -111,13 +142,11 @@ func (f *workflowFactory) RuntimeFor(ctx context.Context, tenantID string) (gate
 // bersamaan bisa sama-sama menyiapkan; keduanya idempoten (ensure schema di bawah advisory lock,
 // seed lewat SeedIfAbsent).
 //
-// Engine yang dirakit di RuntimeFor SENGAJA tanpa WithDeadlines & WithNotifier: penjadwalan SLA
-// dan notifikasi transisi menuntut scheduler.Runner (goroutine berumur panjang ber-shutdown) dan
-// hub notifikasi per-tenant — keduanya lingkup PR-W4b. Konsekuensinya nyata dan harus disebut:
-// sampai W4b mendarat, state ber-`sla_hours` tidak menjadwalkan eskalasi apa pun dan `notify:`
-// pada transisi tidak mengirim apa pun. Keduanya no-op yang sudah menjadi kontrak engine
-// (deadlines/notifier nil), bukan kegagalan diam-diam yang baru diperkenalkan di sini.
-// DEFERRED(PR-W4b): WithDeadlines(SchedulerDeadlines) + WithNotifier(NotifierTransition).
+// RESOLVED(PR-W4b): engine kini menerima WithDeadlines & WithNotifier bila keduanya disuntikkan
+// (lihat newWorkflowFactory). Sebelumnya keduanya nil, dan konsekuensinya adalah no-op yang SAH
+// menurut kontrak engine — state ber-`sla_hours` tak menjadwalkan apa pun, `notify:` tak mengirim
+// apa pun, tanpa satu pun error. Persis kelas kegagalan yang tak bisa dilihat test per-komponen,
+// dan yang dibuktikan tertutup oleh sla_notification_e2e_integration_test.go.
 func (f *workflowFactory) prepare(ctx context.Context, tenantID string, pool *db.Pool,
 	defs *infrawf.DBStore) error {
 	f.mu.Lock()
