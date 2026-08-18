@@ -1542,6 +1542,22 @@ Bila satu titik keputusan punya beberapa varian sah yang dipilih per-tenant
 `if tenant.metode == ...`. Daftarkan tiap varian ke strategy registry dengan key,
 simpan hanya key-nya di config tenant. Lihat bagian "Fleksibilitas & titik ekstensi".
 
+### 11. Batas durabilitas wajib diperiksa, bukan diasumsikan
+
+Untuk setiap jalur yang menulis **durable lebih dari sekali**: daftarkan tulisannya
+berurutan, tandai di mana titik commit-nya, lalu nyatakan apa yang terjadi bila langkah
+sesudahnya gagal.
+
+**Efek yang tidak bisa dibatalkan — email, pesan keluar, panggilan pihak ketiga, tulisan ke
+DB lain — tidak boleh mendahului commit baris otoritatifnya.** Bila dua tulisan durable
+mendarat di database yang BERBEDA dalam satu jalur, itu ADR, bukan komentar review: tak ada
+transaksi yang bisa melingkupinya, jadi urutannya adalah keputusan arsitektur.
+
+Pemeriksaan ini sengaja mekanis — lima menit, hasilnya sama siapa pun yang menjalankannya.
+Ia lahir dari PR-W4b (ADR-024): jalur transisi workflow menjadwalkan SLA ke DB sentral dan
+mengirim email ke DB tenant SEBELUM baris instance tersimpan. Tak satu pun test per-komponen
+bisa melihatnya, dan tiga lapis tambalan dibangun di atasnya sebelum akarnya ketahuan.
+
 ---
 
 ## Testing
@@ -1972,6 +1988,9 @@ ADR Accepted tidak diubah. Buat ADR baru yang supersede dengan referensi ke ADR 
 8. Perubahan core sudah ada ADR-nya
 9. Permission baru sudah terdaftar di manifest dan `docs/contracts/permissions.md`
 10. Komponen baru ter-wire di composition root + ada test atas rakitannya (lihat "Wiring")
+11. Jalur yang menulis durable >1× sudah didaftar berurutan + titik commit ditandai (Aturan 11);
+    sambungan baru lintas durabilitas/tenant, atau komponen tanpa pemanggil, punya kontrak
+    sambungan tertulis (DoD Aturan 12 di ROADMAP.md)
 
 ---
 
@@ -1997,3 +2016,10 @@ ADR Accepted tidak diubah. Buat ADR baru yang supersede dengan referensi ke ADR 
   di `testkit/` agar siap dipakai test
 - Untuk perubahan yang menyentuh `identity/`, selalu flag ke developer bahwa
   perubahan ini sensitif dan perlu review ekstra sebelum commit
+- **Komponen yang ditulis sebelum pemanggilnya ada WAJIB menyatakan pemanggil yang
+  diasumsikan** — sinkron atau asinkron, ber-retry atau tidak — di doc comment port-nya.
+  PR yang me-wire-nya wajib **mengonfirmasi atau meng-amend** pernyataan itu secara eksplisit,
+  bukan mengabaikannya. Ini pengetatan Aturan 11 DoD: dirakit saja belum cukup, rakitannya
+  harus memenuhi asumsi yang dideklarasikan. Preseden: `coreWf.TransitionNotifier` menyatakan
+  errornya dipropagasi "agar caller async bisa retry"; caller async itu tak pernah ada, dan ia
+  di-wire ke handler HTTP sinkron tanpa satu pun yang memeriksa (ADR-024)

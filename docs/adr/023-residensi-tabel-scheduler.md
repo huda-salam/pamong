@@ -3,6 +3,12 @@
 ## Status
 Accepted
 
+Amended by ADR-024 — pada satu klausul saja: alasan "opsi fasad per-tenant" ditolak. ADR-024
+menajamkannya menjadi *pool per-tenant yang ditahan permanen*, bukan iterasi per-tenant itu
+sendiri (kolam worker berbatas membuat anggaran koneksi O(worker), bukan O(tenant)).
+**Keputusan residensi di ADR ini tidak berubah** — tabel scheduler tetap di DB sentral, dan
+alasan utamanya (residensi mengikuti PEMBACA) tetap berlaku utuh.
+
 ## Konteks
 
 `core/scheduler` lengkap dan teruji sejak PR-3.5.1/3.5.2: `Registry` (JobKey → JobFunc),

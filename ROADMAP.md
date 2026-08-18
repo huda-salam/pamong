@@ -1294,6 +1294,12 @@ tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
     Dua temuan lain sengaja TIDAK ditambal di sini karena menuntut kebijakan retry/rekonsiliasi —
     lihat backlog.
   - Menutup `DEFERRED(PR-W4b)` di `cmd/server/workflow.go`.
+  - **Tindak lanjut ADR-024 (grup PR-W7 di bawah).** Analisis pasca-PR ini menemukan bahwa
+    sembilan temuan di dua putaran review bukan kebetulan: ketiga tambalannya
+    (`tolerantDeadlines`, `tolerantTransitionNotifier`, heuristik `berubah`) menutupi satu cacat
+    struktural — efek samping durable dijalankan sebelum baris instance tersimpan, lintas dua DB.
+    Yang dibangun di W4b TETAP (residensi sentral, runner, lock, seeder, pagar tenant, e2e);
+    yang dibongkar W7 justru tambalannya.
 
 - **PR-W4c** Seam entitas: snapshot guard + otorisasi tingkat entitas ← W4a
   - Dua kebutuhan, satu seam yang sama ("bolehkah aktor ini menyentuh entitas itu, dan seperti apa
@@ -1333,7 +1339,75 @@ tanpa W1 tak ada token, tanpa token tak ada rute yang bisa diuji end-to-end.
     sentral (kandidat: central role platform)? Putuskan sebelum menulis kode; kemungkinan
     butuh ADR.
 
-**Setelah W1–W6 tutup:** jalankan audit DEFERRED penuh
+### Grup PR-W7 — Perbaikan mendasar efek samping workflow (ADR-024)
+
+Lahir dari analisis pasca-PR-W4b: perakitannya menuntut dua putaran review dengan sembilan
+temuan, dan tiga temuan putaran-2 adalah konsekuensi perbaikan putaran-1. Akarnya bukan kualitas
+perbaikannya melainkan **satu cacat struktural** — efek samping durable (jadwal SLA ke DB SENTRAL,
+notifikasi + email ke DB TENANT) dijalankan SEBELUM baris instance tersimpan, lintas dua database,
+tanpa transaksi yang mungkin melingkupinya. Semua tambalan W4b (`tolerantDeadlines`,
+`tolerantTransitionNotifier`, heuristik `berubah` di handler) adalah gejala, bukan obat.
+
+Analisis penuh + daftar cacat mikro M1–M8 + perbandingan dengan kode yang ada:
+**`docs/adr/024-efek-samping-transisi-dan-sla-level-triggered.md`**.
+
+**Urutan disengaja.** W7b mengubah interface publik `core/workflow` dan menulis ulang bagian
+handler yang juga disentuh W4c — kerjakan **W7a–W7b sebelum W4c** agar handler tak ditulis dua kali.
+Tarik juga **W6(a) ke depan**: relay tanpa metrik yang terlihat adalah komponen yang matinya diam.
+
+- **PR-W7a** Null Object untuk seam opsional engine (ADR-024 K5) ← W4b
+  - `WithDeadlines`/`WithNotifier` tetap ada; field selalu non-nil (default no-op). Hapus empat
+    `!= nil` dari `core/workflow/engine.go` (baris 277, 291, 311 + konstruksi).
+  - Kecil, mandiri, tanpa perubahan perilaku. Sengaja dipisah agar diff W7b tetap terbaca.
+  - Test: mis-wiring tak lagi bisa menyamar sebagai "SLA sengaja mati".
+
+- **PR-W7b** Engine mengembalikan NIAT + outbox efek tenant (ADR-024 K1, K2) ← W7a
+  - `ExecuteRequest`/`Start` → `(TransitionOutcome, error)` dengan `Effects []Effect`
+    (`ScheduleDeadlineEffect` / `CancelDeadlineEffect` / `NotifyEffect`). Engine berhenti
+    menyentuh DB mana pun; `error` darinya kembali berarti **satu hal**: transisi ditolak.
+  - Tabel baru `gov.workflow_effects` (tenant DB). Handler menyimpan instance + baris efek dalam
+    SATU transaksi tenant. **DB_SCHEMA.md + DB_CHANGELOG.md di PR yang sama.**
+  - Relay efek (bentuknya menyalin `infra/eventbus/outbox.go` — store + retry policy + DLQ sudah
+    ada di sana; JANGAN bikin mekanisme kedua). Tahap ini relay boleh masih per-pool sederhana;
+    W7c yang memindahkannya ke penyapu bersama.
+  - Dedup efek: `ScheduleDeadline` sudah idempoten lewat `jobIDForKey`; `Notify` di-dedup pada
+    `(instance_id, transition_seq, to_role, channel)`.
+  - **HAPUS** `tolerantDeadlines`, `tolerantTransitionNotifier` (`cmd/server/`), dan heuristik
+    `berubah` (`gateway/workflow/handler.go:217`). Pertanyaan "200 atau 5xx" lenyap bersamanya.
+  - Sesuaikan e2e `cmd/server/sla_notification_e2e_integration_test.go`: menunggu relay, bukan
+    efek sinkron. Tambah test yang membuktikan **kegagalan Save tidak menyisakan efek terkirim**
+    (mutasi: lepas transaksi → test harus gagal).
+
+- **PR-W7c** `TenantSweeper` — pekerjaan latar per-tenant, anggaran O(worker) (ADR-024 K3) ← W7b
+  - Registry `SweepTask` + kolam worker berukuran tetap (config, default 8) + cache pool tenant
+    ber-LRU **berbatas** (`TenantConnManager` sekarang meng-cache tanpa batas & tanpa evakuasi —
+    lihat M7). Daftar tenant dari `id.tenant_registry`, sumber yang sama dengan resolver runtime.
+  - Pindahkan relay efek W7b ke sini sebagai `SweepTask` pertama; siapkan tempat untuk relay
+    outbox event (yang sampai kini tak punya penulis produksi) dan pembersih idempotency.
+  - Metrik lag relay + health check WAJIB di PR ini, bukan menyusul.
+
+- **PR-W7d** Rekonsiliasi SLA level-triggered (ADR-024 K4) ← W7c
+  - `SLAReconcileTask`: turunkan deadline yang SEHARUSNYA dari state terbuka + `sla_hours` +
+    waktu masuk state (dari `History`), bandingkan dengan `gov.scheduled_jobs`, perbaiki selisih.
+  - Butuh method baru pada `InstanceStore`: daftar instance terbuka di state ber-SLA (belum ada).
+  - Menutup backlog "deadline gagal terjadwal tak punya jalur pemulihan" dengan **menghapus kelas
+    masalahnya**, bukan menambah penanganan error.
+
+- **PR-W7e** Kebijakan retry job one-shot (ADR-024 K6) ← W7d
+  - `core/scheduler/runner.go:214` `advance` berhenti menonaktifkan one-shot tanpa memandang
+    status. Backoff eksponensial + batas percobaan (default 5) → status `exhausted`, bukan dibuang
+    diam-diam. `JobRun.Attempt` akhirnya terpakai di luar `Replay`.
+  - Aman justru karena W7d sudah mendarat: rekonsiliasi adalah jaring terakhir.
+  - Menutup backlog "job gagal tak pernah diulang".
+
+- **PR-W7f** DDL keluar dari jalur request (ADR-024 K7) — track terpisah
+  - Ganti `EnsureSchemaLocked` di jalur request dengan pola deploy-time: provisioning membuat
+    skema, aplikasi **memeriksa & gagal cepat** bila tak sesuai (pola `migrate --check`).
+  - Menutup kelas flake `TestEnsureSchemaLocked_BootParalel_TakBalapan` (23505 pada
+    `pg_namespace_nspname_index`) dengan menghapus balapannya, bukan mengunci lebih rapat.
+  - Menyentuh provisioning tenant → boleh dijadwalkan lepas dari W7a–W7e.
+
+**Setelah W1–W7 tutup:** jalankan audit DEFERRED penuh
 (`grep -rn 'DEFERRED(' --include='*.go'`) dan pastikan tak ada lagi penanda ber-fase lewat.
 Baru sesudah itu ambil keputusan urutan berikutnya — Phase 4 (rule engine, pilar pendiri
 yang memblokir 3.3.4/`core/fiscal`/5.2.2) vs entity tiers & `pamongctl eject` (janji DX
@@ -1558,6 +1632,7 @@ Sebuah PR dianggap selesai jika:
 9. PR description mengikuti template di CLAUDE.md
 10. Tidak ada `TODO`/`FIXME` tanpa issue terkait
 11. **Terpasang di composition root pada PR yang sama** — lihat aturan di bawah
+12. **Kontrak sambungan ditulis sebelum komponen kedua** — lihat aturan di bawah
 
 ### Aturan 11 — tidak ada komponen "selesai tapi dorman"
 
@@ -1595,6 +1670,37 @@ Konsekuensi praktis:
 
 Ini aturan yang mengoreksi cara kerja Phase 2–3, bukan penilaian ulang atasnya —
 utang yang terlanjur ada dibayar lewat sprint PR-W1..W5 (Sub-phase 5.0).
+
+### Aturan 12 — kontrak sambungan ditulis sebelum komponen kedua
+
+Sebelum menulis komponen **kedua** yang akan berbagi sambungan dengan komponen yang sudah
+ada, tulis dulu **kontrak sambungannya**: siapa memanggil siapa, sinkron atau tidak, apa yang
+terjadi bila gagal **di tiap sisi**, dan di mana batas durabilitasnya. Satu paragraf di PRD
+atau doc comment port — bukan dokumen tersendiri. Bila kedua sisi menulis durable ke database
+yang berbeda, itu **ADR**, bukan komentar review.
+
+**Pemicunya dibatasi tiga keadaan saja**, supaya tidak berubah jadi upacara yang dilewati:
+
+1. sambungan melintasi **batas durabilitas** (ada commit di antara kedua sisi), atau
+2. sambungan melintasi **batas tenant/DB**, atau
+3. komponen ditulis **sebelum pemanggilnya ada**.
+
+**Kenapa ini tidak sama dengan "rancang makro dulu".** Aturan 11 sudah ada sebelum PR-W4b
+dan W4b MEMATUHINYA — komponen dirakit, rakitannya diuji. Tetap butuh dua putaran review
+dengan sembilan temuan. Aturan 11 menjawab *"apakah dirakit?"*; yang gagal adalah *"apa
+semantik sambungannya?"*. Rancangan makro yang lebih tebal tidak menutup itu — ia menutup
+hal-hal yang bisa dibayangkan, dan melewatkan sisanya sama saja, hanya dengan sunk cost yang
+membuat orang enggan membongkar.
+
+Yang menutupnya adalah pertanyaan mekanis lima menit (CLAUDE.md §Aturan pengembangan #11):
+daftarkan tulisan durable di jalur itu berurutan, tandai titik commit. Diterapkan ke jalur
+transisi W4b, daftarnya langsung berbunyi sendiri — dan tak satu pun test per-komponen bisa.
+
+Lahir dari PR-W4b / ADR-024. Catatan penting soal cara menyimpan pelajaran: memori proyek ini
+sudah memuat "satu putaran review tak cukup untuk perubahan lifecycle" sejak PR-W4a. Ia
+**memprediksi** W4b dengan tepat dan tidak mencegahnya sedikit pun. Pelajaran yang disimpan
+sebagai peringatan tidak mengubah perilaku; yang mengubah perilaku adalah gerbang dan daftar
+periksa. Karena itu aturan ini punya pemicu yang bisa diperiksa, bukan nasihat.
 
 ---
 
@@ -1675,6 +1781,8 @@ rule linter `markerref`).
   selamanya" akan menghantam DB tiap 30 detik untuk job yang rusak permanen. Itu keputusan desain,
   bukan tambalan wiring. Kerjakan bersama permukaan admin scheduler (retry/replay manual) atau saat
   outbox punya penulis produksi — keduanya butuh kebijakan retry yang sama.
+  **DIJADWALKAN: PR-W7e** (ADR-024 K6). Batas percobaan jadi aman di sana karena PR-W7d sudah
+  memasang rekonsiliasi sebagai jaring terakhir.
 
 - **[Phase-5.x] Deadline SLA yang gagal dijadwalkan tak punya jalur pemulihan.** Konsekuensi sadar
   dari `tolerantDeadlines` (PR-W4b): kegagalan `ScheduleDeadline` dicatat metrik
@@ -1684,6 +1792,9 @@ rule linter `markerref`).
   instance ber-state SLA di tiap tenant terhadap `gov.scheduled_jobs` sentral lalu menjadwalkan
   yang hilang. Itu job scheduler biasa; bisa ditulis begitu ada kebutuhan nyata (mis. setelah
   metrik di atas benar-benar bergerak).
+  **DIJADWALKAN: PR-W7d** (ADR-024 K4). Kesimpulannya naik pangkat: rekonsiliasi bukan lagi
+  "bisa ditulis bila perlu" melainkan MODEL KEBENARAN untuk SLA — penjadwalan saat transisi
+  turun status jadi optimasi. Tepi yang terlewat sembuh sendiri, bukan ditangani.
 
 - **[Phase-5.x] Template notifikasi MILIK MODUL tak punya jalur seeding.** Ditemukan saat
   merakit PR-W4b. `gov.notification_templates` kini diisi seeder framework untuk template milik
@@ -1697,9 +1808,12 @@ rule linter `markerref`).
   ke manifest modul (pola sama dengan `Workflows []WorkflowRef` ter-embed) lalu seed bersama seed
   definisi workflow di `workflowFactory.prepare`. Kerjakan bersama PR-W5 (yang juga menyentuh
   jalur seed/customization) atau saat modul kedua butuh notifikasi.
+  **Catatan ADR-024:** `tolerantTransitionNotifier` yang kini menutupinya DIHAPUS di PR-W7b, dan
+  kegagalan render berpindah ke relay (tercatat + di-retry + ber-DLQ). Jadi butir ini harus tutup
+  SEBELUM atau BERSAMA W7b — kalau tidak, tiap transisi ber-`notify:` modul menjadi baris DLQ.
 
-- **[infra/db] Flake langka `TestEnsureSchemaLocked_BootParalel_TakBalapan`** (teramati sekali,
-  18 Agu 2026, saat run `./...` penuh): 1 dari 12 ensure paralel gagal dengan
+- **[infra/db] Flake langka `TestEnsureSchemaLocked_BootParalel_TakBalapan`** (teramati DUA kali,
+  18 & 19 Agu 2026, **keduanya hanya saat run `./...` penuh**): 1 dari 12 ensure paralel gagal dengan
   `duplicate key ... pg_namespace_nspname_index` (SQLSTATE 23505) — persis kegagalan yang advisory
   lock di `EnsureSchemaLocked` seharusnya cegah. TIDAK tereproduksi dalam 11 percobaan berikutnya
   (3 run `./...` penuh dengan perubahan PR-W4b, 3 tanpa, 8 iterasi terfokus `-count=8`), dan kode
@@ -1708,7 +1822,10 @@ rule linter `markerref`).
   — alasan asli lock itu ada (PR-W3b). Hipotesis yang perlu diuji lebih dulu: visibilitas katalog
   `CREATE SCHEMA IF NOT EXISTS` bagi transaksi yang MULAI sebelum pemegang lock commit. Cara
   menagihnya: jalankan test itu ber-`-count` tinggi di CI dan catat frekuensinya sebelum menduga
-  penyebab.
+  penyebab. Bukti tambahan 19 Agu: 25× berturut terisolasi dan 3× paket penuh — semua hijau; jadi
+  pemicunya ada pada kondisi suite penuh (beban/koneksi), bukan pada test itu sendiri.
+  **DIJADWALKAN: PR-W7f** (ADR-024 K7) — jalan keluarnya bukan mengunci lebih rapat melainkan
+  mengeluarkan DDL dari jalur request sama sekali; balapannya hilang, bukan dikalahkan.
 
 - **[BELUM PUNYA RENCANA — perlu keputusan] Permukaan desain CLAUDE.md tanpa satu pun
   baris di ROADMAP.** Ditemukan saat audit yang sama, dengan membandingkan konsep di
