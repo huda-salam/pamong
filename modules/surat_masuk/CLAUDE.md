@@ -31,6 +31,7 @@ di sini. Bukan modul mainan — ini standar yang harus diikuti.
 9. adapter/db/repository.go       — implementasi Repository (Postgres)
 10. adapter/event/consumer.go     — consume event modul lain (contoh)
 11. workflows/disposisi.yaml      — definisi workflow (seed)
+11b. notifications/surat_masuk.yaml — default template notifikasi yang dirujuk `notify:` alur
 12. migrations/001_*.sql          — DDL up/down
 13. bootstrap.go      — wiring DI (satu-satunya tempat bind port->adapter)
 
@@ -39,6 +40,9 @@ di sini. Bukan modul mainan — ini standar yang harus diikuti.
   persist, lalu publish event.
 - Handler: TIDAK ada logic; hanya bind input, panggil use case, tulis response.
 - Workflow action "disposisi" = nama use case DisposisiSurat; engine memanggilnya.
+- Setiap `notify.template` di alur WAJIB punya default di notifications/*.yaml, dan key-nya
+  berawalan nama modul (`surat_masuk.`) — template modul berbagi satu ruang nama global, key
+  polos bertabrakan diam-diam antar modul. Boot menolak rujukan yang tak punya default.
 - Uang? Tidak ada di modul ini, tapi bila ada gunakan decimal.Decimal.
 
 ## Test

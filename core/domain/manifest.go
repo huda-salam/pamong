@@ -16,11 +16,12 @@ type Manifest struct {
 	// DataLifecycle: "annual_cutoff" atau "continuous" (lihat CLAUDE.md #12).
 	DataLifecycle string
 
-	Entities    []EntityDef
-	Events      EventManifest
-	Permissions PermissionManifest
-	Workflows   []WorkflowRef
-	Config      ConfigSpec
+	Entities      []EntityDef
+	Events        EventManifest
+	Permissions   PermissionManifest
+	Workflows     []WorkflowRef
+	Notifications []NotificationRef
+	Config        ConfigSpec
 }
 
 // EventManifest mendaftarkan event yang diproduksi dan dikonsumsi modul.
@@ -85,6 +86,22 @@ type PermissionImport struct {
 // ter-deploy bergantung pada direktori kerja proses — seed workflow lalu gagal di produksi
 // dengan cara yang tak pernah muncul saat `go test` dijalankan dari root repo.
 type WorkflowRef struct {
+	FS   fs.FS
+	Path string
+}
+
+// NotificationRef menunjuk ke file YAML template notifikasi baseline modul.
+//
+// Ia ada karena definisi workflow modul boleh merujuk template (`notify.template` di YAML alur)
+// yang sebelumnya TAK SEORANG PUN tulis: manifest tidak mengenal notifikasi, sehingga
+// `gov.notification_templates` hanya berisi default milik framework. Akibatnya setiap `notify:`
+// milik modul gagal render di instalasi baru mana pun — komponen yang dinyatakan hidup tapi
+// mustahil berhasil. Modul yang merujuk sebuah template kini bertanggung jawab mengirim
+// defaultnya, persis seperti modul yang merujuk sebuah alur mengirim WorkflowRef-nya.
+//
+// FS wajib diisi dengan alasan yang sama seperti WorkflowRef: membaca dari disk saat runtime
+// membuat binary bergantung pada direktori kerja proses.
+type NotificationRef struct {
 	FS   fs.FS
 	Path string
 }

@@ -430,6 +430,8 @@ Nilai akan diambil dari `GOV_MODULE_{NAMA_MODUL}_{KEY}` atau dari UI admin tenan
 | File workflow seed | `{nama_alur}.yaml` | `disposisi.yaml` (baseline, di-load ke DB) |
 | Strategy key | `{modul}.{titik}.{varian}` | `keuangan.persediaan.fifo` |
 | Workflow template key | `{modul}.{alur}.{varian}` | `pengadaan.approval.tiga_tahap` |
+| Notification template key | `{modul}.{kejadian}` | `surat_masuk.surat_selesai` |
+| File template notifikasi | `notifications/{modul}.yaml` | `notifications/surat_masuk.yaml` |
 
 ### Database
 
@@ -1907,7 +1909,9 @@ pamongctl new module --name=surat_masuk --domain=persuratan
 
 Generate struktur lengkap. Setelah itu, urutan pengerjaan wajib:
 
-1. Lengkapi `manifest.go` — entity, permission (termasuk exports/imports), event, workflow ref
+1. Lengkapi `manifest.go` — entity, permission (termasuk exports/imports), event, workflow ref,
+   **notification ref** (setiap `notify.template` di YAML alur wajib punya default; boot menolak
+   rujukan yang tak punya default)
 2. Definisikan domain entity dan port di `domain/`
 3. Jalankan `pamongctl validate module surat_masuk`
 4. Tulis use case di `usecase/` — business logic murni

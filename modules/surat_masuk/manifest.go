@@ -72,6 +72,14 @@ func (m *Module) Manifest() domain.Manifest {
 		Workflows: []domain.WorkflowRef{
 			{FS: workflowsFS, Path: "workflows/disposisi.yaml"},
 		},
+
+		// Setiap `notify.template` yang dirujuk workflows/*.yaml WAJIB punya default di sini.
+		// Tanpa itu notifikasinya gagal render di instalasi baru — modul yang merujuk sebuah
+		// template bertanggung jawab mengirim defaultnya, sama seperti modul yang merujuk
+		// sebuah alur mengirim WorkflowRef-nya.
+		Notifications: []domain.NotificationRef{
+			{FS: notificationsFS, Path: "notifications/surat_masuk.yaml"},
+		},
 	}
 }
 

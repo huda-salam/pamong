@@ -318,7 +318,21 @@ func run() error {
 	// Tumpukan notifikasi per-tenant (PR-W4b): dipakai DUA jalur — notifikasi transisi (dari
 	// engine, di dalam request) dan eskalasi SLA (dari scheduler, di luar request). Satu factory
 	// untuk keduanya agar keduanya mendarat di inbox yang sama.
-	notifRuntimes := newNotificationFactory(connMgr, cryptoSvc, messageSender, metrics, logger)
+	//
+	// Template baseline modul dikumpulkan & di-parse di sini juga: definisi alur modul boleh
+	// merujuk `notify.template`, dan sebelum PR ini tak seorang pun menanam defaultnya —
+	// setiap `notify:` milik modul gagal render di instalasi baru mana pun.
+	notifSeeds, err := collectNotificationSeeds(registry)
+	if err != nil {
+		return fmt.Errorf("seed template notifikasi modul: %w", err)
+	}
+	// Setiap `notify.template` di definisi alur modul WAJIB punya default. Diperiksa di sini,
+	// di BOOT: tanpa ini modul berikutnya akan lupa dengan cara yang sama seperti dulu — dan
+	// akibatnya baru terlihat sebagai notifikasi yang diam-diam tak sampai di instalasi baru.
+	if err := validateNotifyTemplatesSeeded(workflowSeeds, notifSeeds, EscalationTemplateKey); err != nil {
+		return fmt.Errorf("template notifikasi yang dirujuk alur: %w", err)
+	}
+	notifRuntimes := newNotificationFactory(connMgr, cryptoSvc, messageSender, notifSeeds, metrics, logger)
 
 	// Scheduler (PR-W4b, ADR-023): tabel jadwal hidup di DB SENTRAL, jadi satu loop proses-lebar
 	// melayani seluruh tenant. Pool sentral diminta EKSPLISIT di sini — bukan lewat connMgr di

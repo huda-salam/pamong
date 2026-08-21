@@ -45,4 +45,4 @@ transitions:
       - "actor.has_permission('surat_masuk:surat:disposisi')"
     notify:
       to_role: agendaris
-      template: surat_selesai
+      template: surat_masuk.surat_selesai   # default: notifications/surat_masuk.yaml

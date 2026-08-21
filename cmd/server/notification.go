@@ -16,8 +16,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"sync"
 
+	"github.com/huda-salam/pamong/core/domain"
 	coreNotif "github.com/huda-salam/pamong/core/notification"
 	coreWf "github.com/huda-salam/pamong/core/workflow"
 	"github.com/huda-salam/pamong/infra/db"
@@ -38,19 +40,26 @@ type notificationFactory struct {
 	metrics   port.MetricsPort
 	logger    port.Logger
 
+	// moduleTemplates adalah default GLOBAL milik modul, sudah di-parse & divalidasi saat BOOT
+	// (collectNotificationSeeds). Disimpan sebagai nilai, bukan ref: file YAML yang rusak harus
+	// menjatuhkan boot, bukan menunggu tenant pertama memakai notifikasi.
+	moduleTemplates []coreNotif.Template
+
 	mu       sync.Mutex
 	prepared map[*db.Pool]struct{} // DB yang skema notifikasinya sudah dipastikan
 }
 
 func newNotificationFactory(pools tenantPoolProvider, crypto port.CryptoPort,
-	messaging port.MessagingPort, metrics port.MetricsPort, logger port.Logger) *notificationFactory {
+	messaging port.MessagingPort, moduleTemplates []coreNotif.Template,
+	metrics port.MetricsPort, logger port.Logger) *notificationFactory {
 	return &notificationFactory{
-		pools:     pools,
-		crypto:    crypto,
-		messaging: messaging,
-		metrics:   metrics,
-		logger:    logger,
-		prepared:  make(map[*db.Pool]struct{}),
+		pools:           pools,
+		crypto:          crypto,
+		messaging:       messaging,
+		moduleTemplates: moduleTemplates,
+		metrics:         metrics,
+		logger:          logger,
+		prepared:        make(map[*db.Pool]struct{}),
 	}
 }
 
@@ -126,11 +135,15 @@ func (f *notificationFactory) prepare(ctx context.Context, tenantID string, pool
 	if err := seedFrameworkTemplates(ctx, pool); err != nil {
 		return fmt.Errorf("seed template notifikasi framework tenant %q: %w", tenantID, err)
 	}
+	if err := seedTemplates(ctx, pool, f.moduleTemplates); err != nil {
+		return fmt.Errorf("seed template notifikasi modul tenant %q: %w", tenantID, err)
+	}
 	f.mu.Lock()
 	f.prepared[pool] = struct{}{}
 	f.mu.Unlock()
 	if f.logger != nil {
-		f.logger.Info(ctx, "skema notifikasi tenant disiapkan", port.F("tenant", tenantID))
+		f.logger.Info(ctx, "skema & seed notifikasi tenant disiapkan",
+			port.F("tenant", tenantID), port.F("seed_template_modul", len(f.moduleTemplates)))
 	}
 	return nil
 }
@@ -241,12 +254,11 @@ func (n *tolerantTransitionNotifier) laporkan(ctx context.Context, tenantID stri
 // tenant gagal di render — komponen yang dinyatakan hidup tapi mustahil berhasil pada instalasi
 // baru mana pun. Framework yang merujuk sebuah template bertanggung jawab menyediakan defaultnya.
 //
-// Cakupannya berhenti di template framework. Template milik MODUL (mis. `surat_selesai` yang
-// dirujuk disposisi.yaml) belum punya jalur seeding sama sekali — manifest modul tak mengenal
-// notifikasi. Itu lubang nyata, dicatat di backlog ROADMAP, dan sementara ini ditutup oleh
-// tolerantTransitionNotifier agar tak menjatuhkan transisi.
+// Cakupannya berhenti di template FRAMEWORK. Template milik MODUL punya jalur sendiri —
+// domain.NotificationRef di manifest → collectNotificationSeeds saat boot → seedTemplates di
+// prepare — karena sumbernya berbeda: yang ini dirujuk kode framework, yang itu dirujuk definisi
+// alur milik modul. Menggabungkannya berarti framework harus tahu template modul mana yang ada.
 func seedFrameworkTemplates(ctx context.Context, pool *db.Pool) error {
-	store := infraNotif.NewDBTemplateStore(pool)
 	defaults := []coreNotif.Template{{
 		TenantID: "", // global: berlaku semua tenant, bisa di-override per tenant
 		Key:      EscalationTemplateKey,
@@ -255,13 +267,118 @@ func seedFrameworkTemplates(ctx context.Context, pool *db.Pool) error {
 		Body: "Alur {{.instance_id}} masih berada di tahap \"{{.state}}\" melewati batas waktu " +
 			"dan dieskalasikan kepada {{.role}}.",
 	}}
-	for _, t := range defaults {
-		// InsertIfAbsent, BUKAN Upsert: seeder ini jalan di setiap boot proses. Upsert akan
-		// mengembalikan template ke bunyi bawaan tiap restart — menghapus suntingan operator
-		// tanpa jejak. Pola yang sama dengan coreWf.SeedIfAbsent untuk definisi workflow.
+	return seedTemplates(ctx, pool, defaults)
+}
+
+// seedTemplates menanam sekumpulan template ke DB ini bila belum ada.
+//
+// InsertIfAbsent, BUKAN Upsert: seeder ini jalan di setiap boot proses. Upsert akan
+// mengembalikan template ke bunyi bawaan tiap restart — menghapus suntingan operator tanpa
+// jejak. Pola yang sama dengan coreWf.SeedIfAbsent untuk definisi workflow.
+func seedTemplates(ctx context.Context, pool *db.Pool, tmpls []coreNotif.Template) error {
+	if len(tmpls) == 0 {
+		return nil
+	}
+	store := infraNotif.NewDBTemplateStore(pool)
+	for _, t := range tmpls {
 		if _, err := store.InsertIfAbsent(ctx, t); err != nil {
-			return err
+			return fmt.Errorf("template %q locale %q: %w", t.Key, t.LocaleOrDefault(), err)
 		}
 	}
 	return nil
+}
+
+// validateNotifyTemplatesSeeded memastikan SETIAP `notify.template` yang dirujuk definisi alur
+// modul benar-benar punya default yang diseed — dan menjatuhkan BOOT bila tidak.
+//
+// Ini yang mengubah lubang lama dari "developer harus ingat" menjadi "mustahil lupa". Sebelum
+// jalur seeding modul ada, disposisi.yaml merujuk template yang tak seorang pun tulis dan
+// akibatnya baru terlihat sebagai ErrTemplateNotFound pada transisi pertama di instalasi baru —
+// setelah rilis, hanya di satu jalur, dan (karena kegagalan notifikasi sengaja tidak menjatuhkan
+// transisi) tanpa satu pun permintaan yang gagal. Menambal satu modul tidak menutup itu; modul
+// berikutnya akan lupa dengan cara yang sama.
+//
+// Diperiksa terhadap GABUNGAN template modul + key milik framework: alur boleh merujuk template
+// framework, dan modul boleh (kelak) merujuk template modul lain. Yang ditolak hanyalah rujukan
+// yang tak punya default di mana pun.
+//
+// Override tenant sengaja tidak dihitung: baseline harus lengkap sendiri. Tenant yang menulis
+// barisnya sendiri adalah penyesuaian, bukan syarat agar instalasi baru berfungsi.
+func validateNotifyTemplatesSeeded(workflowSeeds []domain.WorkflowRef,
+	moduleTemplates []coreNotif.Template, frameworkKeys ...string) error {
+
+	tersedia := make(map[string]struct{}, len(moduleTemplates)+len(frameworkKeys))
+	for _, t := range moduleTemplates {
+		tersedia[t.Key] = struct{}{}
+	}
+	for _, k := range frameworkKeys {
+		tersedia[k] = struct{}{}
+	}
+
+	for _, ref := range workflowSeeds {
+		data, err := fs.ReadFile(ref.FS, ref.Path)
+		if err != nil {
+			return fmt.Errorf("baca definisi alur %q: %w", ref.Path, err)
+		}
+		def, err := coreWf.ParseYAML(data)
+		if err != nil {
+			return fmt.Errorf("definisi alur %q: %w", ref.Path, err)
+		}
+		for _, tr := range def.Transitions {
+			if tr.Notify == nil || tr.Notify.Template == "" {
+				continue
+			}
+			if _, ada := tersedia[tr.Notify.Template]; !ada {
+				return fmt.Errorf(
+					"alur %q (%s) transisi %s→%s merujuk template notifikasi %q yang tak punya default; "+
+						"tambahkan entri di file NotificationRef modul",
+					def.ID, ref.Path, tr.From, tr.To, tr.Notify.Template)
+			}
+		}
+	}
+	return nil
+}
+
+// collectNotificationSeeds mengumpulkan + mem-parse template baseline dari manifest seluruh
+// modul terdaftar. Dijalankan SEKALI saat boot.
+//
+// Di-parse di muka, bukan disimpan sebagai ref lalu di-parse per tenant seperti WorkflowRef:
+// file YAML yang rusak atau key yang salah namespace harus menjatuhkan BOOT, bukan menunggu
+// tenant pertama memakai notifikasi. Kegagalan yang muncul pada satu tenant saja — berjam-jam
+// setelah rilis, hanya di jalur `notify:` — adalah kelas kegagalan yang paling mahal.
+//
+// Tabrakan key ANTAR modul ditolak di sini. Template modul di-seed sebagai baris global, jadi
+// seluruh modul berbagi satu ruang nama; InsertIfAbsent membuat tabrakan itu diam (yang lebih
+// dulu menang). ParseYAML sudah menegakkan awalan `{modul}.` sehingga tabrakan jujur mustahil —
+// pemeriksaan ini menangkap sisanya: dua modul bernama sama, atau satu modul yang mendaftarkan
+// file yang sama dua kali.
+func collectNotificationSeeds(reg *domain.Registry) ([]coreNotif.Template, error) {
+	var out []coreNotif.Template
+	asal := make(map[string]string) // "key\x00locale" → "modul:path"
+	for _, m := range reg.Modules() {
+		mf := m.Manifest()
+		for _, ref := range mf.Notifications {
+			if ref.FS == nil {
+				return nil, fmt.Errorf("modul %q: NotificationRef %q tanpa FS ter-embed", mf.Name, ref.Path)
+			}
+			if ref.Path == "" {
+				return nil, fmt.Errorf("modul %q: NotificationRef tanpa Path", mf.Name)
+			}
+			tmpls, err := coreNotif.ParseFS(ref.FS, mf.Name, ref.Path)
+			if err != nil {
+				return nil, fmt.Errorf("modul %q: %w", mf.Name, err)
+			}
+			for _, t := range tmpls {
+				id := t.Key + "\x00" + t.LocaleOrDefault()
+				if lain, dup := asal[id]; dup {
+					return nil, fmt.Errorf(
+						"template %q locale %q didefinisikan dua kali: %s dan %s:%s",
+						t.Key, t.LocaleOrDefault(), lain, mf.Name, ref.Path)
+				}
+				asal[id] = mf.Name + ":" + ref.Path
+				out = append(out, t)
+			}
+		}
+	}
+	return out, nil
 }

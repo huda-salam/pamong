@@ -1,0 +1,18 @@
+# Template notifikasi baseline modul surat_masuk (SEED/default GLOBAL; di-load ke DB saat
+# tumpukan notifikasi tenant disiapkan). DB adalah yang aktif: tenant boleh menulis barisnya
+# sendiri untuk meng-override, dan seeding TIDAK akan menimpanya (InsertIfAbsent).
+#
+# Prinsip kunci:
+# - key WAJIB berawalan "surat_masuk." — template modul berbagi satu ruang nama global,
+#   key polos akan bertabrakan diam-diam dengan modul lain.
+# - Setiap `notify.template` di workflows/*.yaml HARUS punya entri di sini; kalau tidak,
+#   notifikasinya gagal render di instalasi baru.
+# - Data yang tersedia untuk placeholder ditentukan adapter (infra/workflow.NotifierTransition):
+#   .instance_id, .state, .role. Field lain gagal keras saat render (missingkey=error).
+templates:
+  - key: surat_masuk.surat_selesai
+    locale: id
+    subject: "Surat selesai ditindaklanjuti"
+    body: |
+      Alur disposisi {{.instance_id}} telah mencapai tahap "{{.state}}".
+      Tidak ada tindakan lanjutan yang diperlukan dari {{.role}}.

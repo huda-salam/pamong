@@ -42,7 +42,6 @@ import (
 
 	"github.com/huda-salam/pamong/core/config"
 	"github.com/huda-salam/pamong/core/domain"
-	coreNotif "github.com/huda-salam/pamong/core/notification"
 	"github.com/huda-salam/pamong/core/scheduler"
 	coreWf "github.com/huda-salam/pamong/core/workflow"
 	"github.com/huda-salam/pamong/gateway"
@@ -246,7 +245,12 @@ func TestE2E_SLAEskalasiDanNotifikasiTransisi(t *testing.T) {
 		t.Fatalf("collectWorkflowSeeds: %v", err)
 	}
 
-	notifRuntimes := newNotificationFactory(connMgr, cryptoSvc, testMessageSender(t), metrics, logger)
+	notifSeeds, err := collectNotificationSeeds(registry)
+	if err != nil {
+		t.Fatalf("collectNotificationSeeds: %v", err)
+	}
+	notifRuntimes := newNotificationFactory(connMgr, cryptoSvc, testMessageSender(t), notifSeeds,
+		metrics, logger)
 	sched, err := wireScheduler(ctx, centralPool, connMgr, notifRuntimes,
 		20*time.Millisecond, time.Minute, metrics, logger)
 	if err != nil {
@@ -261,27 +265,15 @@ func TestE2E_SLAEskalasiDanNotifikasiTransisi(t *testing.T) {
 		t.Fatalf("bangun tumpukan workflow tenant: %v", err)
 	}
 
-	// Template notifikasi tenant. Tanpa keduanya pengiriman gagal di render — dan kegagalannya
-	// tercatat di gov.notification_deliveries, bukan diam.
-	// HANYA template MODUL yang diseed di sini. Template eskalasi (milik framework) SENGAJA
-	// tidak diseed: default globalnya ditanam seedFrameworkTemplates saat skema notifikasi tenant
-	// disiapkan, dan test ini ikut membuktikan seeder itu bekerja. Menyeednya di sini akan
-	// menutupi kegagalan seeder produksi — eskalasi tetap hijau di test, gagal di instalasi baru.
+	// TIDAK ADA template yang diseed manual di sini — itu disengaja, dan itu setengah dari yang
+	// dibuktikan test ini.
 	//
-	// EnsureSchema dipanggil eksplisit di sini karena tumpukan notifikasi kini dirakit TERTUNDA
-	// (baru saat ada transisi ber-`notify:`), jadi tabelnya belum ada pada titik ini. Sengaja tidak
-	// menandai pool sebagai "prepared" di factory: seedFrameworkTemplates tetap akan berjalan lewat
-	// jalur produksi saat eskalasi/notifikasi pertama, sehingga test ini tetap membuktikannya.
-	if err := infraNotif.EnsureSchema(ctx, tenantPool); err != nil {
-		t.Fatalf("ensure schema notifikasi: %v", err)
-	}
-	notifTemplates := infraNotif.NewDBTemplateStore(tenantPool)
-	if err := notifTemplates.Upsert(ctx, coreNotif.Template{
-		TenantID: tenantID, Key: "surat_selesai", Locale: "id",
-		Subject: "surat_selesai", Body: "instance {{.instance_id}} state {{.state}}",
-	}); err != nil {
-		t.Fatalf("upsert template modul: %v", err)
-	}
+	// Dua-duanya datang dari jalur produksi saat tumpukan notifikasi tenant disiapkan:
+	// template eskalasi (milik FRAMEWORK) dari seedFrameworkTemplates, dan
+	// `surat_masuk.surat_selesai` (milik MODUL) dari NotificationRef di manifest →
+	// collectNotificationSeeds → seedTemplates. Menyeed salah satunya di sini akan menutupi
+	// kegagalan seeder produksi: hijau di test, gagal di instalasi baru mana pun — persis
+	// keadaan yang berlaku sebelum jalur seeding modul ada.
 
 	// Pilihan template tenant + binding peran GENERIK definisi → role KONKRET tenant.
 	templates := infrawf.NewDBTemplateStore(tenantPool, infrawf.NewDBStore(tenantPool))
@@ -443,8 +435,8 @@ func TestE2E_SLAEskalasiDanNotifikasiTransisi(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("inbox agendaris_surat = %d item, mau 1 (notify transisi ke role konkret)", len(items))
 	}
-	if items[0].TemplateKey != "surat_selesai" {
-		t.Errorf("template notifikasi transisi = %q, mau surat_selesai", items[0].TemplateKey)
+	if items[0].TemplateKey != "surat_masuk.surat_selesai" {
+		t.Errorf("template notifikasi transisi = %q, mau surat_masuk.surat_selesai", items[0].TemplateKey)
 	}
 
 	// 5. Loop scheduler benar-benar berjalan & berhenti bersih lewat jalur yang dipakai run().

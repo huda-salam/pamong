@@ -1361,7 +1361,10 @@ Tarik juga **W6(a) ke depan**: relay tanpa metrik yang terlihat adalah komponen 
   - Kecil, mandiri, tanpa perubahan perilaku. Sengaja dipisah agar diff W7b tetap terbaca.
   - Test: mis-wiring tak lagi bisa menyamar sebagai "SLA sengaja mati".
 
-- **PR-W7b** Engine mengembalikan NIAT + outbox efek tenant (ADR-024 K1, K2) ← W7a
+- **PR-W7b** Engine mengembalikan NIAT + outbox efek tenant (ADR-024 K1, K2) ← W7a, W7-pra
+  - **Prasyarat sudah lunas (2026-08-21, PR-W7-pra):** template notifikasi modul kini punya jalur
+    seeding. Tanpa itu, menghapus `tolerantTransitionNotifier` akan mengubah setiap transisi
+    ber-`notify:` modul menjadi baris DLQ, bukan baris log.
   - `ExecuteRequest`/`Start` → `(TransitionOutcome, error)` dengan `Effects []Effect`
     (`ScheduleDeadlineEffect` / `CancelDeadlineEffect` / `NotifyEffect`). Engine berhenti
     menyentuh DB mana pun; `error` darinya kembali berarti **satu hal**: transisi ditolak.
@@ -1796,7 +1799,20 @@ rule linter `markerref`).
   "bisa ditulis bila perlu" melainkan MODEL KEBENARAN untuk SLA — penjadwalan saat transisi
   turun status jadi optimasi. Tepi yang terlewat sembuh sendiri, bukan ditangani.
 
-- **[Phase-5.x] Template notifikasi MILIK MODUL tak punya jalur seeding.** Ditemukan saat
+- ~~**[Phase-5.x] Template notifikasi MILIK MODUL tak punya jalur seeding.**~~ **DITUTUP
+  2026-08-21** oleh PR-W7-pra: `domain.NotificationRef` di manifest → `collectNotificationSeeds`
+  (parse + validasi di BOOT) → `seedTemplates` ber-`InsertIfAbsent` saat tumpukan notifikasi
+  tenant disiapkan. Tiga hal ditambahkan di luar seeding itu sendiri, karena menambal satu modul
+  tidak menutup lubangnya: (a) key template modul WAJIB berawalan `{modul}.` — template modul
+  di-seed sebagai baris global, jadi key polos bertabrakan DIAM antar modul (InsertIfAbsent =
+  yang boot lebih dulu menang); (b) `validateNotifyTemplatesSeeded` menjatuhkan BOOT bila ada
+  `notify.template` yang tak punya default di mana pun — "developer harus ingat" jadi "mustahil
+  lupa"; (c) e2e berhenti menyeed template manual sehingga jalur produksinya yang diuji.
+  Entri asli disimpan di bawah sebagai riwayat.
+
+  <details><summary>Entri asli</summary>
+
+  **[Phase-5.x] Template notifikasi MILIK MODUL tak punya jalur seeding.** Ditemukan saat
   merakit PR-W4b. `gov.notification_templates` kini diisi seeder framework untuk template milik
   FRAMEWORK saja (`seedFrameworkTemplates` di `cmd/server/notification.go`, default global
   `tenant_id=''`). Template yang dirujuk definisi workflow MODUL — mis. `surat_selesai` di
@@ -1812,8 +1828,10 @@ rule linter `markerref`).
   kegagalan render berpindah ke relay (tercatat + di-retry + ber-DLQ). Jadi butir ini harus tutup
   SEBELUM atau BERSAMA W7b — kalau tidak, tiap transisi ber-`notify:` modul menjadi baris DLQ.
 
-- **[infra/db] Flake langka `TestEnsureSchemaLocked_BootParalel_TakBalapan`** (teramati DUA kali,
-  18 & 19 Agu 2026, **keduanya hanya saat run `./...` penuh**): 1 dari 12 ensure paralel gagal dengan
+  </details>
+
+- **[infra/db] Flake `TestEnsureSchemaLocked_BootParalel_TakBalapan`** (teramati TIGA kali,
+  18, 19 & 21 Agu 2026, **ketiganya hanya saat run `./...` penuh**): 1 dari 12 ensure paralel gagal dengan
   `duplicate key ... pg_namespace_nspname_index` (SQLSTATE 23505) — persis kegagalan yang advisory
   lock di `EnsureSchemaLocked` seharusnya cegah. TIDAK tereproduksi dalam 11 percobaan berikutnya
   (3 run `./...` penuh dengan perubahan PR-W4b, 3 tanpa, 8 iterasi terfokus `-count=8`), dan kode
@@ -1824,8 +1842,17 @@ rule linter `markerref`).
   menagihnya: jalankan test itu ber-`-count` tinggi di CI dan catat frekuensinya sebelum menduga
   penyebab. Bukti tambahan 19 Agu: 25× berturut terisolasi dan 3× paket penuh — semua hijau; jadi
   pemicunya ada pada kondisi suite penuh (beban/koneksi), bukan pada test itu sendiri.
+  Bukti 21 Agu menaikkan statusnya dari "langka" menjadi **berulang di bawah suite penuh** (3 dari
+  3 run terakhir), sementara terisolasi tetap hijau — jadi pemicunya adalah kondisi suite (beban,
+  jumlah koneksi, katalog yang sudah ramai), bukan test-nya. Petunjuk yang belum dijelaskan:
+  goroutine yang kalah selalu **#7** pada dua run terakhir, yang tak sesuai dengan balapan murni
+  acak dan layak diperiksa lebih dulu.
   **DIJADWALKAN: PR-W7f** (ADR-024 K7) — jalan keluarnya bukan mengunci lebih rapat melainkan
   mengeluarkan DDL dari jalur request sama sekali; balapannya hilang, bukan dikalahkan.
+  Eksperimen murah yang layak dijalankan sebelum W7f, untuk memastikan diagnosanya benar:
+  gabungkan `pg_advisory_xact_lock` dan DDL ke dalam SATU Exec (satu command string) lalu ulang
+  suite penuh. Bila balapan lenyap, penyebabnya adalah snapshot katalog per-command, bukan lock
+  yang bocor — dan itu mengubah bunyi perbaikannya.
 
 - **[BELUM PUNYA RENCANA — perlu keputusan] Permukaan desain CLAUDE.md tanpa satu pun
   baris di ROADMAP.** Ditemukan saat audit yang sama, dengan membandingkan konsep di
