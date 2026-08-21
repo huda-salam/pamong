@@ -109,6 +109,7 @@ func (s *MemoryStore) GetVersion(id string, version int) (WorkflowDefinition, er
 //   - InitialState harus ada di daftar States
 //   - Setiap transisi From/To harus merujuk state yang ada
 //   - Minimal satu state terminal ada (reachability penuh DEFERRED ke PR-3.2.2/loader)
+//   - `notify:` yang ada wajib lengkap (to_role + template)
 //
 // Dipanggil oleh MemoryStore.Register dan DBStore.Register — satu titik validasi
 // untuk semua implementasi DefinitionStore.
@@ -157,6 +158,22 @@ func Validate(def WorkflowDefinition) error {
 		if _, ok := stateSet[tr.To]; !ok {
 			return ErrInvalidDefinition(
 				fmt.Sprintf("transisi[%d]: to state %q tidak ada", i, tr.To))
+		}
+		// `notify:` yang tak lengkap adalah notifikasi yang MUSTAHIL berhasil, bukan
+		// notifikasi yang dimatikan: engine tetap memanggil notifier, lalu render gagal
+		// (ErrTemplateNotFound) atau resolusi peran gagal — dan karena kegagalan notifikasi
+		// sengaja tak menjatuhkan transisi, tak ada satu pun request yang error. Cara
+		// mematikan notifikasi adalah menghilangkan blok `notify:`, bukan mengosongkan
+		// isinya. Ditolak di pintu masuk, seperti guard.
+		if tr.Notify != nil {
+			if tr.Notify.ToRole == "" {
+				return ErrInvalidDefinition(
+					fmt.Sprintf("transisi[%d]: notify.to_role wajib diisi (hapus blok notify bila tak ingin memberi tahu siapa pun)", i))
+			}
+			if tr.Notify.Template == "" {
+				return ErrInvalidDefinition(
+					fmt.Sprintf("transisi[%d]: notify.template wajib diisi (hapus blok notify bila tak ingin memberi tahu siapa pun)", i))
+			}
 		}
 	}
 

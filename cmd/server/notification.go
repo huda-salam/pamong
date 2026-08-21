@@ -183,11 +183,14 @@ func (f *notificationFactory) TransitionNotifierFor(tenantID string, pool *db.Po
 // padahal berhasil, atau memberi tahu operator lewat log+metrik. Yang pertama adalah kebohongan
 // yang responsnya wajar — retry — justru berbahaya: aksi bisnisnya sudah dijalankan sekali.
 //
-// Kegagalan yang paling mungkin bukan transport, melainkan konfigurasi: gov.notification_templates
-// hanya diisi seeder framework untuk template MILIK framework (lihat prepare). Template milik
-// MODUL (mis. `surat_selesai` di disposisi.yaml) belum punya jalur seeding sama sekali, jadi
-// ErrTemplateNotFound adalah keadaan normal hari ini — bukan insiden. Peran yang ter-binding tapi
-// tak punya pemegang (ErrNoRecipient) juga. Keduanya tak boleh menjatuhkan transisi.
+// Sejak template modul punya jalur seeding sendiri (NotificationRef → collectNotificationSeeds →
+// seedTemplates) plus pagar boot validateNotifyTemplatesSeeded, ErrTemplateNotFound BUKAN lagi
+// keadaan normal — ia insiden yang layak ditindaklanjuti. Satu jalur tersisa yang masih bisa
+// menghasilkannya secara sah: tenant yang definisi alurnya tersimpan LEBIH DULU daripada rename
+// key template di baseline (SeedIfAbsent tak pernah memutakhirkan definisi yang sudah ada) —
+// lihat backlog "baseline workflow definition tak punya jalur upgrade". Peran yang ter-binding
+// tapi tak punya pemegang (ErrNoRecipient) tetap keadaan yang wajar. Keduanya tak boleh
+// menjatuhkan transisi.
 //
 // Ketika outbox punya penulis produksi, retry asinkron yang sesungguhnya menggantikan pembungkus
 // ini dan errornya kembali bermakna bagi pemanggil.
@@ -288,6 +291,77 @@ func seedTemplates(ctx context.Context, pool *db.Pool, tmpls []coreNotif.Templat
 	return nil
 }
 
+// templateKeys mengembalikan seluruh key template yang PASTI tersedia di tenant mana pun:
+// default modul (di-seed prepare) + key milik framework.
+func (f *notificationFactory) templateKeys() map[string]struct{} {
+	keys := make(map[string]struct{}, len(f.moduleTemplates)+1)
+	for _, t := range f.moduleTemplates {
+		keys[t.Key] = struct{}{}
+	}
+	keys[EscalationTemplateKey] = struct{}{}
+	return keys
+}
+
+// definitionReader adalah kontrak minimal yang dibutuhkan laporStaleNotifyTemplates — dipenuhi
+// *infrawf.DBStore. Sengaja interface agar pemeriksaannya teruji tanpa DB.
+type definitionReader interface {
+	Get(id string) (coreWf.WorkflowDefinition, error)
+}
+
+// laporStaleNotifyTemplates memeriksa definisi alur yang BENAR-BENAR TERSIMPAN di DB tenant ini
+// (bukan baseline ter-embed) terhadap template yang tersedia, lalu MELAPORKAN selisihnya.
+//
+// Ia menutup titik buta pagar boot: validateNotifyTemplatesSeeded memeriksa YAML di dalam binary,
+// sementara yang dieksekusi adalah definisi di DB — dan keduanya bisa berbeda. `SeedIfAbsent`
+// menulis HANYA bila workflow_id itu belum punya versi apa pun, jadi tenant yang di-provision
+// sebelum sebuah key template di-rename akan selamanya memakai key lama, yang kini tak diseed
+// siapa pun. Notifikasinya gagal diam-diam, dan pagar boot tak bisa melihatnya. Definisi yang
+// dikustomisasi tenant punya cara gagal yang sama persis.
+//
+// MELAPORKAN, bukan menggagalkan: kalau ini mengembalikan error, satu key template yang basi akan
+// mematikan SELURUH permukaan workflow tenant itu — termasuk GET riwayat yang tak menyentuh
+// notifikasi sama sekali. Pelajaran yang sama dengan tolerantTransitionNotifier. Yang diberantas
+// di sini adalah DIAM-nya, bukan kegagalannya; obat sesungguhnya (jalur upgrade definisi baseline)
+// ada di backlog ROADMAP.
+//
+// Dipanggil dari prepare, jadi biayanya sekali per DB — bukan per request.
+func laporStaleNotifyTemplates(ctx context.Context, tenantID string, defs definitionReader,
+	refs []domain.WorkflowRef, tersedia map[string]struct{}, logger port.Logger) {
+
+	if logger == nil {
+		return
+	}
+	for _, ref := range refs {
+		data, err := fs.ReadFile(ref.FS, ref.Path)
+		if err != nil {
+			continue // baseline tak terbaca sudah dilaporkan jalur seed
+		}
+		baseline, err := coreWf.ParseYAML(data)
+		if err != nil {
+			continue
+		}
+		tersimpan, err := defs.Get(baseline.ID)
+		if err != nil {
+			continue // belum ada / gagal baca — bukan urusan pemeriksaan ini
+		}
+		for _, tr := range tersimpan.Transitions {
+			if tr.Notify == nil || tr.Notify.Template == "" {
+				continue
+			}
+			if _, ada := tersedia[tr.Notify.Template]; ada {
+				continue
+			}
+			logger.Error(ctx, "definisi alur tersimpan merujuk template notifikasi yang tak punya default; "+
+				"notifikasi transisi ini akan GAGAL diam-diam",
+				port.F("tenant", tenantID),
+				port.F("alur", tersimpan.ID),
+				port.F("versi", tersimpan.Version),
+				port.F("transisi", tr.From+"→"+tr.To),
+				port.F("template", tr.Notify.Template))
+		}
+	}
+}
+
 // validateNotifyTemplatesSeeded memastikan SETIAP `notify.template` yang dirujuk definisi alur
 // modul benar-benar punya default yang diseed — dan menjatuhkan BOOT bila tidak.
 //
@@ -380,5 +454,39 @@ func collectNotificationSeeds(reg *domain.Registry) ([]coreNotif.Template, error
 			}
 		}
 	}
+	if err := validateDefaultLocaleAda(out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// validateDefaultLocaleAda memastikan setiap key punya varian DefaultLocale.
+//
+// TemplateEngine memperlakukan locale sebagai GERBANG KERAS (templateScore): kandidat yang
+// locale-nya bukan yang diminta DAN bukan DefaultLocale tak pernah dipakai — sengaja, agar
+// sistem tak diam-diam mengirim konten berbahasa asing. Konsekuensinya, template modul yang
+// hanya dideklarasikan dalam locale lain (mis. hanya 'jv') LOLOS boot lalu tak pernah terpilih
+// saat render: gagal yang persis sama dengan tak punya template sama sekali.
+//
+// Ini juga yang membuat validateNotifyTemplatesSeeded boleh memeriksa berdasarkan Key saja —
+// tanpa aturan ini, "key-nya ada" tak menjamin "bisa terpilih".
+func validateDefaultLocaleAda(tmpls []coreNotif.Template) error {
+	punyaDefault := make(map[string]bool)
+	locales := make(map[string][]string)
+	for _, t := range tmpls {
+		loc := t.LocaleOrDefault()
+		locales[t.Key] = append(locales[t.Key], loc)
+		if loc == coreNotif.DefaultLocale {
+			punyaDefault[t.Key] = true
+		}
+	}
+	for key, locs := range locales {
+		if !punyaDefault[key] {
+			return fmt.Errorf(
+				"template %q hanya punya locale %v — varian %q wajib ada, karena locale lain "+
+					"tak pernah terpilih untuk permintaan di luar locale itu sendiri",
+				key, locs, coreNotif.DefaultLocale)
+		}
+	}
+	return nil
 }

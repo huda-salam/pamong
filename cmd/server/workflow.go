@@ -174,6 +174,14 @@ func (f *workflowFactory) prepare(ctx context.Context, tenantID string, pool *db
 		}
 	}
 
+	// Periksa definisi yang BENAR-BENAR tersimpan (bukan baseline ter-embed) terhadap template
+	// yang tersedia. Pagar boot hanya melihat YAML di dalam binary; yang dieksekusi adalah isi DB,
+	// dan keduanya berbeda pada tenant yang di-provision sebelum sebuah key di-rename maupun pada
+	// definisi yang dikustomisasi tenant. Melaporkan, tidak menggagalkan — lihat docnya.
+	if f.notifs != nil {
+		laporStaleNotifyTemplates(ctx, tenantID, defs, f.seeds, f.notifs.templateKeys(), f.logger)
+	}
+
 	f.mu.Lock()
 	f.prepared[pool] = struct{}{}
 	f.mu.Unlock()

@@ -1830,8 +1830,29 @@ rule linter `markerref`).
 
   </details>
 
-- **[infra/db] Flake `TestEnsureSchemaLocked_BootParalel_TakBalapan`** (teramati TIGA kali,
-  18, 19 & 21 Agu 2026, **ketiganya hanya saat run `./...` penuh**): 1 dari 12 ensure paralel gagal dengan
+- **[Phase-5.x] Definisi workflow BASELINE tak punya jalur upgrade.** Ditemukan `/code-review`
+  PR-W7-pra. `DBStore.SeedIfAbsent` menulis hanya bila `workflow_id` itu belum punya versi APA PUN
+  (`WHERE NOT EXISTS ... WHERE workflow_id = $1`), jadi tenant yang sudah di-provision **selamanya**
+  memakai definisi versi pertamanya. Perubahan baseline apa pun — termasuk yang wajib, seperti
+  rename key template notifikasi di PR ini (`surat_selesai` → `surat_masuk.surat_selesai`) — tak
+  pernah sampai ke mereka, dan gagalnya diam.
+
+  Itu **bukan bug `SeedIfAbsent`**: sifat all-or-nothing-nya sengaja, dan doc-nya menyebut
+  alasannya — menyisipkan versi baseline baru membuatnya menjadi versi TERBARU yang menggantikan
+  definisi hasil kustomisasi tenant. Jadi "seed versi berikutnya bila lebih tinggi" adalah obat
+  yang lebih berbahaya daripada penyakitnya. Yang dibutuhkan adalah keputusan desain: bagaimana
+  baseline developer naik versi tanpa menimpa kustomisasi tenant — kandidat: merge tiga-arah,
+  atau memisahkan lajur versi baseline dari lajur versi tenant (`authoring_source` sudah ada dan
+  membedakan keduanya). Kemungkinan besar butuh ADR.
+
+  Peredam sementara yang SUDAH terpasang (PR-W7-pra): `laporStaleNotifyTemplates` di
+  `workflowFactory.prepare` membaca definisi yang benar-benar tersimpan dan **melaporkan** setiap
+  `notify.template` yang tak punya default — tenant, alur, versi, transisi, key. Ini memberantas
+  DIAM-nya, bukan kegagalannya. Sengaja tidak menggagalkan: satu key basi tak boleh mematikan
+  seluruh permukaan workflow tenant, termasuk GET riwayat yang tak menyentuh notifikasi.
+
+- **[infra/db] Flake `TestEnsureSchemaLocked_BootParalel_TakBalapan`** (teramati EMPAT kali,
+  18, 19, 21 & 22 Agu 2026, **semuanya hanya saat run `./...` penuh**): 1 dari 12 ensure paralel gagal dengan
   `duplicate key ... pg_namespace_nspname_index` (SQLSTATE 23505) — persis kegagalan yang advisory
   lock di `EnsureSchemaLocked` seharusnya cegah. TIDAK tereproduksi dalam 11 percobaan berikutnya
   (3 run `./...` penuh dengan perubahan PR-W4b, 3 tanpa, 8 iterasi terfokus `-count=8`), dan kode
@@ -1842,11 +1863,11 @@ rule linter `markerref`).
   menagihnya: jalankan test itu ber-`-count` tinggi di CI dan catat frekuensinya sebelum menduga
   penyebab. Bukti tambahan 19 Agu: 25× berturut terisolasi dan 3× paket penuh — semua hijau; jadi
   pemicunya ada pada kondisi suite penuh (beban/koneksi), bukan pada test itu sendiri.
-  Bukti 21 Agu menaikkan statusnya dari "langka" menjadi **berulang di bawah suite penuh** (3 dari
-  3 run terakhir), sementara terisolasi tetap hijau — jadi pemicunya adalah kondisi suite (beban,
-  jumlah koneksi, katalog yang sudah ramai), bukan test-nya. Petunjuk yang belum dijelaskan:
-  goroutine yang kalah selalu **#7** pada dua run terakhir, yang tak sesuai dengan balapan murni
-  acak dan layak diperiksa lebih dulu.
+  Statusnya kini **berulang di bawah suite penuh** (4 dari 4 run terakhir), sementara terisolasi
+  tetap hijau (25× berturut, 3× paket penuh) — jadi pemicunya adalah kondisi suite (beban, jumlah
+  koneksi, katalog yang sudah ramai), bukan test-nya. **Koreksi 22 Agu:** dugaan sebelumnya bahwa
+  goroutine yang kalah selalu #7 TIDAK bertahan — run keempat kalah di #10. Indeksnya acak;
+  jangan kejar itu sebagai petunjuk.
   **DIJADWALKAN: PR-W7f** (ADR-024 K7) — jalan keluarnya bukan mengunci lebih rapat melainkan
   mengeluarkan DDL dari jalur request sama sekali; balapannya hilang, bukan dikalahkan.
   Eksperimen murah yang layak dijalankan sebelum W7f, untuk memastikan diagnosanya benar:

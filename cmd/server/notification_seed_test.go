@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"testing/fstest"
 
 	"github.com/huda-salam/pamong/core/domain"
 	coreNotif "github.com/huda-salam/pamong/core/notification"
+	coreWf "github.com/huda-salam/pamong/core/workflow"
 	"github.com/huda-salam/pamong/modules"
+	"github.com/huda-salam/pamong/port"
 )
 
 // fakeModule adalah modul minimal untuk menguji pengumpulan seed — hanya manifest yang dibaca.
@@ -238,5 +241,133 @@ func TestValidateNotifyTemplatesSeeded_RakitanProduksiKonsisten(t *testing.T) {
 	}
 	if err := validateNotifyTemplatesSeeded(wf, nt, EscalationTemplateKey); err != nil {
 		t.Fatalf("rakitan produksi tidak konsisten: %v", err)
+	}
+}
+
+// ===== validateDefaultLocaleAda (gerbang locale) =====
+
+// TemplateEngine memperlakukan locale sebagai gerbang keras: template yang hanya ada dalam
+// locale lain LOLOS boot lalu tak pernah terpilih saat render — gagal yang persis sama dengan
+// tak punya template sama sekali.
+func TestCollectNotificationSeeds_TanpaLocaleDefaultDitolak(t *testing.T) {
+	_, err := collectNotificationSeeds(regDengan(fakeModule{name: "modul_a",
+		notif: []domain.NotificationRef{{FS: tmplFS(`
+templates:
+  - key: modul_a.selesai
+    locale: jv
+    subject: "S"
+    body: "B"
+`), Path: "notifications/t.yaml"}}}))
+	if err == nil {
+		t.Fatal("template tanpa varian locale default diterima")
+	}
+	if !strings.Contains(err.Error(), coreNotif.DefaultLocale) {
+		t.Errorf("pesan error tak menyebut locale default: %v", err)
+	}
+}
+
+func TestCollectNotificationSeeds_LocaleDefaultPlusTerjemahanDiterima(t *testing.T) {
+	got, err := collectNotificationSeeds(regDengan(fakeModule{name: "modul_a",
+		notif: []domain.NotificationRef{{FS: tmplFS(`
+templates:
+  - key: modul_a.selesai
+    locale: id
+    subject: "S"
+    body: "B"
+  - key: modul_a.selesai
+    locale: jv
+    subject: "S"
+    body: "B"
+`), Path: "notifications/t.yaml"}}}))
+	if err != nil {
+		t.Fatalf("terjemahan di samping default ditolak: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("jumlah template = %d, mau 2", len(got))
+	}
+}
+
+// ===== laporStaleNotifyTemplates (drift definisi tersimpan) =====
+
+type fakeDefReader struct{ def coreWf.WorkflowDefinition }
+
+func (r fakeDefReader) Get(string) (coreWf.WorkflowDefinition, error) { return r.def, nil }
+
+type catatanLog struct {
+	port.Logger
+	errs []string
+}
+
+func (l *catatanLog) Error(_ context.Context, msg string, f ...port.Field) {
+	for _, fld := range f {
+		msg += " " + fmt.Sprint(fld.Value)
+	}
+	l.errs = append(l.errs, msg)
+}
+func (l *catatanLog) Info(context.Context, string, ...port.Field)  {}
+func (l *catatanLog) Warn(context.Context, string, ...port.Field)  {}
+func (l *catatanLog) Debug(context.Context, string, ...port.Field) {}
+
+func defTersimpan(template string) coreWf.WorkflowDefinition {
+	return coreWf.WorkflowDefinition{
+		ID: "modul_a.alur.standar", Version: 1, InitialState: "mulai",
+		States: []coreWf.State{{Name: "mulai"}, {Name: "selesai", IsTerminal: true}},
+		Transitions: []coreWf.Transition{{
+			From: "mulai", To: "selesai", On: "selesaikan",
+			Notify: &coreWf.NotifySpec{ToRole: "petugas", Template: template},
+		}},
+	}
+}
+
+// Titik buta pagar boot: yang dieksekusi adalah definisi di DB, bukan YAML di binary. Tenant
+// yang di-provision sebelum rename key tetap memakai key lama, dan SeedIfAbsent tak pernah
+// memutakhirkannya.
+func TestLaporStaleNotifyTemplates_DefinisiTersimpanBasiDilaporkan(t *testing.T) {
+	log := &catatanLog{}
+	refs := []domain.WorkflowRef{{FS: alurFS(alurDenganNotify), Path: "workflows/a.yaml"}}
+	tersedia := map[string]struct{}{"modul_a.selesai": {}}
+
+	laporStaleNotifyTemplates(context.Background(), "pemkot-x",
+		fakeDefReader{def: defTersimpan("surat_selesai")}, refs, tersedia, log)
+
+	if len(log.errs) != 1 {
+		t.Fatalf("jumlah laporan = %d, mau 1: %v", len(log.errs), log.errs)
+	}
+	for _, mau := range []string{"pemkot-x", "modul_a.alur.standar", "surat_selesai", "mulai→selesai"} {
+		if !strings.Contains(log.errs[0], mau) {
+			t.Errorf("laporan tak menyebut %q: %s", mau, log.errs[0])
+		}
+	}
+}
+
+func TestLaporStaleNotifyTemplates_DefinisiSelarasTakDilaporkan(t *testing.T) {
+	log := &catatanLog{}
+	refs := []domain.WorkflowRef{{FS: alurFS(alurDenganNotify), Path: "workflows/a.yaml"}}
+	tersedia := map[string]struct{}{"modul_a.selesai": {}}
+
+	laporStaleNotifyTemplates(context.Background(), "pemkot-x",
+		fakeDefReader{def: defTersimpan("modul_a.selesai")}, refs, tersedia, log)
+
+	if len(log.errs) != 0 {
+		t.Fatalf("definisi selaras ikut dilaporkan: %v", log.errs)
+	}
+}
+
+// Melaporkan, TIDAK menggagalkan: satu key basi tak boleh mematikan seluruh permukaan workflow
+// tenant — termasuk GET riwayat yang tak menyentuh notifikasi.
+func TestLaporStaleNotifyTemplates_TakMengembalikanError(t *testing.T) {
+	refs := []domain.WorkflowRef{{FS: alurFS(alurDenganNotify), Path: "workflows/a.yaml"}}
+	// Signature-nya sendiri yang menjamin ini; test mengunci agar tak berubah tanpa sadar.
+	laporStaleNotifyTemplates(context.Background(), "pemkot-x",
+		fakeDefReader{def: defTersimpan("hilang")}, refs, map[string]struct{}{}, &catatanLog{})
+}
+
+func TestTemplateKeys_MencakupFrameworkDanModul(t *testing.T) {
+	f := &notificationFactory{moduleTemplates: []coreNotif.Template{{Key: "modul_a.selesai"}}}
+	keys := f.templateKeys()
+	for _, mau := range []string{"modul_a.selesai", EscalationTemplateKey} {
+		if _, ada := keys[mau]; !ada {
+			t.Errorf("key %q tidak ada di templateKeys()", mau)
+		}
 	}
 }
