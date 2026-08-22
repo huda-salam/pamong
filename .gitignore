@@ -1,4 +1,10 @@
 bin/
+
+# Binary hasil `go build` di root repo. `cmd/server` dan `pamongctl` biasa dibangun
+# tanpa -o ke bin/, dan hasilnya (puluhan MB) mendarat di root dengan nama paketnya.
+# Pernah nyaris ikut ter-stage; artefak build tak pernah masuk riwayat.
+/server
+/pamongctl
 *.env
 config/local.yaml
 config/local.*.yaml
