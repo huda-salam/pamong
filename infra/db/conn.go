@@ -40,3 +40,15 @@ func IsUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
+
+// IsUndefinedTable mengembalikan true jika error adalah "relasi tidak ada" (SQLSTATE 42P01).
+//
+// Dipakai pembaca OPSIONAL yang berjalan sebelum skema pemiliknya dipastikan — di repo ini,
+// tumpukan notifikasi sengaja disiapkan belakangan (lazy), jadi pemeriksaan yang membacanya lebih
+// dulu akan menemui tabel yang belum ada pada SETIAP tenant baru. Itu keadaan yang diharapkan,
+// bukan kegagalan; membedakannya menjaga peringatan tetap berarti saat yang gagal benar-benar
+// gagal. JANGAN dipakai untuk menutupi tabel yang seharusnya sudah ada.
+func IsUndefinedTable(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "42P01"
+}

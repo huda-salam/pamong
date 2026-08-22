@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/google/uuid"
 
@@ -149,11 +150,43 @@ func NewNotifierEscalator(notifier RoleNotify, templateKey string, channels ...s
 // Escalate mengirim notifikasi eskalasi ke peran tujuan. Ini murni NOTIFIKASI — tak ada
 // business logic / mutasi data (PRD F6).
 func (n *NotifierEscalator) Escalate(ctx context.Context, e coreWf.Escalation) error {
-	return sendRoleNotify(ctx, n.notifier, e.TenantID, e.EscalateToRole, n.templateKey, map[string]any{
-		"instance_id": e.InstanceID.String(),
-		"state":       e.State,
-		"role":        e.EscalateToRole,
-	}, n.channels)
+	return sendRoleNotify(ctx, n.notifier, e.TenantID, e.EscalateToRole, n.templateKey,
+		notifyData(e.InstanceID.String(), e.State, e.EscalateToRole), n.channels)
+}
+
+// notifyData membangun data render untuk template notifikasi alur — SATU-SATUNYA tempat kontrak
+// field ini dibentuk. Eskalasi SLA dan notifikasi transisi memakainya bersama supaya keduanya tak
+// bisa menyimpang: template ditulis sekali, dirender dari dua jalur.
+//
+// Isinya sengaja hanya RUJUKAN (id instance, nama state, nama peran) — bukan isi dokumen, nama
+// orang, atau field ber-DataClass personal_id/specific. Notifikasi mendarat di inbox, log
+// pengiriman, dan (untuk eskalasi) payload job di DB SENTRAL; ADR-023 Keputusan 4 melarang konten
+// tenant menyeberang ke sana.
+func notifyData(instanceID, state, role string) map[string]any {
+	return map[string]any{
+		"instance_id": instanceID,
+		"state":       state,
+		"role":        role,
+	}
+}
+
+// NotifyTemplateFields adalah nama field yang PASTI tersedia saat template notifikasi alur
+// di-render — kontrak data antara adapter ini dan siapa pun yang MENULIS template.
+//
+// Ia diturunkan dari notifyData, bukan ditulis ulang, karena gunanya adalah divalidasi di muka:
+// core/notification.ParseYAML me-render setiap template baseline modul terhadap daftar ini saat
+// boot, sehingga `{{.nomor_surat}}` yang tak pernah dikirim siapa pun jatuh di boot alih-alih
+// menjadi ErrTemplateRender pada satu transisi, di satu tenant, setelah rilis. Daftar yang
+// ditulis tangan akan basi diam-diam pada perubahan notifyData berikutnya — dan pagar yang basi
+// lebih buruk daripada tak ada pagar, karena ia tetap terlihat hijau.
+func NotifyTemplateFields() notification.RenderContract {
+	data := notifyData("", "", "")
+	fields := make(notification.RenderContract, 0, len(data))
+	for k := range data {
+		fields = append(fields, k)
+	}
+	sort.Strings(fields)
+	return fields
 }
 
 // sendRoleNotify adalah langkah bersama NotifierEscalator.Escalate dan
@@ -192,9 +225,6 @@ func NewNotifierTransition(notifier RoleNotify, channels ...string) *NotifierTra
 // NotifyTransition mengirim notifikasi transisi ke peran tujuan. Ini murni NOTIFIKASI — tak ada
 // business logic / mutasi data (PRD F3).
 func (n *NotifierTransition) NotifyTransition(ctx context.Context, tenantID string, spec coreWf.NotifySpec, inst coreWf.WorkflowInstance) error {
-	return sendRoleNotify(ctx, n.notifier, tenantID, spec.ToRole, spec.Template, map[string]any{
-		"instance_id": inst.ID.String(),
-		"state":       inst.CurrentState,
-		"role":        spec.ToRole,
-	}, n.channels)
+	return sendRoleNotify(ctx, n.notifier, tenantID, spec.ToRole, spec.Template,
+		notifyData(inst.ID.String(), inst.CurrentState, spec.ToRole), n.channels)
 }

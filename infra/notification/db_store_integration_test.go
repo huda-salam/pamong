@@ -141,3 +141,47 @@ func must(t *testing.T, err error) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// Keys melayani pemeriksaan drift, yang justru harus melihat template yang TIDAK berasal dari
+// baseline binary — kalau tidak, template buatan operator dilaporkan sebagai hilang dan alarm
+// satu-satunya untuk drift yang sesungguhnya jadi berisik lalu diabaikan.
+func TestDBTemplateStore_Keys(t *testing.T) {
+	pool, ctx := newNotifEnv(t)
+	store := infraNotif.NewDBTemplateStore(pool)
+
+	seed := []coreNotif.Template{
+		{TenantID: "", Key: "framework.eskalasi", Locale: "id", Subject: "S", Body: "B"},
+		{TenantID: "pemkot-x", Key: "operator.buatan_sendiri", Locale: "id", Subject: "S", Body: "B"},
+		// Locale kedua pada key yang sama TIDAK boleh muncul dua kali (DISTINCT).
+		{TenantID: "pemkot-x", Key: "operator.buatan_sendiri", Locale: "jv", Subject: "S", Body: "B"},
+		// Milik tenant LAIN — tak boleh bocor ke inventaris tenant ini.
+		{TenantID: "pemkot-y", Key: "operator.punya_tetangga", Locale: "id", Subject: "S", Body: "B"},
+	}
+	for _, tm := range seed {
+		if err := store.Upsert(ctx, tm); err != nil {
+			t.Fatalf("upsert %q/%q: %v", tm.TenantID, tm.Key, err)
+		}
+	}
+
+	// Hanya ada dalam locale non-default: "ada" di tabel, tapi templateScore tak pernah
+	// memilihnya. Melaporkannya sebagai tersedia akan MENUTUPI drift, bukan sekadar berisik.
+	if err := store.Upsert(ctx, coreNotif.Template{
+		TenantID: "pemkot-x", Key: "operator.hanya_jawa", Locale: "jv", Subject: "S", Body: "B",
+	}); err != nil {
+		t.Fatalf("upsert hanya_jawa: %v", err)
+	}
+
+	got, err := store.Keys(ctx, "pemkot-x")
+	if err != nil {
+		t.Fatalf("Keys: %v", err)
+	}
+	mau := []string{"framework.eskalasi", "operator.buatan_sendiri"}
+	if len(got) != len(mau) {
+		t.Fatalf("keys = %v, mau %v", got, mau)
+	}
+	for i := range mau {
+		if got[i] != mau[i] {
+			t.Fatalf("keys = %v, mau %v", got, mau)
+		}
+	}
+}

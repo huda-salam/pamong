@@ -179,7 +179,8 @@ func (f *workflowFactory) prepare(ctx context.Context, tenantID string, pool *db
 	// dan keduanya berbeda pada tenant yang di-provision sebelum sebuah key di-rename maupun pada
 	// definisi yang dikustomisasi tenant. Melaporkan, tidak menggagalkan — lihat docnya.
 	if f.notifs != nil {
-		laporStaleNotifyTemplates(ctx, tenantID, defs, f.seeds, f.notifs.templateKeys(), f.logger)
+		laporStaleNotifyTemplates(ctx, tenantID, defs, f.seeds,
+			f.notifs.templateKeysFor(ctx, tenantID, pool), f.logger)
 	}
 
 	f.mu.Lock()

@@ -322,7 +322,7 @@ func run() error {
 	// Template baseline modul dikumpulkan & di-parse di sini juga: definisi alur modul boleh
 	// merujuk `notify.template`, dan sebelum PR ini tak seorang pun menanam defaultnya —
 	// setiap `notify:` milik modul gagal render di instalasi baru mana pun.
-	notifSeeds, err := collectNotificationSeeds(registry)
+	notifSeeds, err := collectNotificationSeeds(registry, EscalationTemplateKey)
 	if err != nil {
 		return fmt.Errorf("seed template notifikasi modul: %w", err)
 	}

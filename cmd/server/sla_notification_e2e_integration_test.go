@@ -245,7 +245,7 @@ func TestE2E_SLAEskalasiDanNotifikasiTransisi(t *testing.T) {
 		t.Fatalf("collectWorkflowSeeds: %v", err)
 	}
 
-	notifSeeds, err := collectNotificationSeeds(registry)
+	notifSeeds, err := collectNotificationSeeds(registry, EscalationTemplateKey)
 	if err != nil {
 		t.Fatalf("collectNotificationSeeds: %v", err)
 	}
@@ -260,7 +260,10 @@ func TestE2E_SLAEskalasiDanNotifikasiTransisi(t *testing.T) {
 		sched.deadlines, notifRuntimes)
 	gatewaywf.MountRoutes(router, gatewaywf.NewHandler(runtimes))
 
-	// Bangun tumpukan tenant sekali di muka: skema workflow + notifikasi ada, definisi ter-seed.
+	// Bangun tumpukan tenant sekali di muka: skema WORKFLOW ada dan definisi ter-seed. Tumpukan
+	// notifikasi TIDAK ikut disiapkan di sini — ia sengaja lazy (lihat TransitionNotifierFor),
+	// jadi skema & seed templatenya baru dibuat saat ada transisi yang benar-benar ber-`notify:`.
+	// Itu justru bagian dari yang dibuktikan test ini.
 	if _, err := runtimes.RuntimeFor(port.WithTenant(ctx, tenantID), tenantID); err != nil {
 		t.Fatalf("bangun tumpukan workflow tenant: %v", err)
 	}

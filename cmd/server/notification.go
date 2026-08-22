@@ -262,7 +262,20 @@ func (n *tolerantTransitionNotifier) laporkan(ctx context.Context, tenantID stri
 // prepare — karena sumbernya berbeda: yang ini dirujuk kode framework, yang itu dirujuk definisi
 // alur milik modul. Menggabungkannya berarti framework harus tahu template modul mana yang ada.
 func seedFrameworkTemplates(ctx context.Context, pool *db.Pool) error {
-	defaults := []coreNotif.Template{{
+	defaults := frameworkTemplates()
+	// Lewat pagar yang sama dengan template modul. Template ini dibangun di KODE, bukan YAML,
+	// jadi ia melewati ParseYAML — dan tanpa baris ini satu-satunya template yang tak bisa
+	// disunting operator justru menjadi satu-satunya yang tak pernah diperiksa.
+	if err := validateFrameworkTemplates(defaults); err != nil {
+		return err
+	}
+	return seedTemplates(ctx, pool, defaults)
+}
+
+// frameworkTemplates adalah default milik framework, terpisah dari seedFrameworkTemplates supaya
+// isinya bisa diperiksa tanpa DB — pagar yang hanya berjalan saat ada Postgres bukan pagar boot.
+func frameworkTemplates() []coreNotif.Template {
+	return []coreNotif.Template{{
 		TenantID: "", // global: berlaku semua tenant, bisa di-override per tenant
 		Key:      EscalationTemplateKey,
 		Locale:   coreNotif.DefaultLocale,
@@ -270,7 +283,17 @@ func seedFrameworkTemplates(ctx context.Context, pool *db.Pool) error {
 		Body: "Alur {{.instance_id}} masih berada di tahap \"{{.state}}\" melewati batas waktu " +
 			"dan dieskalasikan kepada {{.role}}.",
 	}}
-	return seedTemplates(ctx, pool, defaults)
+}
+
+// validateFrameworkTemplates men-dry-run template framework terhadap kontrak field adapter.
+func validateFrameworkTemplates(tmpls []coreNotif.Template) error {
+	for _, t := range tmpls {
+		if err := coreNotif.ValidateRenderable("template framework "+t.Key, t,
+			infrawf.NotifyTemplateFields()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // seedTemplates menanam sekumpulan template ke DB ini bila belum ada.
@@ -300,6 +323,59 @@ func (f *notificationFactory) templateKeys() map[string]struct{} {
 	}
 	keys[EscalationTemplateKey] = struct{}{}
 	return keys
+}
+
+// templateKeysFor adalah templateKeys DITAMBAH key yang benar-benar ada di DB tenant ini.
+//
+// Bedanya penting bagi pemeriksaan drift: baseline dari binary bukan satu-satunya sumber template.
+// Operator boleh menulis barisnya sendiri (itu justru rancangannya — DB yang aktif, bukan file),
+// dan definisi alur yang merujuk template buatan operator sepenuhnya sah. Memeriksa hanya
+// terhadap baseline akan melaporkannya sebagai ERROR — sinyal palsu pada satu-satunya alarm yang
+// dimiliki kasus drift yang nyata, dan alarm yang kadang berbohong akan dilatih untuk diabaikan.
+//
+// Kegagalan query TIDAK dinaikkan: pemeriksaan ini bersifat laporan, dan pemanggilnya
+// (workflowFactory.prepare) tak boleh mati gara-gara tabel notifikasi belum di-ensure — jalur
+// notifikasi memang sengaja disiapkan belakangan (TransitionNotifierFor). Jatuh kembali ke
+// baseline, dan katakan begitu di log supaya laporan setelahnya dibaca dengan takaran yang benar.
+func (f *notificationFactory) templateKeysFor(ctx context.Context, tenantID string, pool *db.Pool) map[string]struct{} {
+	keys := f.templateKeys()
+	if pool == nil {
+		return keys
+	}
+	dbKeys, err := infraNotif.NewDBTemplateStore(pool).Keys(ctx, tenantID)
+	if err != nil {
+		f.laporInventarisGagal(ctx, tenantID, err)
+		return keys
+	}
+	for _, k := range dbKeys {
+		keys[k] = struct{}{}
+	}
+	return keys
+}
+
+// laporInventarisGagal mencatat kegagalan membaca inventaris template — DENGAN membedakan
+// "tabelnya belum ada" dari kegagalan yang sesungguhnya.
+//
+// Bedanya bukan kerapian log. Tumpukan notifikasi sengaja disiapkan BELAKANGAN (lihat
+// TransitionNotifierFor), sementara pemeriksaan drift berjalan di workflowFactory.prepare — jadi
+// pada SETIAP tenant baru, pembacaan pertama ini pasti menemui `gov.notification_templates` yang
+// belum dibuat. Memperingatkan di situ berarti memasang alarm yang selalu berbunyi saat semuanya
+// normal, dan itu persis cacat yang pemeriksaan drift ini ada untuk menghindari: operator yang
+// dilatih mengabaikan peringatan tak akan melihat yang sungguhan. Lebih buruk lagi, saat tabelnya
+// memang belum ada, baseline BUKAN jawaban yang tercela — ia jawaban yang tepat, karena belum ada
+// satu pun baris yang bisa menambahinya.
+func (f *notificationFactory) laporInventarisGagal(ctx context.Context, tenantID string, err error) {
+	if f.logger == nil {
+		return
+	}
+	if db.IsUndefinedTable(err) {
+		f.logger.Debug(ctx, "tabel template notifikasi belum ada; pemeriksaan drift memakai baseline",
+			port.F("tenant", tenantID))
+		return
+	}
+	f.logger.Warn(ctx, "inventaris template dari DB tenant tak terbaca; pemeriksaan drift "+
+		"hanya memakai baseline dan bisa melaporkan template buatan operator sebagai hilang",
+		port.F("tenant", tenantID), port.F("err", err.Error()))
 }
 
 // definitionReader adalah kontrak minimal yang dibutuhkan laporStaleNotifyTemplates — dipenuhi
@@ -345,7 +421,23 @@ func laporStaleNotifyTemplates(ctx context.Context, tenantID string, defs defini
 			continue // belum ada / gagal baca — bukan urusan pemeriksaan ini
 		}
 		for _, tr := range tersimpan.Transitions {
-			if tr.Notify == nil || tr.Notify.Template == "" {
+			if tr.Notify == nil {
+				continue
+			}
+			// `notify:` tak lengkap tak bisa lagi masuk lewat Validate, tapi definisi yang sudah
+			// TERSIMPAN sebelum aturan itu ada tetap boleh memilikinya — dan diamnya identik:
+			// engine memanggil notifier dengan template atau peran kosong, pengirimannya gagal,
+			// transisinya tetap sukses. Sama tak terlihatnya dengan key basi, jadi sama-sama
+			// dilaporkan.
+			if tr.Notify.Template == "" || tr.Notify.ToRole == "" {
+				logger.Error(ctx, "definisi alur tersimpan punya `notify:` tak lengkap; "+
+					"notifikasi transisi ini akan GAGAL diam-diam",
+					port.F("tenant", tenantID),
+					port.F("alur", tersimpan.ID),
+					port.F("versi", tersimpan.Version),
+					port.F("transisi", tr.From+"→"+tr.To),
+					port.F("template", tr.Notify.Template),
+					port.F("role", tr.Notify.ToRole))
 				continue
 			}
 			if _, ada := tersedia[tr.Notify.Template]; ada {
@@ -417,8 +509,9 @@ func validateNotifyTemplatesSeeded(workflowSeeds []domain.WorkflowRef,
 // modul terdaftar. Dijalankan SEKALI saat boot.
 //
 // Di-parse di muka, bukan disimpan sebagai ref lalu di-parse per tenant seperti WorkflowRef:
-// file YAML yang rusak atau key yang salah namespace harus menjatuhkan BOOT, bukan menunggu
-// tenant pertama memakai notifikasi. Kegagalan yang muncul pada satu tenant saja — berjam-jam
+// file YAML yang rusak, key yang salah namespace, atau placeholder yang tak ada di kontrak data
+// (infrawf.NotifyTemplateFields — di-dry-run oleh ParseYAML) harus menjatuhkan BOOT, bukan
+// menunggu tenant pertama memakai notifikasi. Kegagalan yang muncul pada satu tenant saja — berjam-jam
 // setelah rilis, hanya di jalur `notify:` — adalah kelas kegagalan yang paling mahal.
 //
 // Tabrakan key ANTAR modul ditolak di sini. Template modul di-seed sebagai baris global, jadi
@@ -426,9 +519,26 @@ func validateNotifyTemplatesSeeded(workflowSeeds []domain.WorkflowRef,
 // dulu menang). ParseYAML sudah menegakkan awalan `{modul}.` sehingga tabrakan jujur mustahil —
 // pemeriksaan ini menangkap sisanya: dua modul bernama sama, atau satu modul yang mendaftarkan
 // file yang sama dua kali.
-func collectNotificationSeeds(reg *domain.Registry) ([]coreNotif.Template, error) {
+//
+// Kepemilikan dilacak per KEY, bukan per (key, locale), dan itu perbedaan yang menentukan. Dua
+// modul bisa mengklaim satu key global lewat `legacy_keys` pada locale yang saling melengkapi —
+// masing-masing lolos pemeriksaan (key, locale), dan validateDefaultLocaleAda pun puas karena
+// SALAH SATU dari keduanya menyediakan varian DefaultLocale. Yang mereka bagi adalah satu baris
+// global; siapa yang menang ditentukan urutan boot. Locale ganda DALAM satu modul tetap sah —
+// yang dilarang adalah dua PEMILIK atas satu key.
+//
+// frameworkKeys memakai jalur yang sama. `legacy_keys` sengaja dikecualikan dari aturan awalan
+// modul, sehingga ia satu-satunya jalur yang bisa menuliskan key milik framework — dan seeding
+// framework berjalan lebih dulu di prepare, jadi tabrakan ke arah itu menghasilkan diam yang
+// paling membingungkan: boot lulus, modul memuat templatenya, dan notifikasi modul mengirimkan
+// kalimat eskalasi framework.
+func collectNotificationSeeds(reg *domain.Registry, frameworkKeys ...string) ([]coreNotif.Template, error) {
 	var out []coreNotif.Template
-	asal := make(map[string]string) // "key\x00locale" → "modul:path"
+	asal := make(map[string]string)    // "key\x00locale" → "modul:path"
+	pemilik := make(map[string]string) // "key" → nama modul, atau "framework"
+	for _, k := range frameworkKeys {
+		pemilik[k] = "framework"
+	}
 	for _, m := range reg.Modules() {
 		mf := m.Manifest()
 		for _, ref := range mf.Notifications {
@@ -438,11 +548,19 @@ func collectNotificationSeeds(reg *domain.Registry) ([]coreNotif.Template, error
 			if ref.Path == "" {
 				return nil, fmt.Errorf("modul %q: NotificationRef tanpa Path", mf.Name)
 			}
-			tmpls, err := coreNotif.ParseFS(ref.FS, mf.Name, ref.Path)
+			tmpls, err := coreNotif.ParseFS(ref.FS, mf.Name, ref.Path, infrawf.NotifyTemplateFields())
 			if err != nil {
 				return nil, fmt.Errorf("modul %q: %w", mf.Name, err)
 			}
 			for _, t := range tmpls {
+				if lain, ada := pemilik[t.Key]; ada && lain != mf.Name {
+					return nil, fmt.Errorf(
+						"key template %q diklaim dua pihak: %s dan %s (%s) — satu key global "+
+							"hanya boleh punya satu pemilik, apa pun locale-nya",
+						t.Key, lain, mf.Name, ref.Path)
+				}
+				pemilik[t.Key] = mf.Name
+
 				id := t.Key + "\x00" + t.LocaleOrDefault()
 				if lain, dup := asal[id]; dup {
 					return nil, fmt.Errorf(

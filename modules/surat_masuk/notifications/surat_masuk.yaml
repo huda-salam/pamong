@@ -7,10 +7,17 @@
 #   key polos akan bertabrakan diam-diam dengan modul lain.
 # - Setiap `notify.template` di workflows/*.yaml HARUS punya entri di sini; kalau tidak,
 #   notifikasinya gagal render di instalasi baru.
+# - `legacy_keys` menanam key LAMA dengan isi yang sama. Ia dibutuhkan karena definisi alur yang
+#   sudah tersimpan di DB tenant TIDAK ikut berubah saat baseline di-rename (SeedIfAbsent tak
+#   pernah memutakhirkan definisi yang sudah ada) — tenant lama tetap merujuk key lamanya.
+#   Utang, bukan fitur: hapus begitu jalur upgrade definisi baseline ada (backlog Phase-5.x).
 # - Data yang tersedia untuk placeholder ditentukan adapter (infra/workflow.NotifierTransition):
 #   .instance_id, .state, .role. Field lain gagal keras saat render (missingkey=error).
 templates:
   - key: surat_masuk.surat_selesai
+    legacy_keys:
+      # Dipakai definisi alur tenant yang di-provision sebelum awalan `surat_masuk.` diwajibkan.
+      - surat_selesai
     locale: id
     subject: "Surat selesai ditindaklanjuti"
     body: |

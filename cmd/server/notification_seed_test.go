@@ -10,6 +10,9 @@ import (
 	"github.com/huda-salam/pamong/core/domain"
 	coreNotif "github.com/huda-salam/pamong/core/notification"
 	coreWf "github.com/huda-salam/pamong/core/workflow"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	infrawf "github.com/huda-salam/pamong/infra/workflow"
 	"github.com/huda-salam/pamong/modules"
 	"github.com/huda-salam/pamong/port"
 )
@@ -28,7 +31,7 @@ func (m fakeModule) Bootstrap(context.Context, *domain.App) error { return nil }
 // coreNotifParse adalah pembungkus ParseYAML untuk test — menjaga import test tetap ringkas.
 func coreNotifParse(t *testing.T, modul, body string) ([]coreNotif.Template, error) {
 	t.Helper()
-	return coreNotif.ParseYAML(modul, []byte(body))
+	return coreNotif.ParseYAML(modul, infrawf.NotifyTemplateFields(), []byte(body))
 }
 
 func tmplFS(body string) fstest.MapFS {
@@ -369,5 +372,282 @@ func TestTemplateKeys_MencakupFrameworkDanModul(t *testing.T) {
 		if _, ada := keys[mau]; !ada {
 			t.Errorf("key %q tidak ada di templateKeys()", mau)
 		}
+	}
+}
+
+// defTersimpanNotify membangun definisi tersimpan dengan NotifySpec apa adanya — termasuk yang
+// TAK LENGKAP, yang kini ditolak coreWf.Validate tapi masih bisa ada di baris DB yang ditulis
+// sebelum aturan itu berlaku.
+func defTersimpanNotify(spec *coreWf.NotifySpec) coreWf.WorkflowDefinition {
+	def := defTersimpan("")
+	def.Transitions[0].Notify = spec
+	return def
+}
+
+// `notify:` tak lengkap gagal dengan cara yang sama persis dengan key basi: engine memanggil
+// notifier, pengirimannya gagal, transisinya tetap sukses, tak ada yang tahu. Karena itu ia
+// masuk laporan yang sama — bukan dilewati seperti sebelumnya.
+func TestLaporStaleNotifyTemplates_NotifyTanpaTemplateDilaporkan(t *testing.T) {
+	log := &catatanLog{}
+	refs := []domain.WorkflowRef{{FS: alurFS(alurDenganNotify), Path: "workflows/a.yaml"}}
+
+	laporStaleNotifyTemplates(context.Background(), "pemkot-x",
+		fakeDefReader{def: defTersimpanNotify(&coreWf.NotifySpec{ToRole: "petugas"})},
+		refs, map[string]struct{}{"modul_a.selesai": {}}, log)
+
+	if len(log.errs) != 1 {
+		t.Fatalf("jumlah laporan = %d, mau 1: %v", len(log.errs), log.errs)
+	}
+	if !strings.Contains(log.errs[0], "tak lengkap") {
+		t.Errorf("laporan tak menyebut sebabnya: %s", log.errs[0])
+	}
+}
+
+func TestLaporStaleNotifyTemplates_NotifyTanpaRoleDilaporkan(t *testing.T) {
+	log := &catatanLog{}
+	refs := []domain.WorkflowRef{{FS: alurFS(alurDenganNotify), Path: "workflows/a.yaml"}}
+
+	laporStaleNotifyTemplates(context.Background(), "pemkot-x",
+		fakeDefReader{def: defTersimpanNotify(&coreWf.NotifySpec{Template: "modul_a.selesai"})},
+		refs, map[string]struct{}{"modul_a.selesai": {}}, log)
+
+	if len(log.errs) != 1 {
+		t.Fatalf("peran kosong tak dilaporkan meski templatenya ada: %v", log.errs)
+	}
+}
+
+// Transisi tanpa `notify:` sama sekali adalah keadaan normal mayoritas transisi — ia tak boleh
+// ikut terseret oleh pelonggaran pemeriksaan di atas.
+func TestLaporStaleNotifyTemplates_TanpaNotifyTakDilaporkan(t *testing.T) {
+	log := &catatanLog{}
+	refs := []domain.WorkflowRef{{FS: alurFS(alurDenganNotify), Path: "workflows/a.yaml"}}
+
+	laporStaleNotifyTemplates(context.Background(), "pemkot-x",
+		fakeDefReader{def: defTersimpanNotify(nil)}, refs, map[string]struct{}{}, log)
+
+	if len(log.errs) != 0 {
+		t.Fatalf("transisi tanpa notify ikut dilaporkan: %v", log.errs)
+	}
+}
+
+// Tanpa pool (mis. pemanggil yang belum me-resolve DB) pemeriksaan tetap berjalan di atas
+// baseline — bukan panik, dan bukan pula diam total.
+func TestTemplateKeysFor_TanpaPoolJatuhKeBaseline(t *testing.T) {
+	f := &notificationFactory{moduleTemplates: []coreNotif.Template{{Key: "modul_a.selesai"}}}
+	keys := f.templateKeysFor(context.Background(), "pemkot-x", nil)
+	if _, ada := keys["modul_a.selesai"]; !ada {
+		t.Error("baseline modul hilang saat pool nil")
+	}
+	if _, ada := keys[EscalationTemplateKey]; !ada {
+		t.Error("key framework hilang saat pool nil")
+	}
+}
+
+// ===== Rakitan produksi =====
+
+// Rename key template di baseline TIDAK mengubah definisi alur yang sudah tersimpan di DB tenant
+// (SeedIfAbsent tak pernah memutakhirkan yang sudah ada). Tanpa alias, setiap tenant yang
+// di-provision sebelum rename `surat_selesai` → `surat_masuk.surat_selesai` akan gagal mengirim
+// notifikasi selesai — diam-diam, karena kegagalan notifikasi sengaja tak menjatuhkan transisi.
+func TestCollectNotificationSeeds_AliasKeyLamaIkutDiseed(t *testing.T) {
+	reg := domain.NewRegistry()
+	reg.Register(modules.All()...)
+	tmpls, err := collectNotificationSeeds(reg)
+	if err != nil {
+		t.Fatalf("collectNotificationSeeds: %v", err)
+	}
+	var kanonik, alias *coreNotif.Template
+	for i := range tmpls {
+		switch tmpls[i].Key {
+		case "surat_masuk.surat_selesai":
+			kanonik = &tmpls[i]
+		case "surat_selesai":
+			alias = &tmpls[i]
+		}
+	}
+	if kanonik == nil {
+		t.Fatal("key kanonik tak ada di seed produksi")
+	}
+	if alias == nil {
+		t.Fatal("key lama tak ikut diseed; tenant yang di-provision sebelum rename kehilangan notifikasinya")
+	}
+	if alias.Body != kanonik.Body || alias.Subject != kanonik.Subject {
+		t.Error("alias tidak identik dengan kanonik")
+	}
+}
+
+// Kontrak field yang divalidasi saat boot harus persis yang dikirim adapter. Bila salah satu
+// bergeser, pagarnya berubah dari menjaga menjadi berbohong — dan tetap terlihat hijau.
+func TestNotifyTemplateFields_SelarasDenganKontrakAdapter(t *testing.T) {
+	got := infrawf.NotifyTemplateFields()
+	mau := []string{"instance_id", "role", "state"}
+	if strings.Join(got, ",") != strings.Join(mau, ",") {
+		t.Fatalf("kontrak = %v, mau %v", got, mau)
+	}
+}
+
+// Template framework dibangun di KODE, jadi ia melewati ParseYAML. Tanpa test ini, satu-satunya
+// template yang tak bisa disunting operator justru menjadi satu-satunya yang tak pernah
+// diperiksa — dan salah ketik di dalamnya baru terlihat saat eskalasi SLA pertama, di produksi.
+func TestFrameworkTemplates_LolosKontrakRender(t *testing.T) {
+	if err := validateFrameworkTemplates(frameworkTemplates()); err != nil {
+		t.Fatalf("template framework tak lolos kontrak render: %v", err)
+	}
+}
+
+// ===== Tabrakan key modul ↔ framework =====
+
+// `legacy_keys` dikecualikan dari aturan awalan modul, jadi ia satu-satunya jalur yang bisa
+// menuliskan key milik framework. Seeding framework berjalan lebih dulu di prepare, sehingga
+// tabrakan ini menghasilkan diam yang paling membingungkan: boot lulus, modul memuat templatenya,
+// dan notifikasi modul mengirimkan kalimat eskalasi framework.
+func TestCollectNotificationSeeds_AliasMenabrakKeyFrameworkDitolak(t *testing.T) {
+	body := fmt.Sprintf(`
+templates:
+  - key: modul_a.selesai
+    legacy_keys: [%s]
+    subject: "S"
+    body: "Alur {{.instance_id}}."
+`, EscalationTemplateKey)
+
+	_, err := collectNotificationSeeds(regDengan(fakeModule{name: "modul_a",
+		notif: []domain.NotificationRef{{FS: tmplFS(body), Path: "notifications/t.yaml"}}}),
+		EscalationTemplateKey)
+	if err == nil {
+		t.Fatal("alias yang menabrak key framework harus ditolak")
+	}
+	if !strings.Contains(err.Error(), "framework") {
+		t.Errorf("pesan tak menyebut asal tabrakan: %v", err)
+	}
+}
+
+// Key modul yang KEBETULAN mirip tapi tidak sama tetap harus lolos — penjaga di atas tak boleh
+// melebar menjadi larangan atas prefix.
+func TestCollectNotificationSeeds_KeyMiripFrameworkTetapDiterima(t *testing.T) {
+	body := `
+templates:
+  - key: modul_a.workflow_sla_escalate
+    subject: "S"
+    body: "Alur {{.instance_id}}."
+`
+	if _, err := collectNotificationSeeds(regDengan(fakeModule{name: "modul_a",
+		notif: []domain.NotificationRef{{FS: tmplFS(body), Path: "notifications/t.yaml"}}}),
+		EscalationTemplateKey); err != nil {
+		t.Fatalf("key modul yang hanya mirip harus diterima: %v", err)
+	}
+}
+
+// Rakitan produksi harus lolos penjaga yang sama — kalau tidak, penjaganya hanya berlaku di test.
+func TestCollectNotificationSeeds_RakitanProduksiTanpaTabrakanFramework(t *testing.T) {
+	reg := domain.NewRegistry()
+	reg.Register(modules.All()...)
+	if _, err := collectNotificationSeeds(reg, EscalationTemplateKey); err != nil {
+		t.Fatalf("rakitan produksi menabrak key framework: %v", err)
+	}
+}
+
+// ===== Peringatan inventaris: yang normal tak boleh berbunyi =====
+
+// pgErrPalsu meniru *pgconn.PgError agar db.IsUndefinedTable bisa diuji tanpa Postgres.
+func pgErrPalsu(code string) error { return &pgconn.PgError{Code: code, Message: "palsu"} }
+
+type catatanSemua struct {
+	port.Logger
+	warns, debugs int
+}
+
+func (l *catatanSemua) Error(context.Context, string, ...port.Field) {}
+func (l *catatanSemua) Info(context.Context, string, ...port.Field)  {}
+func (l *catatanSemua) Warn(context.Context, string, ...port.Field)  { l.warns++ }
+func (l *catatanSemua) Debug(context.Context, string, ...port.Field) { l.debugs++ }
+
+// Tumpukan notifikasi sengaja disiapkan BELAKANGAN, jadi tabel yang belum ada adalah keadaan
+// normal pada setiap tenant baru. Memperingatkan di situ memasang alarm yang selalu berbunyi saat
+// semuanya benar — persis cacat yang pemeriksaan drift ini ada untuk menghindari.
+func TestLaporInventarisGagal_TabelBelumAdaBukanPeringatan(t *testing.T) {
+	log := &catatanSemua{}
+	f := &notificationFactory{logger: log}
+
+	f.laporInventarisGagal(context.Background(), "pemkot-x", pgErrPalsu("42P01"))
+
+	if log.warns != 0 {
+		t.Errorf("tabel belum ada memicu %d peringatan; harus 0", log.warns)
+	}
+	if log.debugs != 1 {
+		t.Errorf("jejak debug = %d, mau 1", log.debugs)
+	}
+}
+
+// Kegagalan yang sesungguhnya tetap harus terdengar — kalau tidak, pembedaan di atas berubah dari
+// mengurangi bising menjadi menyembunyikan masalah.
+func TestLaporInventarisGagal_KegagalanLainTetapDiperingatkan(t *testing.T) {
+	log := &catatanSemua{}
+	f := &notificationFactory{logger: log}
+
+	f.laporInventarisGagal(context.Background(), "pemkot-x", pgErrPalsu("42501")) // izin ditolak
+
+	if log.warns != 1 {
+		t.Errorf("kegagalan nyata menghasilkan %d peringatan; mau 1", log.warns)
+	}
+}
+
+// Dua modul bisa mengklaim satu key global lewat `legacy_keys` pada locale yang saling
+// melengkapi: masing-masing lolos pemeriksaan (key, locale), dan validateDefaultLocaleAda puas
+// karena SALAH SATU menyediakan varian DefaultLocale. Yang mereka bagi tetap satu baris global,
+// dan siapa yang menang ditentukan urutan boot.
+func TestCollectNotificationSeeds_AliasDuaModulLocaleBerbedaDitolak(t *testing.T) {
+	a := `
+templates:
+  - key: modul_a.selesai
+    locale: id
+    legacy_keys: [bersama]
+    subject: "A"
+    body: "Alur {{.instance_id}}."
+`
+	b := `
+templates:
+  - key: modul_b.selesai
+    locale: id
+    subject: "B"
+    body: "Alur {{.instance_id}}."
+  - key: modul_b.selesai
+    locale: jv
+    legacy_keys: [bersama]
+    subject: "B jv"
+    body: "Alur {{.instance_id}}."
+`
+	reg := domain.NewRegistry()
+	reg.Register(
+		fakeModule{name: "modul_a", notif: []domain.NotificationRef{{FS: tmplFS(a), Path: "notifications/t.yaml"}}},
+		fakeModule{name: "modul_b", notif: []domain.NotificationRef{{FS: tmplFS(b), Path: "notifications/t.yaml"}}},
+	)
+
+	_, err := collectNotificationSeeds(reg, EscalationTemplateKey)
+	if err == nil {
+		t.Fatal("dua modul berhasil berbagi satu key global lewat locale yang berbeda")
+	}
+	if !strings.Contains(err.Error(), "bersama") {
+		t.Errorf("pesan tak menunjuk key yang ditabrak: %v", err)
+	}
+}
+
+// Locale ganda DALAM satu modul tetap sah — penjaga kepemilikan tak boleh melebar jadi larangan
+// atas i18n.
+func TestCollectNotificationSeeds_SatuModulBanyakLocaleDiterima(t *testing.T) {
+	body := `
+templates:
+  - key: modul_a.selesai
+    locale: id
+    subject: "A"
+    body: "Alur {{.instance_id}}."
+  - key: modul_a.selesai
+    locale: jv
+    subject: "A jv"
+    body: "Alur {{.instance_id}}."
+`
+	if _, err := collectNotificationSeeds(regDengan(fakeModule{name: "modul_a",
+		notif: []domain.NotificationRef{{FS: tmplFS(body), Path: "notifications/t.yaml"}}}),
+		EscalationTemplateKey); err != nil {
+		t.Fatalf("satu modul dengan dua locale ditolak: %v", err)
 	}
 }

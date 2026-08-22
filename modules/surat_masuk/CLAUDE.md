@@ -43,6 +43,11 @@ di sini. Bukan modul mainan — ini standar yang harus diikuti.
 - Setiap `notify.template` di alur WAJIB punya default di notifications/*.yaml, dan key-nya
   berawalan nama modul (`surat_masuk.`) — template modul berbagi satu ruang nama global, key
   polos bertabrakan diam-diam antar modul. Boot menolak rujukan yang tak punya default.
+- Placeholder template terbatas pada kontrak adapter (`.instance_id`, `.state`, `.role` —
+  infra/workflow.NotifyTemplateFields). Boot me-render setiap template terhadap kontrak itu, jadi
+  field asing jatuh di boot, bukan saat transisi pertama di satu tenant.
+- Me-rename key template: tambah key lama ke `legacy_keys:` entri barunya. Definisi alur yang
+  sudah tersimpan di DB tenant TIDAK ikut berubah saat baseline di-rename.
 - Uang? Tidak ada di modul ini, tapi bila ada gunakan decimal.Decimal.
 
 ## Test

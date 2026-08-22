@@ -60,6 +60,47 @@ func (s *DBTemplateStore) Candidates(ctx context.Context, tenantID, key string) 
 	return out, nil
 }
 
+// Keys mengembalikan key template yang benar-benar BISA TERPILIH untuk satu tenant — baris global
+// (tenant_id = ”) maupun baris milik tenant itu sendiri, terurut.
+//
+// Ia melayani pemeriksaan drift (cmd/server.laporStaleNotifyTemplates), bukan jalur render.
+// Tanpanya pemeriksaan itu hanya tahu template yang di-SEED dari binary, sehingga template yang
+// ditulis operator lewat jalur admin dilaporkan sebagai "tak punya default" — ERROR palsu pada
+// satu-satunya sinyal yang ada untuk kasus drift yang sesungguhnya. Sinyal yang kadang berbohong
+// akan dilatih untuk diabaikan, dan setelah itu ia tak menjaga apa pun.
+//
+// Hanya baris ber-DefaultLocale yang dihitung, dan itu bukan penyederhanaan. TemplateEngine
+// memperlakukan locale sebagai GERBANG KERAS (templateScore): kandidat yang locale-nya bukan yang
+// diminta DAN bukan DefaultLocale tak pernah dipakai. Key yang hanya ada dalam locale lain karena
+// itu "ada" tapi mustahil terpilih — melaporkannya sebagai tersedia adalah kebohongan dengan arah
+// yang lebih berbahaya: ia MENUTUPI drift, bukan sekadar berisik. Ini invarian yang sama dengan
+// validateDefaultLocaleAda di sisi baseline modul; ditegakkan di satu sisi saja tak menutup apa pun.
+func (s *DBTemplateStore) Keys(ctx context.Context, tenantID string) ([]string, error) {
+	// gov:raw-ok reason=template-key-inventory query=notification-template-keys
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT key
+		FROM gov.notification_templates
+		WHERE tenant_id IN ('', $1) AND locale = $2
+		ORDER BY key`, tenantID, coreNotif.DefaultLocale)
+	if err != nil {
+		return nil, fmt.Errorf("query key notification_templates: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, fmt.Errorf("scan key notification_template: %w", err)
+		}
+		out = append(out, k)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterasi key notification_templates: %w", err)
+	}
+	return out, nil
+}
+
 // Upsert menyimpan/menimpa template untuk (tenant, key, locale). Locale kosong → DefaultLocale.
 func (s *DBTemplateStore) Upsert(ctx context.Context, t coreNotif.Template) error {
 	if t.Key == "" || t.Body == "" {

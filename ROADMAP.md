@@ -1851,8 +1851,22 @@ rule linter `markerref`).
   DIAM-nya, bukan kegagalannya. Sengaja tidak menggagalkan: satu key basi tak boleh mematikan
   seluruh permukaan workflow tenant, termasuk GET riwayat yang tak menyentuh notifikasi.
 
-- **[infra/db] Flake `TestEnsureSchemaLocked_BootParalel_TakBalapan`** (teramati EMPAT kali,
-  18, 19, 21 & 22 Agu 2026, **semuanya hanya saat run `./...` penuh**): 1 dari 12 ensure paralel gagal dengan
+  Peredam kedua (PR-W7-pra putaran 2): `legacy_keys:` pada entri template modul menanam key LAMA
+  dengan isi yang sama, dikecualikan dari aturan awalan `{modul}.` — `modules/surat_masuk/`
+  memakainya untuk `surat_selesai`. Ini memberi rename key template jalur migrasi yang tak
+  bergantung pada masalah versi definisi di butir ini. Ia **utang**: setiap alias adalah baris
+  global tambahan di ruang nama bersama, dan seluruhnya harus dihapus begitu jalur upgrade
+  baseline ada. Cakupannya juga terbatas pada rename KEY TEMPLATE — perubahan baseline lain
+  (state baru, guard baru, SLA berubah) tetap tak sampai ke tenant lama.
+
+  **Belum tertutup, sengaja:** pemeriksaan drift hanya membaca versi TERBARU tiap definisi
+  (`DBStore.Get`), padahal instance mengunci `DefinitionVersion`-nya sendiri — versi lama yang
+  masih di-pin instance berjalan tanpa diperiksa. Menutupnya butuh query "daftar semua versi"
+  yang belum ada di `DBStore`, dan hasilnya tetap laporan, bukan perbaikan. Digabungkan ke sini
+  karena obat sesungguhnya sama: jalur upgrade definisi.
+
+- **[infra/db] Flake `TestEnsureSchemaLocked_BootParalel_TakBalapan`** (teramati LIMA kali,
+  18, 19, 21 & 22 Agu 2026 — dua kali pada 22 Agu): 1 dari 12 ensure paralel gagal dengan
   `duplicate key ... pg_namespace_nspname_index` (SQLSTATE 23505) — persis kegagalan yang advisory
   lock di `EnsureSchemaLocked` seharusnya cegah. TIDAK tereproduksi dalam 11 percobaan berikutnya
   (3 run `./...` penuh dengan perubahan PR-W4b, 3 tanpa, 8 iterasi terfokus `-count=8`), dan kode
@@ -1868,12 +1882,39 @@ rule linter `markerref`).
   koneksi, katalog yang sudah ramai), bukan test-nya. **Koreksi 22 Agu:** dugaan sebelumnya bahwa
   goroutine yang kalah selalu #7 TIDAK bertahan — run keempat kalah di #10. Indeksnya acak;
   jangan kejar itu sebagai petunjuk.
+  **Penyempitan 22 Agu (kejadian kelima), memperbaiki dugaan di atas:** ia tereproduksi pada run
+  `-tags=integration -p 1` atas EMPAT paket saja (`cmd/server`, `infra/notification`,
+  `infra/workflow`, `infra/db`) — bukan `./...` penuh. Sesudahnya, `infra/db` sendirian tetap
+  hijau: 6× test itu terisolasi dan 4× paket penuh. Jadi pemicunya BUKAN ukuran suite melainkan
+  **aktivitas paket lain lebih dulu pada instance Postgres yang sama** (yang semuanya melakukan
+  `DROP SCHEMA gov CASCADE` di setup). Itu justru menguatkan hipotesis snapshot katalog: yang
+  berubah antar kondisi bukan beban, melainkan riwayat katalog. Kalah di goroutine #5 kali ini —
+  konsisten dengan koreksi di atas bahwa indeksnya acak.
+
   **DIJADWALKAN: PR-W7f** (ADR-024 K7) — jalan keluarnya bukan mengunci lebih rapat melainkan
   mengeluarkan DDL dari jalur request sama sekali; balapannya hilang, bukan dikalahkan.
   Eksperimen murah yang layak dijalankan sebelum W7f, untuk memastikan diagnosanya benar:
   gabungkan `pg_advisory_xact_lock` dan DDL ke dalam SATU Exec (satu command string) lalu ulang
   suite penuh. Bila balapan lenyap, penyebabnya adalah snapshot katalog per-command, bukan lock
   yang bocor — dan itu mengubah bunyi perbaikannya.
+
+- **[tooling] `pamongctl validate modules` tak memeriksa `Manifest.Notifications`.** Ditemukan
+  `/code-review` PR-W7-pra putaran 4. `NotificationRef` yang cacat (FS nil, Path kosong, YAML
+  rusak, key salah namespace, placeholder di luar kontrak) lolos gerbang CI dan baru jatuh saat
+  boot `cmd/server`. Gerbang boot memang yang lebih kuat — jadi ini lubang pada pemeriksaan yang
+  MURAH, bukan pada pemeriksaannya sendiri: developer modul baru harus menjalankan server untuk
+  tahu manifestnya salah. Perbaikannya kecil: `collectNotificationSeeds` sudah pure (hanya
+  membaca registry), tinggal dipanggil dari validator. Digabungkan saja ke PR tooling berikutnya
+  yang menyentuh `pamongctl validate`.
+
+- **[core/workflow] `ParseYAML` definisi alur masih longgar terhadap field tak dikenal.**
+  Ditemukan pada putaran yang sama. `core/notification.ParseYAML` kini memakai
+  `KnownFields(true)` karena field OPSIONAL yang salah ketik ter-parse mulus lalu diam
+  (`legacy_keys` → alias tak pernah ditanam). `core/workflow/loader.go` punya kelonggaran yang
+  sama dan permukaan opsional yang lebih luas (`sla_hours`, `escalate_to_role`, `notify`,
+  `guards`) — `sla_hour:` yang salah ketik menghasilkan state tanpa SLA, tanpa satu pun error.
+  TIDAK diubah di PR ini karena definisi alur juga datang dari DB (bukan hanya YAML ter-embed),
+  jadi blast radius-nya beda dan perlu ditimbang tersendiri.
 
 - **[BELUM PUNYA RENCANA — perlu keputusan] Permukaan desain CLAUDE.md tanpa satu pun
   baris di ROADMAP.** Ditemukan saat audit yang sama, dengan membandingkan konsep di
